@@ -1,10 +1,10 @@
 /*
    network.h
    GrowHub32 - Wireless Networking & Alert Subsystem
-   Version: 1.2.1
-   Revision: Added FreeRTOS concurrency-safe accessors for fridge data.
-             Added ntfy.sh SSL client support.
-             Added watchdog feed during blocking WiFi connect.
+   Version: 1.2.4
+   Revision: Added mDNS guard flag. Added g_fridgePacketEverReceived.
+             Added g_wifiConnectedTime for AP stability tracking.
+             Documented mutex requirements for all cross-task state.
 
    Handles:
    - WiFi station mode connection (GH-NET-001)
