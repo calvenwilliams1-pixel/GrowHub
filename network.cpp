@@ -1,14 +1,18 @@
 /*
    network.cpp
    GrowHub32 - Wireless Networking & Alert Subsystem Implementation
-   Version: 1.2.2
-   Revision: Added FreeRTOS concurrency mutex for ESP-NOW callback safety.
-             Fixed ntfy.sh HTTPS with explicit WiFiClientSecure.
-             Added watchdog feed during initial WiFi connection loop.
-             Added static IP configuration.
-             Added mDNS support (growhub.local).
-             Reduced WiFi reconnect interval to 30 seconds.
-             Added 3-attempt initial connection with 10s timeout per attempt.
+   Version: 1.2.4
+   Revision: Mutex-protected lastNTFYAlert rate-limit check (Change 1).
+             Wraparound-aware sequence number comparison (Change 2).
+             AP stability timer uses g_wifiConnectedTime (Change 3).
+             Mutex-protected heartbeat reads in network_checkFridgeHeartbeat (Change 4).
+             mDNS guarded from repeated begin() calls (Change 5).
+             Immediate AP fallback on boot failure (Change 6).
+             Mutex-protected g_wifiDisconnectStart in event callback (Change 7).
+             Distinguish "never received" from "heartbeat lost" (Change 8).
+             lastNTFYAlert updated only after successful HTTP send (Git Issue 1).
+             Mutex-protected reads in network_checkConnection (Git Issue 2).
+             Mutex-protected g_mdnsStarted access (Git Issue 3).
 
    WiFi credentials are hardcoded per GH-NET-001.
    Alert endpoint is hardcoded per GH-NET-005.
@@ -37,7 +41,9 @@ portMUX_TYPE g_stateMux = portMUX_INITIALIZER_UNLOCKED;
 static bool g_wifiInitialized = false;
 static unsigned long g_lastWiFiReconnectAttempt = 0;
 static unsigned long g_wifiDisconnectStart = 0;
+static unsigned long g_wifiConnectedTime = 0;       // Tracks actual connection establishment (Change 3)
 static bool g_apModeActive = false;
+static bool g_mdnsStarted = false;                   // Guards against repeated MDNS.begin() (Change 5)
 
 // ESP-NOW fridge tracking
 static bool g_espnowInitialized = false;
@@ -45,6 +51,7 @@ static unsigned long g_lastFridgePacket = 0;
 static uint16_t g_lastFridgeSequence = 0;
 static bool g_fridgeHeartbeatLost = false;
 static bool g_fridgeHeartbeatAlertSent = false;
+static bool g_fridgePacketEverReceived = false;      // Distinguishes "never seen" from "lost" (Change 8)
 
 // ============================================
 // CRC-16 Implementation (GH-NET-003, GH-NET-004)
@@ -83,40 +90,41 @@ void onESPNOWReceive(const uint8_t* mac, const uint8_t* incomingData, int len) {
   const FridgePacket* packet = (const FridgePacket*)incomingData;
 
   // GH-NET-004: Validate CRC-16 checksum
-  // CRC is computed over all bytes except the CRC field itself
   uint16_t calculatedCRC = network_crc16(incomingData, sizeof(FridgePacket) - sizeof(uint16_t));
   if (calculatedCRC != packet->crc16) {
     Serial.print(F("[ESPNOW] CRC-16 mismatch! Calc: 0x"));
     Serial.print(calculatedCRC, HEX);
     Serial.print(F(", Received: 0x"));
     Serial.println(packet->crc16, HEX);
-    return; // Drop corrupted packet silently
+    return;
   }
 
-  // Validate sequence number ordering
-  if (packet->sequenceNumber <= g_lastFridgeSequence && g_lastFridgeSequence > 0) {
-    // Non-incrementing sequence - possible duplicate or out-of-order packet
-    // Accept the data but log a warning (could indicate node reset or RF issue)
-    Serial.print(F("[ESPNOW] Non-incrementing sequence: "));
-    Serial.print(packet->sequenceNumber);
-    Serial.print(F(" (last valid: "));
-    Serial.print(g_lastFridgeSequence);
-    Serial.println(F(") - possible duplicate"));
+  // Copy shared state for sequence validation under mutex
+  bool everReceived;
+  uint16_t lastSeq;
+  portENTER_CRITICAL(&g_stateMux);
+  everReceived = g_fridgePacketEverReceived;
+  lastSeq = g_lastFridgeSequence;
+  portEXIT_CRITICAL(&g_stateMux);
+
+  // Validate sequence number ordering with wraparound awareness (Change 2)
+  uint16_t expectedSeq = lastSeq + 1;
+  if (everReceived && packet->sequenceNumber != expectedSeq) {
+    Serial.print(F("[ESPNOW] Sequence gap - expected "));
+    Serial.print(expectedSeq);
+    Serial.print(F(", got "));
+    Serial.println(packet->sequenceNumber);
   }
 
   // Validate temperature range (-40C to +85C is DS18B20 range)
   if (packet->temperature < -40.0f || packet->temperature > 85.0f) {
     Serial.print(F("[ESPNOW] Temperature out of valid range: "));
     Serial.println(packet->temperature, 1);
-    return; // Drop invalid data
+    return;
   }
 
   // ============================================
   // FREE RTOS CRITICAL SECTION
-  // This callback runs in WiFi task context.
-  // g_systemState is also read by the main loop task.
-  // Mutex prevents torn reads and cache coherency issues
-  // on dual-core ESP32.
   // ============================================
   portENTER_CRITICAL(&g_stateMux);
 
@@ -124,6 +132,7 @@ void onESPNOWReceive(const uint8_t* mac, const uint8_t* incomingData, int len) {
   g_lastFridgePacket = millis();
   g_fridgeHeartbeatLost = false;
   g_fridgeHeartbeatAlertSent = false;
+  g_fridgePacketEverReceived = true;                 // Mark first successful packet (Change 8)
   g_systemState.fridgeTemp = packet->temperature;
   g_systemState.fridgeLastSequence = packet->sequenceNumber;
   g_systemState.fridgeHeartbeatLost = false;
@@ -182,46 +191,56 @@ static void onWiFiEvent(WiFiEvent_t event) {
 
       portENTER_CRITICAL(&g_stateMux);
       g_systemState.wifiConnected = true;
+      g_wifiDisconnectStart = 0;
+      g_wifiConnectedTime = millis();               // Track actual connection time (Change 3)
       portEXIT_CRITICAL(&g_stateMux);
 
-      g_wifiDisconnectStart = 0;
+      // Start mDNS responder with mutex-protected guard (Change 5, Git Issue 3)
+      portENTER_CRITICAL(&g_stateMux);
+      bool mdnsWasStarted = g_mdnsStarted;
+      portEXIT_CRITICAL(&g_stateMux);
 
-      // Start mDNS responder
-      if (MDNS.begin("growhub")) {
-        Serial.println(F("[NET] mDNS started: http://growhub.local"));
-        MDNS.addService("http", "tcp", 80);
-      } else {
-        Serial.println(F("[NET] mDNS failed to start"));
+      if (!mdnsWasStarted) {
+        if (MDNS.begin("growhub")) {
+          portENTER_CRITICAL(&g_stateMux);
+          g_mdnsStarted = true;
+          portEXIT_CRITICAL(&g_stateMux);
+          Serial.println(F("[NET] mDNS started: http://growhub.local"));
+          MDNS.addService("http", "tcp", 80);
+        } else {
+          Serial.println(F("[NET] mDNS failed to start"));
+        }
       }
       break;
 
     case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
       Serial.println(F("[WiFi] Station disconnected"));
 
+      // Mutex-protect cross-task writes (Change 7)
       portENTER_CRITICAL(&g_stateMux);
       g_systemState.wifiConnected = false;
-      portEXIT_CRITICAL(&g_stateMux);
-
       if (g_wifiDisconnectStart == 0) {
         g_wifiDisconnectStart = millis();
       }
+      // Allow mDNS to restart on reconnect
+      g_mdnsStarted = false;
+      portEXIT_CRITICAL(&g_stateMux);
       break;
 
     case ARDUINO_EVENT_WIFI_AP_START:
       Serial.println(F("[WiFi] Access Point started"));
-      g_apModeActive = true;
-
       portENTER_CRITICAL(&g_stateMux);
+      g_apModeActive = true;
       g_systemState.apModeActive = true;
       portEXIT_CRITICAL(&g_stateMux);
       break;
 
     case ARDUINO_EVENT_WIFI_AP_STOP:
       Serial.println(F("[WiFi] Access Point stopped"));
-      g_apModeActive = false;
-
       portENTER_CRITICAL(&g_stateMux);
+      g_apModeActive = false;
       g_systemState.apModeActive = false;
+      g_mdnsStarted = false;
       portEXIT_CRITICAL(&g_stateMux);
       break;
 
@@ -306,16 +325,25 @@ bool network_init() {
 
     portENTER_CRITICAL(&g_stateMux);
     g_systemState.wifiConnected = true;
+    g_wifiDisconnectStart = 0;
+    g_wifiConnectedTime = millis();                 // Track connection time (Change 3)
     portEXIT_CRITICAL(&g_stateMux);
 
-    g_wifiDisconnectStart = 0;
+    // Start mDNS responder with mutex-protected guard (Change 5, Git Issue 3)
+    portENTER_CRITICAL(&g_stateMux);
+    bool mdnsWasStarted = g_mdnsStarted;
+    portEXIT_CRITICAL(&g_stateMux);
 
-    // Start mDNS responder
-    if (MDNS.begin("growhub")) {
-      Serial.println(F("[NET] mDNS started: http://growhub.local"));
-      MDNS.addService("http", "tcp", 80);
-    } else {
-      Serial.println(F("[NET] mDNS failed to start"));
+    if (!mdnsWasStarted) {
+      if (MDNS.begin("growhub")) {
+        portENTER_CRITICAL(&g_stateMux);
+        g_mdnsStarted = true;
+        portEXIT_CRITICAL(&g_stateMux);
+        Serial.println(F("[NET] mDNS started: http://growhub.local"));
+        MDNS.addService("http", "tcp", 80);
+      } else {
+        Serial.println(F("[NET] mDNS failed to start"));
+      }
     }
   } else {
     Serial.println(F(""));
@@ -323,6 +351,8 @@ bool network_init() {
 
     portENTER_CRITICAL(&g_stateMux);
     g_systemState.wifiConnected = false;
+    // Backdate disconnect timer for immediate AP fallback (Change 6)
+    g_wifiDisconnectStart = millis() - WIFI_DISCONNECT_TIMEOUT_MS;
     portEXIT_CRITICAL(&g_stateMux);
 
     // GH-NET-002: Start backup AP immediately if no connection
@@ -334,7 +364,10 @@ bool network_init() {
     Serial.println(F("[ESPNOW] Initialized successfully - listening for fridge node"));
     esp_now_register_recv_cb(onESPNOWReceive);
     g_espnowInitialized = true;
+    // Initialize g_lastFridgePacket under mutex for consistency (Git Issue 2)
+    portENTER_CRITICAL(&g_stateMux);
     g_lastFridgePacket = millis();
+    portEXIT_CRITICAL(&g_stateMux);
   } else {
     Serial.println(F("[ESPNOW] Initialization FAILED - fridge monitoring unavailable"));
     g_espnowInitialized = false;
@@ -352,6 +385,12 @@ void network_checkConnection() {
   // GH-NET-002: Monitor WiFi connection and manage AP fallback
   unsigned long now = millis();
 
+  // Copy shared state under mutex for consistent decision-making (Git Issue 2)
+  portENTER_CRITICAL(&g_stateMux);
+  bool apActive = g_apModeActive;
+  unsigned long connectedTime = g_wifiConnectedTime;
+  portEXIT_CRITICAL(&g_stateMux);
+
   // Check if station is connected
   if (WiFi.status() == WL_CONNECTED) {
     portENTER_CRITICAL(&g_stateMux);
@@ -361,11 +400,12 @@ void network_checkConnection() {
     g_wifiDisconnectStart = 0;
 
     // If AP was active and station is stable for 30 seconds, disable AP
-    if (g_apModeActive && now - g_lastWiFiReconnectAttempt > 30000) {
+    // Uses g_wifiConnectedTime instead of g_lastWiFiReconnectAttempt (Change 3)
+    if (apActive && connectedTime > 0 && (now - connectedTime > 30000)) {
       WiFi.softAPdisconnect(true);
-      g_apModeActive = false;
 
       portENTER_CRITICAL(&g_stateMux);
+      g_apModeActive = false;
       g_systemState.apModeActive = false;
       portEXIT_CRITICAL(&g_stateMux);
 
@@ -387,24 +427,33 @@ void network_checkConnection() {
   unsigned long disconnectedDuration = now - g_wifiDisconnectStart;
 
   // GH-NET-002: After 15 seconds, enable backup AP
-  if (disconnectedDuration >= WIFI_DISCONNECT_TIMEOUT_MS && !g_apModeActive) {
+  if (disconnectedDuration >= WIFI_DISCONNECT_TIMEOUT_MS && !apActive) {
     Serial.println(F("[NET] WiFi disconnected for 15s - enabling backup AP"));
     Serial.print(F("[NET] AP SSID: "));
     Serial.println(AP_SSID);
 
     if (WiFi.softAP(AP_SSID, AP_PASSWORD)) {
-      g_apModeActive = true;
-
       portENTER_CRITICAL(&g_stateMux);
+      g_apModeActive = true;
       g_systemState.apModeActive = true;
       portEXIT_CRITICAL(&g_stateMux);
 
       Serial.print(F("[NET] AP IP Address: "));
       Serial.println(WiFi.softAPIP());
 
-      // Start mDNS in AP mode
-      MDNS.begin("growhub");
-      Serial.println(F("[NET] mDNS started: http://growhub.local"));
+      // Start mDNS in AP mode with mutex-protected guard (Change 5, Git Issue 3)
+      portENTER_CRITICAL(&g_stateMux);
+      bool mdnsWasStarted = g_mdnsStarted;
+      portEXIT_CRITICAL(&g_stateMux);
+
+      if (!mdnsWasStarted) {
+        if (MDNS.begin("growhub")) {
+          portENTER_CRITICAL(&g_stateMux);
+          g_mdnsStarted = true;
+          portEXIT_CRITICAL(&g_stateMux);
+          Serial.println(F("[NET] mDNS started: http://growhub.local"));
+        }
+      }
 
       network_sendAlert("GrowHub32 - AP Mode Active",
                        "Main Node WiFi lost. Backup AP enabled for direct access.");
@@ -432,35 +481,49 @@ void network_checkFridgeHeartbeat() {
   }
 
   unsigned long now = millis();
-  unsigned long elapsedSinceLastPacket = now - g_lastFridgePacket;
+
+  // Atomically copy heartbeat state to local variables (Change 4)
+  portENTER_CRITICAL(&g_stateMux);
+  bool everReceived = g_fridgePacketEverReceived;
+  unsigned long lastPacket = g_lastFridgePacket;
+  bool heartbeatLost = g_fridgeHeartbeatLost;
+  bool alertSent = g_fridgeHeartbeatAlertSent;
+  portEXIT_CRITICAL(&g_stateMux);
+
+  // Suppress alerts if no packet has ever been received (Change 8)
+  if (!everReceived) {
+    return;
+  }
+
+  unsigned long elapsedSinceLastPacket = now - lastPacket;
 
   // Check if heartbeat is lost (>60 seconds since last valid packet)
   if (elapsedSinceLastPacket >= ESPNOW_FAIL_TIMEOUT_MS) {
-    if (!g_fridgeHeartbeatLost) {
-      g_fridgeHeartbeatLost = true;
-
-      portENTER_CRITICAL(&g_stateMux);
-      g_systemState.fridgeHeartbeatLost = true;
-      portEXIT_CRITICAL(&g_stateMux);
+    if (!heartbeatLost) {
+      heartbeatLost = true;
 
       Serial.println(F("[ESPNOW] Fridge node heartbeat LOST! (>60s no data)"));
 
-      if (!g_fridgeHeartbeatAlertSent) {
-        g_fridgeHeartbeatAlertSent = true;
+      if (!alertSent) {
+        alertSent = true;
         network_sendAlert("Fridge Node Offline",
                          "No valid data received from fridge node for 60+ seconds.");
       }
     }
   } else {
-    if (g_fridgeHeartbeatLost) {
+    if (heartbeatLost) {
       Serial.println(F("[ESPNOW] Fridge node heartbeat RESTORED"));
     }
-    g_fridgeHeartbeatLost = false;
-
-    portENTER_CRITICAL(&g_stateMux);
-    g_systemState.fridgeHeartbeatLost = false;
-    portEXIT_CRITICAL(&g_stateMux);
+    heartbeatLost = false;
+    alertSent = false;
   }
+
+  // Write back modified state under mutex (Change 4)
+  portENTER_CRITICAL(&g_stateMux);
+  g_fridgeHeartbeatLost = heartbeatLost;
+  g_fridgeHeartbeatAlertSent = alertSent;
+  g_systemState.fridgeHeartbeatLost = heartbeatLost;
+  portEXIT_CRITICAL(&g_stateMux);
 }
 
 // ============================================
@@ -474,13 +537,22 @@ void network_sendAlert(const char* title, const char* message) {
 
   unsigned long now = millis();
 
+  // Mutex-protect the rate-limit check (Change 1, Git Issue 1)
+  // Only the read-and-check is inside the critical section.
+  // The timestamp update happens AFTER a successful send (Git Issue 1).
+  // The HTTPS call stays outside to avoid blocking the core with network I/O.
+  bool rateLimited = false;
+  portENTER_CRITICAL(&g_stateMux);
   if (now - g_systemState.lastNTFYAlert < NTFY_MIN_INTERVAL_MS) {
+    rateLimited = true;
+  }
+  portEXIT_CRITICAL(&g_stateMux);
+
+  if (rateLimited) {
     Serial.print(F("[NTFY] Rate limited - skipping alert: "));
     Serial.println(title);
     return;
   }
-
-  g_systemState.lastNTFYAlert = now;
 
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println(F("[NTFY] No WiFi connection - alert not sent:"));
@@ -513,12 +585,18 @@ void network_sendAlert(const char* title, const char* message) {
   int httpResponseCode = http.POST(message);
 
   if (httpResponseCode > 0) {
+    // Only advance the rate-limit timestamp on successful send (Git Issue 1)
+    portENTER_CRITICAL(&g_stateMux);
+    g_systemState.lastNTFYAlert = now;
+    portEXIT_CRITICAL(&g_stateMux);
+
     Serial.print(F("[NTFY] Alert sent: "));
     Serial.print(title);
     Serial.print(F(" (HTTP "));
     Serial.print(httpResponseCode);
     Serial.println(F(")"));
   } else {
+    // Do NOT update the timestamp on failure — allows immediate retry
     Serial.print(F("[NTFY] Alert FAILED: "));
     Serial.print(title);
     Serial.print(F(" (Error: "));
@@ -554,7 +632,9 @@ bool network_isAPMode() {
 String network_getIPAddress() {
   if (network_isWiFiConnected()) {
     return WiFi.localIP().toString();
-  } else if (g_apModeActive) {
+  }
+  // Use mutex-protected accessor for AP mode state
+  if (network_isAPMode()) {
     return WiFi.softAPIP().toString();
   }
   return "No Connection";
