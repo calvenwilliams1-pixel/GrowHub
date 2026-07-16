@@ -1,9 +1,16 @@
 /*
    relay_manager.h
    GrowHub32 - Relay Control & Safety Guardrails
-   Version: 1.2.3
-   Revision: Consolidated compressor cooldown as single source of truth.
-             Added cooldown persistence using RTC epoch seconds.
+   Version: 1.2.4
+   Revision: Documented single-thread assumption for g_relays[].
+             Documented cooldownStart as millis() reference, not epoch.
+             Documented getOnDuration() as pure getter (no relay-control side effects).
+             Added COMPRESSOR_COOLDOWN_MS and COMPRESSOR_MAX_ON_MS constants.
+
+   THREADING: All relayManager functions are designed to be called from the
+   main Arduino loop task only. They are not ISR-safe and not reentrant.
+   g_systemState writes are mutex-protected for cross-task read consistency
+   with ESP-NOW/WiFi callbacks, but g_relays[] access is single-threaded.
 */
 
 #ifndef RELAY_MANAGER_H
@@ -22,7 +29,7 @@ struct RelayState {
   uint8_t cycleCount;          // cycles in current minute window
   unsigned long cycleWindowStart; // start of current 60s cycle window
   bool cooldownLocked;         // compressor cooldown lock (GH-SAFE-002)
-  unsigned long cooldownStart; // millis() when cooldown began
+  unsigned long cooldownStart; // millis() reference point when cooldown began (NOTE: local millis, not epoch)
 };
 
 // Public API
@@ -41,7 +48,10 @@ bool relayManager_isRelayOn(uint8_t relayIndex);
 bool relayManager_canToggle(uint8_t relayIndex);
 
 // Get current continuous ON duration in milliseconds.
-// For the compressor, this also enforces the 5-minute max ON limit (GH-SAFE-002).
+// Updates internal accounting fields (totalOnDuration, lastOnTime) but
+// does NOT change relay state. The caller is responsible for enforcing
+// GH-SAFE-002 (max ON time) by checking the return value against
+// COMPRESSOR_MAX_ON_MS and calling setRelay(OFF) if exceeded.
 unsigned long relayManager_getOnDuration(uint8_t relayIndex);
 
 // Track a relay cycle for rate limiting
