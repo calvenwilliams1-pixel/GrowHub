@@ -1,9 +1,15 @@
 /*
    relay_manager.cpp
    GrowHub32 - Relay Control & Safety Guardrails Implementation
-   Version: 1.2.3
-   Revision: Cooldown restore now uses rtc_getEpochSeconds() for actual elapsed
-             time across reboots instead of always starting a fresh 10-minute cooldown.
+   Version: 1.2.4
+   Revision: Fixed cooldown restoration to back-date cooldownStart by elapsed downtime.
+             Added RTC sanity check with 24h cap to prevent absurdly large deltas.
+             Fixed double-millis() drift in getOnDuration().
+             Removed setRelay() call from getOnDuration() (pure getter now).
+             Mutex-protected g_systemState writes in setRelay() and forceAllOff().
+             Uses COMPRESSOR_COOLDOWN_MS and COMPRESSOR_MAX_ON_MS from config.h.
+             Uses RELAY_CYCLE_WINDOW_MS from config.h.
+             Fixed missing cooldownLocked=true in partial restoration path.
 
    RELAY LOGIC: Active LOW
    - digitalWrite(pin, LOW)  = Relay ON, circuit CLOSED
@@ -13,10 +19,15 @@
    - IN2 (GPIO12) requires external 10k pull-down to GND for safe boot.
    - All relay VCC to external 5V supply (NOT ESP32 3.3V or 5V pin).
    - JD-VCC jumper: use separate supply configuration for optocoupler isolation.
+
+   THREADING: All functions designed for main loop task only. Not ISR-safe.
 */
 
 #include "relay_manager.h"
 #include "rtc_handler.h"
+
+// External mutex for g_systemState cross-task protection
+extern portMUX_TYPE g_stateMux;
 
 RelayState g_relays[RELAY_COUNT];
 
@@ -94,8 +105,8 @@ bool relayManager_setRelay(uint8_t relayIndex, bool turnOn) {
   if (relayIndex == RELAY_COMPRESSOR && turnOn) {
     if (relay->cooldownLocked) {
       unsigned long elapsedSinceOff = now - relay->cooldownStart;
-      if (elapsedSinceOff < (COMPRESSOR_COOLDOWN_SEC * 1000UL)) {
-        unsigned long remaining = (COMPRESSOR_COOLDOWN_SEC * 1000UL) - elapsedSinceOff;
+      if (elapsedSinceOff < COMPRESSOR_COOLDOWN_MS) {
+        unsigned long remaining = COMPRESSOR_COOLDOWN_MS - elapsedSinceOff;
         Serial.print(F("[SAFETY] Compressor cooldown active - "));
         Serial.print(remaining / 1000);
         Serial.println(F("s remaining. Refusing to start."));
@@ -153,13 +164,18 @@ bool relayManager_setRelay(uint8_t relayIndex, bool turnOn) {
     Serial.println(F(" -> OFF"));
   }
 
-  // Update system state (keep in sync for UI/logging)
+  // Update system state under mutex for cross-task consistency
+  // NOTE: g_relays[] fields are updated BEFORE this critical section.
+  // g_systemState is synchronized here for cross-task readers (ESP-NOW, WiFi callbacks).
+  // Do NOT read g_relays[] from ISR/callback context — see header threading note.
+  portENTER_CRITICAL(&g_stateMux);
   switch (relayIndex) {
     case RELAY_HOH:         g_systemState.hoHActive = turnOn; break;
     case RELAY_AIR_ASSIST:  g_systemState.airAssistActive = turnOn; break;
     case RELAY_EXHAUST:     g_systemState.exhaustFanActive = turnOn; break;
     case RELAY_COMPRESSOR:  g_systemState.compressorActive = turnOn; break;
   }
+  portEXIT_CRITICAL(&g_stateMux);
 
   return true;
 }
@@ -175,8 +191,8 @@ bool relayManager_canToggle(uint8_t relayIndex) {
   RelayState* relay = &g_relays[relayIndex];
   unsigned long now = millis();
 
-  // Reset cycle window every 60 seconds
-  if (now - relay->cycleWindowStart >= 60000UL) {
+  // Reset cycle window every RELAY_CYCLE_WINDOW_MS
+  if (now - relay->cycleWindowStart >= RELAY_CYCLE_WINDOW_MS) {
     relay->cycleWindowStart = now;
     relay->cycleCount = 0;
   }
@@ -190,21 +206,19 @@ bool relayManager_canToggle(uint8_t relayIndex) {
 }
 
 unsigned long relayManager_getOnDuration(uint8_t relayIndex) {
+  // Pure getter — returns current continuous ON duration in milliseconds.
+  // Updates internal accounting fields (totalOnDuration, lastOnTime) but
+  // does NOT change relay state. Caller enforces GH-SAFE-002.
   if (relayIndex >= RELAY_COUNT) return 0;
 
   RelayState* relay = &g_relays[relayIndex];
 
   if (relay->isActive) {
-    // Currently ON - compute elapsed time
-    unsigned long elapsed = millis() - relay->lastOnTime;
+    // Capture now once to prevent drift between elapsed calculation and lastOnTime update
+    unsigned long now = millis();
+    unsigned long elapsed = now - relay->lastOnTime;
     relay->totalOnDuration += elapsed;
-    relay->lastOnTime = millis();
-
-    // GH-SAFE-002: Force OFF if max continuous ON time exceeded
-    if (relayIndex == RELAY_COMPRESSOR && relay->totalOnDuration >= (COMPRESSOR_MAX_ON_SEC * 1000UL)) {
-      Serial.println(F("[SAFETY] Compressor max ON time (5 min) reached - forcing OFF"));
-      relayManager_setRelay(RELAY_COMPRESSOR, false);
-    }
+    relay->lastOnTime = now;
   }
 
   return relay->totalOnDuration;
@@ -216,8 +230,8 @@ void relayManager_logCycle(uint8_t relayIndex) {
   RelayState* relay = &g_relays[relayIndex];
   unsigned long now = millis();
 
-  // Reset cycle window every 60 seconds
-  if (now - relay->cycleWindowStart >= 60000UL) {
+  // Reset cycle window every RELAY_CYCLE_WINDOW_MS
+  if (now - relay->cycleWindowStart >= RELAY_CYCLE_WINDOW_MS) {
     relay->cycleWindowStart = now;
     relay->cycleCount = 0;
   }
@@ -239,7 +253,7 @@ bool relayManager_isCompressorCooldownActive() {
   unsigned long now = millis();
   unsigned long elapsed = now - relay->cooldownStart;
 
-  if (elapsed >= (COMPRESSOR_COOLDOWN_SEC * 1000UL)) {
+  if (elapsed >= COMPRESSOR_COOLDOWN_MS) {
     // Cooldown expired
     relay->cooldownLocked = false;
     return false;
@@ -258,12 +272,12 @@ unsigned long relayManager_getCompressorCooldownRemaining() {
   unsigned long now = millis();
   unsigned long elapsed = now - relay->cooldownStart;
 
-  if (elapsed >= (COMPRESSOR_COOLDOWN_SEC * 1000UL)) {
+  if (elapsed >= COMPRESSOR_COOLDOWN_MS) {
     relay->cooldownLocked = false;
     return 0;
   }
 
-  return (COMPRESSOR_COOLDOWN_SEC * 1000UL) - elapsed;
+  return COMPRESSOR_COOLDOWN_MS - elapsed;
 }
 
 // ============================================
@@ -292,9 +306,15 @@ void relayManager_loadCooldownState(unsigned long lastOffTimestamp, bool wasInCo
   if (lastOffTimestamp > 0) {
     unsigned long currentTimestamp = rtc_getEpochSeconds();
 
-    if (currentTimestamp > 0 && currentTimestamp > lastOffTimestamp) {
+    // Sanity check: reject if RTC appears to have gone backwards (dead battery, reset).
+    // Also cap maximum believable downtime at 24h to prevent absurdly large deltas
+    // from corrupted SD cache or RTC epoch rollover.
+    if (currentTimestamp > lastOffTimestamp &&
+        (currentTimestamp - lastOffTimestamp) < 86400UL) {
       unsigned long elapsed = currentTimestamp - lastOffTimestamp;
-      if (elapsed >= COMPRESSOR_COOLDOWN_SEC) {
+
+      // Use MS constant for comparison to avoid integer promotion issues
+      if ((elapsed * 1000UL) >= COMPRESSOR_COOLDOWN_MS) {
         // Cooldown already expired during downtime
         relay->cooldownLocked = false;
         Serial.print(F("[RELAY] Cooldown expired during downtime ("));
@@ -302,21 +322,30 @@ void relayManager_loadCooldownState(unsigned long lastOffTimestamp, bool wasInCo
         Serial.println(F("s) - compressor available immediately"));
         return;
       }
-      Serial.print(F("[RELAY] Cooldown partially elapsed: "));
-      Serial.print(elapsed);
-      Serial.print(F("s of "));
-      Serial.print(COMPRESSOR_COOLDOWN_SEC);
-      Serial.println(F("s"));
+
+      // Partial cooldown elapsed — back-date cooldownStart so only remaining time is enforced.
+      // cooldownStart is a millis() reference point, not an epoch timestamp.
+      unsigned long elapsedMs = elapsed * 1000UL;
+      unsigned long remainingMs = COMPRESSOR_COOLDOWN_MS - elapsedMs;
+      relay->cooldownLocked = true;
+      relay->cooldownStart = now - elapsedMs;
+
+      Serial.print(F("[RELAY] Cooldown restored with "));
+      Serial.print(remainingMs / 1000);
+      Serial.println(F("s remaining"));
+      return;
+    } else {
+      Serial.println(F("[RELAY] RTC invalid or clock skew detected - applying full safety cooldown"));
     }
   }
 
-  // Cooldown still active — restore it
+  // Fallback: No valid RTC data or sanity check failed.
+  // Apply FULL cooldown as fail-safe (GH-SAFE-002: err on the side of compressor protection).
   relay->cooldownLocked = true;
   relay->cooldownStart = now;
-
-  Serial.print(F("[RELAY] Cooldown restored - up to "));
+  Serial.print(F("[RELAY] Full cooldown applied (fail-safe) - "));
   Serial.print(COMPRESSOR_COOLDOWN_SEC / 60);
-  Serial.println(F(" minutes remaining"));
+  Serial.println(F(" minutes"));
 }
 
 // ============================================
@@ -339,9 +368,11 @@ void relayManager_forceAllOff() {
     }
   }
 
-  // Update system state
+  // Update system state under mutex for cross-task consistency
+  portENTER_CRITICAL(&g_stateMux);
   g_systemState.hoHActive = false;
   g_systemState.airAssistActive = false;
   g_systemState.exhaustFanActive = false;
   g_systemState.compressorActive = false;
+  portEXIT_CRITICAL(&g_stateMux);
 }
