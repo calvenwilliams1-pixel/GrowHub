@@ -1,9 +1,8 @@
 /*
    config.h
    GrowHub32 - Global Configuration & Constants
-   Version: 1.2.3
-   Revision: Added MANUAL_OVERRIDE_TIMEOUT_SEC. Static IP configuration.
-             Reduced WiFi reconnect interval. Added relational threshold notes.
+   Version: 1.2.5
+   Revision: Added OTA update constants.
 */
 
 #ifndef CONFIG_H
@@ -42,6 +41,10 @@
 #define SENSOR_POLL_INTERVAL_MS 2000     // GH-TEMP-001: 2 seconds
 #define SENSOR_FAULT_TIMEOUT_MS 30000    // GH-TEMP-004: 30 seconds
 #define SENSOR_LKG_TIMEOUT_MS   600000   // 10 minutes max on last-known-good
+// SCD40 altitude compensation (meters above sea level).
+// CO2 readings from NDIR sensors are pressure-dependent.
+// Set to actual facility elevation for accurate CO2 measurement.
+#define SCD40_DEFAULT_ALTITUDE_M   0
 
 // ============================================
 // RTC CONFIGURATION
@@ -80,7 +83,17 @@
 #define RELAY_MAX_CYCLES_PER_MIN    10      // GH-SAFE-001
 #define COMPRESSOR_MAX_ON_SEC       300     // GH-SAFE-002: 5 minutes
 #define COMPRESSOR_COOLDOWN_SEC     600     // GH-SAFE-002: 10 minutes
+
+// Compressor safety timing (precomputed milliseconds to avoid repeated multiplication
+// and eliminate integer promotion risks in comparisons)
+#define COMPRESSOR_MAX_ON_MS       ((unsigned long)COMPRESSOR_MAX_ON_SEC * 1000UL)
+#define COMPRESSOR_COOLDOWN_MS     ((unsigned long)COMPRESSOR_COOLDOWN_SEC * 1000UL)
+
+// Relay cycle limiting window
+#define RELAY_CYCLE_WINDOW_MS      60000   // 60-second rolling window for cycle counting
+
 #define FAN_STALL_CHECK_SEC         120     // GH-SAFE-003: 2 minutes no CO2 drop
+#define FAN_STALL_THRESHOLD_PPM     25      // Min CO2 decrease to confirm fan is working (accounts for SCD40 +/-50ppm accuracy)
 #define HOH_DRY_RUN_CHECK_SEC       600     // GH-SAFE-004: 10 minutes no RH rise
 #define DRY_RUN_THRESHOLD_PCT       1.5f    // Min RH increase to confirm humidifier is working (accounts for sensor noise)
 #define WDT_TIMEOUT_SEC             60      // GH-SAFE-006: Task Watchdog
@@ -124,6 +137,18 @@
 #define GATEWAY_OCTET_4     1
 
 // ============================================
+// OTA (Over-The-Air) Updates
+// ============================================
+
+// Allows wireless firmware uploads via Arduino IDE or espota.py.
+// Leave OTA_PASSWORD empty for trusted private networks only.
+// Set a password whenever multiple users share LAN access.
+// Available in both station and AP mode for recovery flexibility.
+#define OTA_HOSTNAME                "growhub32"
+#define OTA_PASSWORD                ""
+#define OTA_PORT                    3232
+
+// ============================================
 // DATA LOGGING (GH-LOG)
 // ============================================
 
@@ -141,6 +166,12 @@
 #define CONFIDENCE_MAX              0.90f   // GH-AL-006
 #define CALIBRATION_DURATION_SEC    900     // GH-AL-004: 15 minutes
 #define PROFILE_JSON_MAX_SIZE       1024    // Max bytes for band profile JSON files
+
+// Calibration thresholds
+#define CALIBRATION_FALL_GATE_MS    60000UL // Minimum elapsed time before fall detection can trigger (60 seconds)
+#define CALIBRATION_RISE_DELTA_PCT  1.0f    // RH must rise this far above start to confirm rising phase
+#define CALIBRATION_FALL_DELTA_PCT  2.5f    // RH must drop this far below peak to confirm falling phase
+#define CALIBRATION_MIN_RH_DELTA    0.5f    // Minimum RH swing required for valid calibration results
 
 // Temperature band boundary files
 #define BAND_18_21_FILE             "/profiles/band_18_21.json"
