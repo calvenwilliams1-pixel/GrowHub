@@ -1,8 +1,8 @@
 /*
    GrowHub32_MainNode.ino
    Main Automation Node - ESP32 30-Pin Dev Board
-   Version: 1.2.3
-   Author: Calvin
+   Version: 1.2.5
+   Author: Calven
 
    Hardware:
    - ESP32 30-Pin Dev Board (CP2102 Type-C)
@@ -12,6 +12,10 @@
    - TF MicroSD SPI Module
 
    Revision History:
+   - 1.2.5: Added OTA (Over-The-Air) wireless firmware updates.
+            Relay safety shutdown + calibration abort in onStart callback.
+   - 1.2.4: Explicit compressor max-ON enforcement (getOnDuration is now pure getter).
+            Uses COMPRESSOR_MAX_ON_MS constant from config.h.
    - 1.2.3: Deferred watchdog alert to after network init (fixes silent failure).
             Added compressor max-ON enforcement call in main loop.
             Scoped manual overrides per subsystem (humidity/CO2).
@@ -22,6 +26,7 @@
 
 #include <Arduino.h>
 #include <ESPmDNS.h>
+#include <ArduinoOTA.h>
 #include "config.h"
 #include "sensors.h"
 #include "rtc_handler.h"
@@ -93,7 +98,7 @@ void setup() {
 
   Serial.println(F(""));
   Serial.println(F("============================================"));
-  Serial.println(F("       GrowHub32 Main Node v1.2.3"));
+  Serial.println(F("       GrowHub32 Main Node v1.2.5"));
   Serial.println(F("  Environmental Automation Controller"));
   Serial.println(F("============================================"));
   Serial.println(F(""));
@@ -153,6 +158,50 @@ void setup() {
                      "Task watchdog initialization returned non-OK. System may not auto-reboot on hang.");
   }
 
+  // Step 7b: OTA Update Service
+  // Available in both station and AP mode for recovery flexibility.
+  // Relays are force-killed and active calibration is aborted before flash write.
+  ArduinoOTA.setHostname(OTA_HOSTNAME);
+  if (strlen(OTA_PASSWORD) > 0) {
+    ArduinoOTA.setPassword(OTA_PASSWORD);
+  }
+  ArduinoOTA.setPort(OTA_PORT);
+
+  ArduinoOTA.onStart([]() {
+    Serial.println(F("[OTA] Update starting - forcing safe state..."));
+
+    // Abort active calibration to prevent orphaned profile state across reboot
+    if (adaptive_isCalibrating()) {
+      Serial.println(F("[OTA] WARNING: Aborting active calibration before update"));
+      adaptive_cancelCalibration();
+    }
+
+    // De-energize all relays before flash write blocks the main loop.
+    // Prevents uncontrolled actuator runtime during OTA transfer.
+    relayManager_forceAllOff();
+  });
+
+  ArduinoOTA.onEnd([]() {
+    Serial.println(F("[OTA] Update complete - rebooting"));
+  });
+
+  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+    Serial.printf("[OTA] Progress: %u%%\r", (progress * 100) / total);
+  });
+
+  ArduinoOTA.onError([](ota_error_t error) {
+    Serial.printf("[OTA] Error[%u]: ", error);
+    if (error == OTA_AUTH_ERROR)      Serial.println(F("Auth Failed"));
+    else if (error == OTA_BEGIN_ERROR) Serial.println(F("Begin Failed"));
+    else if (error == OTA_CONNECT_ERROR) Serial.println(F("Connect Failed"));
+    else if (error == OTA_RECEIVE_ERROR) Serial.println(F("Receive Failed"));
+    else if (error == OTA_END_ERROR)   Serial.println(F("End Failed"));
+  });
+
+  ArduinoOTA.begin();
+  Serial.print(F("[OTA] Service started - upload via IDE or espota.py on port "));
+  Serial.println(OTA_PORT);
+
   // Step 8: Web User Interface
   Serial.println(F("[BOOT] Step 8: Web UI init..."));
   webUI_init();
@@ -173,11 +222,13 @@ void setup() {
   Serial.println(network_getIPAddress());
   Serial.print(F("       RTC: "));
   Serial.println(rtc_getTimeString());
+  Serial.print(F("       OTA: port "));
+  Serial.println(OTA_PORT);
   Serial.println(F("============================================"));
   Serial.println(F(""));
 
-  network_sendAlert("GrowHub32 Online", "Main Node v1.2.3 booted successfully.");
-  sdLogger_logSystemEvent("System boot complete - v1.2.3");
+  network_sendAlert("GrowHub32 Online", "Main Node v1.2.5 booted successfully.");
+  sdLogger_logSystemEvent("System boot complete - v1.2.5");
 
   g_lastSensorPoll = millis();
   g_lastLogWrite = millis();
@@ -192,6 +243,10 @@ void loop() {
 
   // Feed watchdog every loop iteration
   safety_feedWatchdog();
+
+  // Handle OTA updates (non-blocking when idle)
+  ArduinoOTA.handle();
+
   g_loopCount++;
 
   // Sensor polling every 2 seconds
@@ -214,7 +269,14 @@ void loop() {
   safety_checkFanStall(now);
 
   // Enforce compressor max ON time (GH-SAFE-002: 5-minute cutoff)
-  relayManager_getOnDuration(RELAY_COMPRESSOR);
+  // getOnDuration() is a pure getter — we handle enforcement here explicitly
+  {
+    unsigned long compressorOnDuration = relayManager_getOnDuration(RELAY_COMPRESSOR);
+    if (compressorOnDuration >= COMPRESSOR_MAX_ON_MS) {
+      Serial.println(F("[SAFETY] Compressor max ON time (5 min) reached - forcing OFF"));
+      relayManager_setRelay(RELAY_COMPRESSOR, false);
+    }
+  }
 
   // Adaptive learning update
   adaptive_updateCalibration();
