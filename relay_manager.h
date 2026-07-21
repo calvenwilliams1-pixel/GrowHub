@@ -6,6 +6,7 @@
              Documented cooldownStart as millis() reference, not epoch.
              Documented getOnDuration() as pure getter (no relay-control side effects).
              Added COMPRESSOR_COOLDOWN_MS and COMPRESSOR_MAX_ON_MS constants.
+             Added cooldownOffEpoch field for persistent OFF timestamp (epoch seconds).
 
    THREADING: All relayManager functions are designed to be called from the
    main Arduino loop task only. They are not ISR-safe and not reentrant.
@@ -30,6 +31,12 @@ struct RelayState {
   unsigned long cycleWindowStart; // start of current 60s cycle window
   bool cooldownLocked;         // compressor cooldown lock (GH-SAFE-002)
   unsigned long cooldownStart; // millis() reference point when cooldown began (NOTE: local millis, not epoch)
+
+  // RTC epoch seconds captured at the exact moment the compressor was turned OFF.
+  // Used by sd_logger for accurate cross-reboot cooldown persistence.
+  // 0 means RTC was unavailable at the moment of OFF — sd_logger will preserve
+  // the existing cached timestamp rather than overwriting with zero.
+  unsigned long cooldownOffEpoch;
 };
 
 // Public API
@@ -39,7 +46,7 @@ bool relayManager_init();
 
 // Set a relay ON or OFF. Returns true if state change was allowed and executed.
 // Returns false if blocked by safety guardrails.
-bool relayManager_setRelay(uint8_t relayIndex, bool turnOn);
+bool relayManager_setRelay(uint8_t relayIndex, bool turnOn, bool force = false);
 
 // Query relay current state
 bool relayManager_isRelayOn(uint8_t relayIndex);

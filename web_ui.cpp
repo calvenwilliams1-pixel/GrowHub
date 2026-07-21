@@ -1,11 +1,39 @@
 /*
    web_ui.cpp
    GrowHub32 - Local Web Application Interface Implementation
-   Version: 1.2.3
-   Revision: Added scoped manual override activation (only on successful relay
-             commands, only for the relevant subsystem). Exposed override state
-             via WebSocket for UI display. Added resume automation command.
-             Fixed fridge reads to use concurrency-safe accessors.
+   Version: 1.2.6
+   Revision: Updated rtc_getTimeString() call to new caller-provided buffer API.
+             Replaced all String allocations in WebSocket hot path with stack-allocated
+             char arrays and serializeJson(doc, buffer, sizeof(buffer)) to eliminate
+             heap fragmentation during long-term uptime.
+             Replaced String cmd comparisons with strcmp for zero-allocation parsing.
+             Added JSON serialization overflow checks on all WebSocket push functions.
+             Added "Already at or above target" message for simulation.
+             Clamped EMA weight input to EMA_WEIGHT_MIN/MAX range.
+             Added Cache-Control: no-store header to prevent browser caching stale UI.
+             Added WebSocket reconnect exponential backoff in JavaScript (3s→30s max).
+             Added target NaN guard in runSimulation() JavaScript.
+             Fixed sendConfigUpdate() clientNum==0 broadcast bug.
+             Increased JSON document sizes for sensor data (768) and commands (512).
+             Changed g_server.send() to send_P() for PROGMEM HTML (avoids RAM copy).
+             Removed duplicate g_server.handleClient()/g_webSocket.loop() from pushUpdates().
+             Fixed calibration countdown edge case (check active state after updateCalibration).
+             Fixed manual relay override: activate override BEFORE setRelay so automation
+             doesn't immediately countermand ON commands.
+             Added relay index bounds check in WebSocket handler.
+             Send config and calibration state on WebSocket connect.
+             Fixed simulation NaN input guard in JavaScript.
+             Fixed calibration inactive status never sent to UI.
+             Mutex-protected g_systemState reads in WebSocket push functions.
+             Fixed switchTab() to accept element parameter (no implicit event global).
+             Moved simulation type 99 handler into handleMessage() central router.
+             Removed redundant extern declarations (headers already included).
+             Use network_isWiFiConnected()/network_isAPMode() for safe cross-task reads.
+             Use relayManager_isCompressorCooldownActive() instead of direct g_relays access.
+             Added sendWS() helper with WebSocket readyState guard in JavaScript.
+             Added force parameter to manual relay commands — bypasses safety checks
+             (cooldown, cycle limits) for manual UI control while keeping them for automation.
+             Fixed state bool parsing from JSON (use .as<int>() instead of | false).
 
    This serves a single-page application directly from program memory
    to avoid SPIFFS/LittleFS dependency. The HTML, CSS, and JavaScript
@@ -30,23 +58,16 @@ static WebServer g_server(WEB_SERVER_PORT);
 static WebSocketsServer g_webSocket(WEBSOCKET_PORT);
 static unsigned long g_lastWSUpdate = 0;
 
-// External declarations
-extern AutomationThresholds* automation_getThresholds();
-extern void automation_updateThresholds(const AutomationThresholds*);
-extern bool adaptive_startCalibration();
-extern bool adaptive_isCalibrating();
-extern void adaptive_updateCalibration();
-extern float adaptive_projectRecoveryTime(float);
-extern void adaptive_setEMAWeight(float);
-extern float adaptive_getEMAWeight();
-extern unsigned long adaptive_getCalibrationStartTime();
-extern bool sdLogger_writeData();
+// External declarations (only those NOT already declared in included headers)
+extern portMUX_TYPE g_stateMux;
 
 // Forward declarations
 static void handleRoot();
 static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t length);
 static void sendSensorUpdate();
 static void sendSystemStatus();
+static void sendConfigUpdate(uint8_t clientNum);
+static void sendCalibrationUpdate();
 
 // ============================================================
 // EMBEDDED HTML/CSS/JS (Single Page Application)
@@ -122,12 +143,12 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
 <div class="warning-banner" id="warningBanner">Warning: Sensor Fault - System Running Last Known Values</div>
 
 <div class="tabs">
-  <button class="tab active" onclick="switchTab('dashboard')">Dashboard</button>
-  <button class="tab" onclick="switchTab('controls')">Controls</button>
-  <button class="tab" onclick="switchTab('config')">Config</button>
-  <button class="tab" onclick="switchTab('calibration')">Calibrate</button>
-  <button class="tab" onclick="switchTab('simulation')">Simulate</button>
-  <button class="tab" onclick="switchTab('logs')">Logs</button>
+  <button class="tab active" onclick="switchTab(this, 'dashboard')">Dashboard</button>
+  <button class="tab" onclick="switchTab(this, 'controls')">Controls</button>
+  <button class="tab" onclick="switchTab(this, 'config')">Config</button>
+  <button class="tab" onclick="switchTab(this, 'calibration')">Calibrate</button>
+  <button class="tab" onclick="switchTab(this, 'simulation')">Simulate</button>
+  <button class="tab" onclick="switchTab(this, 'logs')">Logs</button>
 </div>
 
 <div id="dashboard" class="tab-content active">
@@ -170,7 +191,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
 
 <div id="controls" class="tab-content">
   <h3>Manual Relay Override</h3>
-  <p style="font-size:0.75em;color:#8b949e;">Calibration mode must be OFF to use manual controls.</p>
+  <p style="font-size:0.75em;color:#8b949e;">Calibration mode must be OFF to use manual controls. Manual commands bypass safety limits.</p>
   <div class="override-panel" id="overridePanel">
     Automation PAUSED - <span id="overrideTime">0:00</span> remaining
     <br><button class="btn btn-off" style="margin-top:6px;" onclick="resumeAutomation()">Resume Automation Now</button>
@@ -242,11 +263,19 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
 <script>
 var ws;
 var logLines = [];
+var reconnectDelay = 3000;
+
+function sendWS(data){
+  if(ws && ws.readyState === WebSocket.OPEN){
+    ws.send(JSON.stringify(data));
+  }
+}
 
 function connectWS(){
   ws = new WebSocket('ws://' + location.hostname + ':81/');
   ws.onopen = function(){
     document.getElementById('connectionStatus').textContent = 'Connected | ' + location.hostname;
+    reconnectDelay = 3000;
   };
   ws.onmessage = function(e){
     try{
@@ -258,7 +287,8 @@ function connectWS(){
   };
   ws.onclose = function(){
     document.getElementById('connectionStatus').textContent = 'Disconnected - retrying...';
-    setTimeout(connectWS, 3000);
+    setTimeout(connectWS, reconnectDelay);
+    reconnectDelay = Math.min(reconnectDelay * 2, 30000);
   };
   ws.onerror = function(){
     ws.close();
@@ -270,8 +300,14 @@ function handleMessage(msg){
     case 0: updateSensors(msg); break;
     case 1: updateRelays(msg); updateOverrideStatus(msg); break;
     case 2: addLog(msg.message, msg.level || 'warn'); break;
+    case 3: updateConfig(msg); break;
     case 4: updateCalibration(msg); break;
     case 5: addLog(msg.message, msg.level || 'info'); break;
+    case 99:
+      if(msg.simResult){
+        document.getElementById('simResult').textContent = msg.simResult;
+      }
+      break;
   }
 }
 
@@ -320,6 +356,18 @@ function updateRelays(msg){
   comp.className = 'state ' + (msg.compressor ? 'on' : 'off');
 
   document.getElementById('compLock').textContent = msg.compressorLocked ? '(COOLDOWN)' : '';
+}
+
+function updateConfig(msg){
+  document.getElementById('humHoHFloor').value = msg.humHoHFloor;
+  document.getElementById('humAssistFloor').value = msg.humAssistFloor;
+  document.getElementById('humCeiling').value = msg.humCeiling;
+  document.getElementById('assistOn').value = msg.assistOnSec;
+  document.getElementById('assistOff').value = msg.assistOffSec;
+  document.getElementById('co2High').value = msg.co2HighLimit;
+  document.getElementById('co2Low').value = msg.co2LowTarget;
+  document.getElementById('co2Emergency').value = msg.co2Emergency;
+  document.getElementById('emaWeight').value = msg.emaWeight;
 }
 
 function updateOverrideStatus(msg){
@@ -373,15 +421,15 @@ function addLog(message, level){
   }).join('');
 }
 
-function switchTab(tabId){
+function switchTab(element, tabId){
   document.querySelectorAll('.tab').forEach(function(t){ t.classList.remove('active'); });
   document.querySelectorAll('.tab-content').forEach(function(c){ c.classList.remove('active'); });
-  event.target.classList.add('active');
+  element.classList.add('active');
   document.getElementById(tabId).classList.add('active');
 }
 
 function relayCmd(index, state){
-  ws.send(JSON.stringify({type: 6, cmd: 'relay', index: index, state: state}));
+  sendWS({type: 6, cmd: 'relay', index: index, state: state, force: true});
 }
 
 function saveThresholds(){
@@ -395,41 +443,42 @@ function saveThresholds(){
     co2LowTarget: parseInt(document.getElementById('co2Low').value),
     co2Emergency: parseInt(document.getElementById('co2Emergency').value)
   };
-  ws.send(JSON.stringify({type: 6, cmd: 'thresholds', data: thresholds}));
+  sendWS({type: 6, cmd: 'thresholds', data: thresholds});
 
   var emaWeight = parseFloat(document.getElementById('emaWeight').value);
-  ws.send(JSON.stringify({type: 6, cmd: 'ema', weight: emaWeight}));
+  sendWS({type: 6, cmd: 'ema', weight: emaWeight});
 
   addLog('Settings saved!', 'info');
 }
 
 function startCalibration(){
-  ws.send(JSON.stringify({type: 6, cmd: 'calibrate_start'}));
+  sendWS({type: 6, cmd: 'calibrate_start'});
 }
 
 function cancelCalibration(){
-  ws.send(JSON.stringify({type: 6, cmd: 'calibrate_cancel'}));
+  sendWS({type: 6, cmd: 'calibrate_cancel'});
 }
 
 function runSimulation(){
   var target = parseFloat(document.getElementById('simTargetRH').value);
   var current = parseFloat(document.getElementById('simCurrentRH').textContent);
-  ws.send(JSON.stringify({type: 6, cmd: 'simulate', current: current, target: target}));
+
+  if(isNaN(current)){
+    addLog('Waiting for humidity data...', 'warn');
+    return;
+  }
+  if(isNaN(target)){
+    addLog('Invalid target RH', 'warn');
+    return;
+  }
+
+  sendWS({type: 6, cmd: 'simulate', current: current, target: target});
 }
 
 function resumeAutomation(){
-  ws.send(JSON.stringify({type: 6, cmd: 'resume_automation'}));
+  sendWS({type: 6, cmd: 'resume_automation'});
   addLog('Automation resumed', 'info');
 }
-
-ws && ws.addEventListener('message', function(e){
-  try{
-    var msg = JSON.parse(e.data);
-    if(msg.type === 99 && msg.simResult){
-      document.getElementById('simResult').textContent = msg.simResult;
-    }
-  }catch(e){}
-});
 
 connectWS();
 </script>
@@ -442,7 +491,10 @@ connectWS();
 // ============================================================
 
 static void handleRoot() {
-  g_server.send(200, "text/html", INDEX_HTML);
+  // Prevent browser caching of the UI so firmware updates with new layouts
+  // or WebSocket commands are immediately visible without manual cache clearing.
+  g_server.sendHeader("Cache-Control", "no-store");
+  g_server.send_P(200, "text/html", INDEX_HTML);
 }
 
 static void handleNotFound() {
@@ -465,10 +517,12 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
       Serial.println(num);
       sendSensorUpdate();
       sendSystemStatus();
+      sendConfigUpdate(num);
+      sendCalibrationUpdate();
       break;
 
     case WStype_TEXT: {
-      StaticJsonDocument<256> doc;
+      StaticJsonDocument<512> doc;
       DeserializationError error = deserializeJson(doc, payload, length);
 
       if (error) {
@@ -478,28 +532,42 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
       }
 
       uint8_t msgType = doc["type"] | 0;
-      String cmd = doc["cmd"] | "";
+      const char* cmd = doc["cmd"] | "";
 
-      if (msgType == WS_COMMAND && cmd == "relay") {
+      if (msgType == WS_COMMAND && strcmp(cmd, "relay") == 0) {
         uint8_t index = doc["index"] | 0;
-        bool state = doc["state"] | false;
-        if (!g_systemState.calibrationActive) {
-          if (relayManager_setRelay(index, state)) {
-            // Activate override only for the relevant subsystem and only on success.
-            // Compressor has no competing automation loop, so no override needed.
-            if (index == RELAY_HOH || index == RELAY_AIR_ASSIST) {
-              automation_activateHumidityOverride();
-            } else if (index == RELAY_EXHAUST) {
-              automation_activateCO2Override();
-            }
+        bool state = (doc["state"].as<int>() != 0);
+        bool force = (doc["force"].as<int>() != 0);
+
+        if (index >= RELAY_COUNT) {
+          Serial.print(F("[WS] Invalid relay index: "));
+          Serial.println(index);
+          return;
+        }
+
+        bool calibrationActive;
+        portENTER_CRITICAL(&g_stateMux);
+        calibrationActive = g_systemState.calibrationActive;
+        portEXIT_CRITICAL(&g_stateMux);
+
+        if (!calibrationActive) {
+          if (index == RELAY_HOH || index == RELAY_AIR_ASSIST) {
+            automation_activateHumidityOverride();
+          } else if (index == RELAY_EXHAUST) {
+            automation_activateCO2Override();
+          }
+
+          if (relayManager_setRelay(index, state, force)) {
             Serial.print(F("[WS] Relay "));
             Serial.print(index);
             Serial.print(F(" -> "));
-            Serial.println(state ? "ON" : "OFF");
+            Serial.print(state ? "ON" : "OFF");
+            if (force) Serial.print(F(" (forced)"));
+            Serial.println();
           }
         }
       }
-      else if (msgType == WS_COMMAND && cmd == "thresholds") {
+      else if (msgType == WS_COMMAND && strcmp(cmd, "thresholds") == 0) {
         AutomationThresholds* thresholds = automation_getThresholds();
         AutomationThresholds newThresholds = *thresholds;
 
@@ -514,35 +582,45 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
 
         automation_updateThresholds(&newThresholds);
       }
-      else if (msgType == WS_COMMAND && cmd == "ema") {
+      else if (msgType == WS_COMMAND && strcmp(cmd, "ema") == 0) {
         float weight = doc["weight"] | DEFAULT_EMA_WEIGHT;
+        // Clamp to valid range to prevent corrupted EMA math
+        if (weight < EMA_WEIGHT_MIN) weight = EMA_WEIGHT_MIN;
+        if (weight > EMA_WEIGHT_MAX) weight = EMA_WEIGHT_MAX;
         adaptive_setEMAWeight(weight);
       }
-      else if (msgType == WS_COMMAND && cmd == "calibrate_start") {
+      else if (msgType == WS_COMMAND && strcmp(cmd, "calibrate_start") == 0) {
         adaptive_startCalibration();
       }
-      else if (msgType == WS_COMMAND && cmd == "calibrate_cancel") {
+      else if (msgType == WS_COMMAND && strcmp(cmd, "calibrate_cancel") == 0) {
         adaptive_cancelCalibration();
       }
-      else if (msgType == WS_COMMAND && cmd == "resume_automation") {
+      else if (msgType == WS_COMMAND && strcmp(cmd, "resume_automation") == 0) {
         automation_deactivateAllOverrides();
       }
-      else if (msgType == WS_COMMAND && cmd == "simulate") {
+      else if (msgType == WS_COMMAND && strcmp(cmd, "simulate") == 0) {
         float current = doc["current"] | 0.0f;
         float target = doc["target"] | 95.0f;
         float delta = target - current;
+
+        StaticJsonDocument<128> responseDoc;
+        responseDoc["type"] = 99;
+
         if (delta > 0) {
           float recoveryTime = adaptive_projectRecoveryTime(delta);
-          String simResult = String(recoveryTime, 0) + " seconds (" +
-                            String(recoveryTime / 60.0f, 1) + " minutes)";
-
-          StaticJsonDocument<128> responseDoc;
-          responseDoc["type"] = 99;
+          char simResult[64];
+          snprintf(simResult, sizeof(simResult), "%.0f seconds (%.1f minutes)", recoveryTime, recoveryTime / 60.0f);
           responseDoc["simResult"] = simResult;
-          String response;
-          serializeJson(responseDoc, response);
-          g_webSocket.sendTXT(num, response);
+        } else {
+          responseDoc["simResult"] = "Already at or above target";
         }
+
+        char response[128];
+        size_t len = serializeJson(responseDoc, response, sizeof(response));
+        if (len >= sizeof(response)) {
+          Serial.println(F("[WS] WARNING: Simulation response JSON truncated"));
+        }
+        g_webSocket.sendTXT(num, (const uint8_t*)response, strlen(response));
       }
       break;
     }
@@ -557,46 +635,140 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
 // ============================================================
 
 static void sendSensorUpdate() {
-  StaticJsonDocument<512> doc;
-  doc["type"] = WS_SENSOR_UPDATE;
-  doc["temp"] = g_systemState.currentTemp;
-  doc["hum"] = g_systemState.currentHumidity;
-  doc["co2"] = g_systemState.currentCO2;
-  doc["fridge"] = network_getFridgeTemp();
-  doc["tempFault"] = g_systemState.tempSensorFault;
-  doc["humFault"] = g_systemState.humiditySensorFault;
-  doc["co2Fault"] = g_systemState.co2SensorFault;
-  doc["nightMode"] = g_systemState.nightModeActive;
-  doc["wifiConnected"] = g_systemState.wifiConnected;
-  doc["apMode"] = g_systemState.apModeActive;
-  doc["rtcTime"] = rtc_getTimeString();
-  doc["fridgeLost"] = network_isFridgeHeartbeatLost();
-  doc["activeBand"] = adaptive_getCurrentBand();
+  float temp, hum, fridgeTemp;
+  uint16_t co2;
+  bool tempFault, humFault, co2Fault, nightMode;
+  uint8_t activeBand;
+  float confidence;
+
+  portENTER_CRITICAL(&g_stateMux);
+  temp = g_systemState.currentTemp;
+  hum = g_systemState.currentHumidity;
+  co2 = g_systemState.currentCO2;
+  tempFault = g_systemState.tempSensorFault;
+  humFault = g_systemState.humiditySensorFault;
+  co2Fault = g_systemState.co2SensorFault;
+  nightMode = g_systemState.nightModeActive;
+  portEXIT_CRITICAL(&g_stateMux);
+
+  fridgeTemp = network_getFridgeTemp();
+  bool fridgeLost = network_isFridgeHeartbeatLost();
+  bool wifiConnected = network_isWiFiConnected();
+  bool apMode = network_isAPMode();
+  activeBand = adaptive_getCurrentBand();
 
   BandProfile* profile = adaptive_getActiveProfile();
-  doc["confidence"] = profile ? profile->confidenceScore : 0.0f;
+  confidence = profile ? profile->confidenceScore : 0.0f;
 
-  String output;
-  serializeJson(doc, output);
-  g_webSocket.broadcastTXT(output);
+  char timeStr[24];
+  rtc_getTimeString(timeStr, sizeof(timeStr));
+
+  StaticJsonDocument<768> doc;
+  doc["type"] = WS_SENSOR_UPDATE;
+  doc["temp"] = temp;
+  doc["hum"] = hum;
+  doc["co2"] = co2;
+  doc["fridge"] = fridgeTemp;
+  doc["tempFault"] = tempFault;
+  doc["humFault"] = humFault;
+  doc["co2Fault"] = co2Fault;
+  doc["nightMode"] = nightMode;
+  doc["wifiConnected"] = wifiConnected;
+  doc["apMode"] = apMode;
+  doc["rtcTime"] = timeStr;
+  doc["fridgeLost"] = fridgeLost;
+  doc["activeBand"] = activeBand;
+  doc["confidence"] = confidence;
+
+  char output[768];
+  size_t len = serializeJson(doc, output, sizeof(output));
+  if (len >= sizeof(output)) {
+    Serial.println(F("[WS] WARNING: Sensor update JSON truncated — increase buffer size"));
+  }
+  g_webSocket.broadcastTXT((const uint8_t*)output, strlen(output));
 }
 
 static void sendSystemStatus() {
+  bool hoh, assist, fan, compressor;
+
+  portENTER_CRITICAL(&g_stateMux);
+  hoh = g_systemState.hoHActive;
+  assist = g_systemState.airAssistActive;
+  fan = g_systemState.exhaustFanActive;
+  compressor = g_systemState.compressorActive;
+  portEXIT_CRITICAL(&g_stateMux);
+
   StaticJsonDocument<256> doc;
   doc["type"] = WS_RELAY_STATE;
-  doc["hoh"] = g_systemState.hoHActive;
-  doc["assist"] = g_systemState.airAssistActive;
-  doc["fan"] = g_systemState.exhaustFanActive;
-  doc["compressor"] = g_systemState.compressorActive;
-  doc["compressorLocked"] = g_relays[RELAY_COMPRESSOR].cooldownLocked;
+  doc["hoh"] = hoh;
+  doc["assist"] = assist;
+  doc["fan"] = fan;
+  doc["compressor"] = compressor;
+  doc["compressorLocked"] = relayManager_isCompressorCooldownActive();
   doc["humOverride"] = automation_isHumidityOverrideActive();
   doc["humOverrideRemaining"] = automation_getHumidityOverrideRemaining() / 1000;
   doc["co2Override"] = automation_isCO2OverrideActive();
   doc["co2OverrideRemaining"] = automation_getCO2OverrideRemaining() / 1000;
 
-  String output;
-  serializeJson(doc, output);
-  g_webSocket.broadcastTXT(output);
+  char output[256];
+  size_t len = serializeJson(doc, output, sizeof(output));
+  if (len >= sizeof(output)) {
+    Serial.println(F("[WS] WARNING: System status JSON truncated — increase buffer size"));
+  }
+  g_webSocket.broadcastTXT((const uint8_t*)output, strlen(output));
+}
+
+static void sendConfigUpdate(uint8_t clientNum) {
+  AutomationThresholds* t = automation_getThresholds();
+
+  StaticJsonDocument<256> doc;
+  doc["type"] = WS_THRESHOLD_UPDATE;
+  doc["humHoHFloor"] = t->humHoHFloor;
+  doc["humAssistFloor"] = t->humAssistFloor;
+  doc["humCeiling"] = t->humCeiling;
+  doc["assistOnSec"] = t->assistOnSec;
+  doc["assistOffSec"] = t->assistOffSec;
+  doc["co2HighLimit"] = t->co2HighLimit;
+  doc["co2LowTarget"] = t->co2LowTarget;
+  doc["co2Emergency"] = t->co2Emergency;
+  doc["emaWeight"] = adaptive_getEMAWeight();
+
+  char output[256];
+  size_t len = serializeJson(doc, output, sizeof(output));
+  if (len >= sizeof(output)) {
+    Serial.println(F("[WS] WARNING: Config update JSON truncated — increase buffer size"));
+  }
+  g_webSocket.sendTXT(clientNum, (const uint8_t*)output, strlen(output));
+}
+
+static void sendCalibrationUpdate() {
+  bool active = adaptive_isCalibrating();
+
+  StaticJsonDocument<128> calibDoc;
+  calibDoc["type"] = WS_CALIBRATION_STATUS;
+  calibDoc["active"] = active;
+
+  if (active) {
+    unsigned long elapsed = millis() - adaptive_getCalibrationStartTime();
+    unsigned long remaining;
+    if (elapsed >= (CALIBRATION_DURATION_SEC * 1000UL)) {
+      remaining = 0;
+    } else {
+      remaining = (CALIBRATION_DURATION_SEC * 1000UL) - elapsed;
+    }
+    calibDoc["remaining"] = remaining / 1000;
+    calibDoc["band"] = adaptive_getCurrentBand();
+  } else {
+    calibDoc["remaining"] = 0;
+    calibDoc["band"] = 0;
+  }
+
+  char output[128];
+  size_t len = serializeJson(calibDoc, output, sizeof(output));
+  if (len >= sizeof(output)) {
+    Serial.println(F("[WS] WARNING: Calibration update JSON truncated — increase buffer size"));
+  }
+  g_webSocket.broadcastTXT((const uint8_t*)output, strlen(output));
 }
 
 // ============================================================
@@ -635,37 +807,51 @@ void webUI_pushUpdates() {
     sendSensorUpdate();
     sendSystemStatus();
 
-    if (adaptive_isCalibrating()) {
+    static bool wasActive = false;
+    bool isActive = adaptive_isCalibrating();
+
+    if (isActive) {
       adaptive_updateCalibration();
+      isActive = adaptive_isCalibrating();
 
-      unsigned long elapsed = now - adaptive_getCalibrationStartTime();
-      unsigned long remaining = (CALIBRATION_DURATION_SEC * 1000UL) - elapsed;
+      if (isActive) {
+        unsigned long elapsed = now - adaptive_getCalibrationStartTime();
+        unsigned long remaining;
+        if (elapsed >= (CALIBRATION_DURATION_SEC * 1000UL)) {
+          remaining = 0;
+        } else {
+          remaining = (CALIBRATION_DURATION_SEC * 1000UL) - elapsed;
+        }
 
-      StaticJsonDocument<128> calibDoc;
-      calibDoc["type"] = WS_CALIBRATION_STATUS;
-      calibDoc["active"] = true;
-      calibDoc["remaining"] = remaining / 1000;
-      calibDoc["band"] = adaptive_getCurrentBand();
-
-      String output;
-      serializeJson(calibDoc, output);
-      g_webSocket.broadcastTXT(output);
-    } else {
-      static bool wasActive = false;
-      if (wasActive) {
         StaticJsonDocument<128> calibDoc;
         calibDoc["type"] = WS_CALIBRATION_STATUS;
-        calibDoc["active"] = false;
-        calibDoc["remaining"] = 0;
+        calibDoc["active"] = true;
+        calibDoc["remaining"] = remaining / 1000;
+        calibDoc["band"] = adaptive_getCurrentBand();
 
-        String output;
-        serializeJson(calibDoc, output);
-        g_webSocket.broadcastTXT(output);
+        char outputActive[128];
+        size_t len = serializeJson(calibDoc, outputActive, sizeof(outputActive));
+        if (len >= sizeof(outputActive)) {
+          Serial.println(F("[WS] WARNING: Calibration active JSON truncated"));
+        }
+        g_webSocket.broadcastTXT((const uint8_t*)outputActive, strlen(outputActive));
       }
-      wasActive = adaptive_isCalibrating();
     }
-  }
 
-  g_server.handleClient();
-  g_webSocket.loop();
+    if (!isActive && wasActive) {
+      StaticJsonDocument<128> calibDoc;
+      calibDoc["type"] = WS_CALIBRATION_STATUS;
+      calibDoc["active"] = false;
+      calibDoc["remaining"] = 0;
+
+      char outputInactive[128];
+      size_t len = serializeJson(calibDoc, outputInactive, sizeof(outputInactive));
+      if (len >= sizeof(outputInactive)) {
+        Serial.println(F("[WS] WARNING: Calibration inactive JSON truncated"));
+      }
+      g_webSocket.broadcastTXT((const uint8_t*)outputInactive, strlen(outputInactive));
+    }
+
+    wasActive = isActive;
+  }
 }

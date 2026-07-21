@@ -86,7 +86,7 @@ bool relayManager_init() {
 // Core Relay Control
 // ============================================
 
-bool relayManager_setRelay(uint8_t relayIndex, bool turnOn) {
+bool relayManager_setRelay(uint8_t relayIndex, bool turnOn, bool force) {
   if (relayIndex >= RELAY_COUNT) {
     return false;
   }
@@ -102,7 +102,7 @@ bool relayManager_setRelay(uint8_t relayIndex, bool turnOn) {
 
   // --- COMPRESSOR COOLDOWN CHECK (GH-SAFE-002) ---
   // SINGLE SOURCE OF TRUTH: All compressor safety lives here
-  if (relayIndex == RELAY_COMPRESSOR && turnOn) {
+   if (relayIndex == RELAY_COMPRESSOR && turnOn && !force) {
     if (relay->cooldownLocked) {
       unsigned long elapsedSinceOff = now - relay->cooldownStart;
       if (elapsedSinceOff < COMPRESSOR_COOLDOWN_MS) {
@@ -120,7 +120,7 @@ bool relayManager_setRelay(uint8_t relayIndex, bool turnOn) {
   }
 
   // --- RELAY CYCLE LIMIT CHECK (GH-SAFE-001) ---
-  if (turnOn) {
+   if (turnOn && !force) {
     if (!relayManager_canToggle(relayIndex)) {
       Serial.print(F("[SAFETY] Relay cycle limit reached for "));
       Serial.print(relayNames[relayIndex]);

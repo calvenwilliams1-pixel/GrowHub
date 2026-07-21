@@ -1,7 +1,7 @@
 /*
    network.cpp
    GrowHub32 - Wireless Networking & Alert Subsystem Implementation
-   Version: 1.2.4
+   Version: 1.2.5
    Revision: Mutex-protected lastNTFYAlert rate-limit check (Change 1).
              Wraparound-aware sequence number comparison (Change 2).
              AP stability timer uses g_wifiConnectedTime (Change 3).
@@ -13,6 +13,11 @@
              lastNTFYAlert updated only after successful HTTP send (Git Issue 1).
              Mutex-protected reads in network_checkConnection (Git Issue 2).
              Mutex-protected g_mdnsStarted access (Git Issue 3).
+             Fixed switch scoping bug in onWiFiEvent GOT_IP case.
+             Fixed mDNS race condition — check+claim inside single critical section.
+             Failed mDNS start reverts g_mdnsStarted flag.
+             Added MDNS.addService in AP fallback block for consistency.
+             Mutex-protected g_wifiDisconnectStart writes in network_checkConnection.
 
    WiFi credentials are hardcoded per GH-NET-001.
    Alert endpoint is hardcoded per GH-NET-005.
@@ -185,33 +190,37 @@ static void onWiFiEvent(WiFiEvent_t event) {
       Serial.println(F("[WiFi] Station connected to AP"));
       break;
 
-    case ARDUINO_EVENT_WIFI_STA_GOT_IP:
+    case ARDUINO_EVENT_WIFI_STA_GOT_IP: {
       Serial.print(F("[WiFi] Station got IP: "));
       Serial.println(WiFi.localIP());
 
       portENTER_CRITICAL(&g_stateMux);
       g_systemState.wifiConnected = true;
       g_wifiDisconnectStart = 0;
-      g_wifiConnectedTime = millis();               // Track actual connection time (Change 3)
+      g_wifiConnectedTime = millis();
+
+      // Check and claim the mDNS startup inside the same lock to prevent race
+      bool shouldStartMDNS = !g_mdnsStarted;
+      if (shouldStartMDNS) {
+        g_mdnsStarted = true;
+      }
       portEXIT_CRITICAL(&g_stateMux);
 
-      // Start mDNS responder with mutex-protected guard (Change 5, Git Issue 3)
-      portENTER_CRITICAL(&g_stateMux);
-      bool mdnsWasStarted = g_mdnsStarted;
-      portEXIT_CRITICAL(&g_stateMux);
-
-      if (!mdnsWasStarted) {
+      // Do the slow mDNS setup OUTSIDE the critical section
+      if (shouldStartMDNS) {
         if (MDNS.begin("growhub")) {
-          portENTER_CRITICAL(&g_stateMux);
-          g_mdnsStarted = true;
-          portEXIT_CRITICAL(&g_stateMux);
-          Serial.println(F("[NET] mDNS started: http://growhub.local"));
+          Serial.println(F("[NET] mDNS started: https://urldefense.com/v3/__http://growhub.local__;!!CzbwC44!YPZO78lYSdqwfavH0BZX8h0uRfMXpBH6udQm_T0z--E04AhMg3z8b4gs3NoPe2HnDwU8iuJAOvdE3wf2obBgVxEZoNI$ "));
           MDNS.addService("http", "tcp", 80);
         } else {
+          // If it failed, revert the flag inside a quick lock
+          portENTER_CRITICAL(&g_stateMux);
+          g_mdnsStarted = false;
+          portEXIT_CRITICAL(&g_stateMux);
           Serial.println(F("[NET] mDNS failed to start"));
         }
       }
       break;
+    }
 
     case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
       Serial.println(F("[WiFi] Station disconnected"));
@@ -326,22 +335,24 @@ bool network_init() {
     portENTER_CRITICAL(&g_stateMux);
     g_systemState.wifiConnected = true;
     g_wifiDisconnectStart = 0;
-    g_wifiConnectedTime = millis();                 // Track connection time (Change 3)
+    g_wifiConnectedTime = millis();
+
+    // Check and claim mDNS startup inside the same lock
+    bool shouldStartMDNS = !g_mdnsStarted;
+    if (shouldStartMDNS) {
+      g_mdnsStarted = true;
+    }
     portEXIT_CRITICAL(&g_stateMux);
 
-    // Start mDNS responder with mutex-protected guard (Change 5, Git Issue 3)
-    portENTER_CRITICAL(&g_stateMux);
-    bool mdnsWasStarted = g_mdnsStarted;
-    portEXIT_CRITICAL(&g_stateMux);
-
-    if (!mdnsWasStarted) {
+    // Do the slow mDNS setup outside the critical section
+    if (shouldStartMDNS) {
       if (MDNS.begin("growhub")) {
-        portENTER_CRITICAL(&g_stateMux);
-        g_mdnsStarted = true;
-        portEXIT_CRITICAL(&g_stateMux);
-        Serial.println(F("[NET] mDNS started: http://growhub.local"));
+        Serial.println(F("[NET] mDNS started: https://urldefense.com/v3/__http://growhub.local__;!!CzbwC44!YPZO78lYSdqwfavH0BZX8h0uRfMXpBH6udQm_T0z--E04AhMg3z8b4gs3NoPe2HnDwU8iuJAOvdE3wf2obBgVxEZoNI$ "));
         MDNS.addService("http", "tcp", 80);
       } else {
+        portENTER_CRITICAL(&g_stateMux);
+        g_mdnsStarted = false;
+        portEXIT_CRITICAL(&g_stateMux);
         Serial.println(F("[NET] mDNS failed to start"));
       }
     }
@@ -395,9 +406,8 @@ void network_checkConnection() {
   if (WiFi.status() == WL_CONNECTED) {
     portENTER_CRITICAL(&g_stateMux);
     g_systemState.wifiConnected = true;
-    portEXIT_CRITICAL(&g_stateMux);
-
     g_wifiDisconnectStart = 0;
+    portEXIT_CRITICAL(&g_stateMux);
 
     // If AP was active and station is stable for 30 seconds, disable AP
     // Uses g_wifiConnectedTime instead of g_lastWiFiReconnectAttempt (Change 3)
@@ -419,12 +429,13 @@ void network_checkConnection() {
   g_systemState.wifiConnected = false;
   portEXIT_CRITICAL(&g_stateMux);
 
-  // Track disconnection duration
+  // Track disconnection duration under mutex (fixes race with event callback)
+  portENTER_CRITICAL(&g_stateMux);
   if (g_wifiDisconnectStart == 0) {
     g_wifiDisconnectStart = now;
   }
-
   unsigned long disconnectedDuration = now - g_wifiDisconnectStart;
+  portEXIT_CRITICAL(&g_stateMux);
 
   // GH-NET-002: After 15 seconds, enable backup AP
   if (disconnectedDuration >= WIFI_DISCONNECT_TIMEOUT_MS && !apActive) {
@@ -441,17 +452,24 @@ void network_checkConnection() {
       Serial.print(F("[NET] AP IP Address: "));
       Serial.println(WiFi.softAPIP());
 
-      // Start mDNS in AP mode with mutex-protected guard (Change 5, Git Issue 3)
+      // Check and claim mDNS startup inside the same lock
       portENTER_CRITICAL(&g_stateMux);
-      bool mdnsWasStarted = g_mdnsStarted;
+      bool shouldStartMDNS = !g_mdnsStarted;
+      if (shouldStartMDNS) {
+        g_mdnsStarted = true;
+      }
       portEXIT_CRITICAL(&g_stateMux);
 
-      if (!mdnsWasStarted) {
+      // Do the slow mDNS setup outside the critical section
+      if (shouldStartMDNS) {
         if (MDNS.begin("growhub")) {
+          Serial.println(F("[NET] mDNS started: https://urldefense.com/v3/__http://growhub.local__;!!CzbwC44!YPZO78lYSdqwfavH0BZX8h0uRfMXpBH6udQm_T0z--E04AhMg3z8b4gs3NoPe2HnDwU8iuJAOvdE3wf2obBgVxEZoNI$ "));
+          MDNS.addService("http", "tcp", 80);
+        } else {
           portENTER_CRITICAL(&g_stateMux);
-          g_mdnsStarted = true;
+          g_mdnsStarted = false;
           portEXIT_CRITICAL(&g_stateMux);
-          Serial.println(F("[NET] mDNS started: http://growhub.local"));
+          Serial.println(F("[NET] mDNS failed to start"));
         }
       }
 
@@ -463,6 +481,7 @@ void network_checkConnection() {
   }
 
   // GH-NET-002: Attempt reconnection every 30 seconds
+  // g_lastWiFiReconnectAttempt is only accessed from main loop, no mutex needed
   if (now - g_lastWiFiReconnectAttempt >= WIFI_SCAN_INTERVAL_MS) {
     g_lastWiFiReconnectAttempt = now;
     Serial.println(F("[NET] Attempting WiFi reconnection..."));

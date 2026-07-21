@@ -1,12 +1,16 @@
 /*
    adaptive.h
    GrowHub32 - Adaptive Learning Mechanics
-   Version: 1.2.1
+   Version: 1.3
+   Revision: Added active calibration phase state machine (v1.3).
+             Calibration now actively controls HOH + Air Assist through
+             STABILIZE → RISE → DECAY → COMPLETE phases instead of
+             passively watching ambient RH drift.
 
    Handles:
    - Temperature band profile management (GH-AL-001, GH-AL-002)
    - Dynamic band selection based on live temperature (GH-AL-003)
-   - Calibration sequence execution (GH-AL-004)
+   - Active calibration sequence execution (GH-AL-004)
    - EMA smoothing of historical vs new data (GH-AL-005)
    - Confidence score computation (GH-AL-006)
    - Recovery time projections for simulation UI
@@ -18,7 +22,9 @@
 #include <Arduino.h>
 #include "config.h"
 
-// Temperature band profile structure (GH-AL-002)
+// NOTE: Keep this struct POD-only (plain old data: floats, ints, bools).
+// The copy assignment operator is used in readProfileJSON() for atomic updates.
+// Adding Arduino String objects or raw pointers will break shallow-copy safety.
 struct BandProfile {
   float riseTimeSeconds;      // Time to rise from floor to ceiling
   float decayTimeSeconds;     // Time to decay from ceiling to floor
@@ -28,15 +34,32 @@ struct BandProfile {
   bool valid;                 // Whether profile has been calibrated
 };
 
+// Calibration phase tracking (v1.3 active calibration)
+enum CalibrationPhase {
+  CALIB_PHASE_STABILIZE = 0,  // All actuators OFF, waiting for RH to settle
+  CALIB_PHASE_RISE,           // HOH + Air Assist ON, measuring recovery rate
+  CALIB_PHASE_DECAY,          // All actuators OFF, measuring natural decay
+  CALIB_PHASE_COMPLETE        // Results calculated and saved
+};
+
 // Current active band tracking
 struct AdaptiveState {
-  uint8_t activeBandIndex;    // 0=18-21, 1=21-24, 2=24-27, 3=27-30
-  bool calibrationActive;
-  unsigned long calibrationStartTime;
-  float calibrationStartRH;
-  float calibrationPeakRH;
-  float calibrationLowRH;
-  float emaWeight;            // Current EMA weight (0.10 to 0.50)
+  uint8_t activeBandIndex;        // Currently active band (0-3)
+  uint8_t calibrationBand;        // Band locked at calibration start (prevents drift during calibration window)
+  bool calibrationActive;         // Calibration in progress flag
+  unsigned long calibrationStartTime; // millis() when calibration started
+  float calibrationStartRH;       // RH at calibration start
+  float calibrationPeakRH;        // Highest RH observed during calibration
+  float calibrationLowRH;         // Lowest RH observed during calibration
+  float emaWeight;               // Current EMA weight (0.10 to 0.50)
+
+  // v1.3: Active calibration phase tracking
+  CalibrationPhase calibPhase;
+  unsigned long calibPhaseStart;         // millis() when current phase started
+  float calibPhaseBaselineRH;            // RH at start of rise phase (for delta calculation)
+  bool calibPhasePlateauDetected;        // Rise phase plateau flag
+  unsigned long calibPlateauSampleStart; // Start of plateau slope window
+  float calibPlateauSampleRH;            // RH at start of plateau slope window
 };
 
 extern AdaptiveState g_adaptiveState;
@@ -67,20 +90,5 @@ float adaptive_projectRecoveryTime(float deltaToTarget);
 // Weight management
 void adaptive_setEMAWeight(float weight);
 float adaptive_getEMAWeight();
-
-// Band boundary definitions
-#define BAND_18_21_INDEX  0
-#define BAND_21_24_INDEX  1
-#define BAND_24_27_INDEX  2
-#define BAND_27_30_INDEX  3
-
-#define BAND_18_21_LOW    18.0f
-#define BAND_18_21_HIGH   21.0f
-#define BAND_21_24_LOW    21.0f
-#define BAND_21_24_HIGH   24.0f
-#define BAND_24_27_LOW    24.0f
-#define BAND_24_27_HIGH   27.0f
-#define BAND_27_30_LOW    27.0f
-#define BAND_27_30_HIGH   30.0f
 
 #endif // ADAPTIVE_H
