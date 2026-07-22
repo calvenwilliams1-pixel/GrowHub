@@ -21,6 +21,10 @@
  *   - Added humidifier runtime watchdog constants
  *   - Lowered DEFAULT_HUM_CEILING to 88% (below SAFETY_HUM_CEILING_HARD 90%)
  *   - Added relay GPIO pin definitions
+ *   - Added compressor protection and relay cycle protection
+ *   - Added ESP-NOW, WiFi timing, and push notification constants
+ *   - Added OTA update constants
+ *   - Added safety watchdog, dry-run, and fan stall constants
  */
 
 #ifndef CONFIG_H
@@ -50,6 +54,19 @@
 #define RELAY_AIR_ASSIST_PIN            12
 #define RELAY_EXHAUST_PIN               14
 #define RELAY_COMPRESSOR_PIN            27
+
+// ============================================================
+// HARDWARE: Compressor Protection
+// ============================================================
+#define COMPRESSOR_COOLDOWN_MS          300000UL  // 5 minutes between compressor cycles
+#define COMPRESSOR_COOLDOWN_SEC         300       // Same, in seconds (for serial display)
+#define COMPRESSOR_MAX_ON_MS            300000UL  // 5 minutes maximum continuous ON time
+
+// ============================================================
+// HARDWARE: Relay Cycle Protection
+// ============================================================
+#define RELAY_CYCLE_WINDOW_MS           60000UL   // 60 second cycle window
+#define RELAY_MAX_CYCLES_PER_MIN        2         // Max relay toggles per minute
 
 // ============================================================
 // HARDWARE: I2C Addresses
@@ -189,6 +206,22 @@
 #define DEFAULT_CO2_EMERGENCY           1200
 
 // ============================================================
+// SAFETY: Task Watchdog
+// ============================================================
+#define WDT_TIMEOUT_SEC                 10      // ESP32 task watchdog timeout (seconds)
+
+// ============================================================
+// SAFETY: Dry-Run Detection
+// ============================================================
+#define HOH_DRY_RUN_CHECK_SEC           600     // Check after 10 minutes of HOH runtime
+#define DRY_RUN_THRESHOLD_PCT           0.5f    // RH must rise by at least 0.5% in check window
+
+// ============================================================
+// SAFETY: Fan Stall Detection
+// ============================================================
+#define FAN_STALL_CHECK_SEC             120     // Check after 2 minutes of fan runtime
+
+// ============================================================
 // SAFETY: Override & Recovery
 // ============================================================
 // Pre-calculated millisecond value (avoids caller overflow bugs)
@@ -231,9 +264,29 @@
 #define LOG_RETENTION_DAYS              30
 
 // ============================================================
-// NETWORK
+// NETWORK: ESP-NOW
+// ============================================================
+#define ESPNOW_CRC16_POLY               0x1021    // CRC-16-CCITT polynomial
+#define ESPNOW_FAIL_TIMEOUT_MS          60000UL   // Fridge node heartbeat timeout (60s)
+
+// ============================================================
+// NETWORK: WiFi Timing
 // ============================================================
 #define WIFI_RETRY_INTERVAL_MS          30000UL
 #define WIFI_MAX_RETRIES                5
+#define WIFI_DISCONNECT_TIMEOUT_MS      15000UL   // 15 seconds before AP fallback
+#define WIFI_SCAN_INTERVAL_MS           30000UL   // Reconnect attempt interval
+
+// ============================================================
+// NETWORK: Push Notifications (ntfy.sh)
+// ============================================================
+#define NTFY_MIN_INTERVAL_MS            60000UL   // Minimum time between push alerts (60s)
+
+// ============================================================
+// OTA UPDATES
+// ============================================================
+#define OTA_HOSTNAME                    "growhub32"
+#define OTA_PASSWORD                    ""        // Leave empty for no password
+#define OTA_PORT                        3232
 
 #endif // CONFIG_H
