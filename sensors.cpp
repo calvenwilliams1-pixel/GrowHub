@@ -3,9 +3,14 @@
    GrowHub32 - SCD40 Sensor Driver Implementation
    Version: 1.3.0
    Revision: Thread-safe g_systemState writes via g_stateMux.
-             g_consecutiveFailures only counts actual errors, not "data not ready."
+             Removed sensors_isDataReady() 500ms cache — was returning
+               stale g_scd40Data.valid instead of actual data-ready status.
+             g_consecutiveFailures only counts actual errors (I2C, CRC, range).
+             Fault flags now set on validation failure so automation uses
+               last-known-good values during sensor faults.
+             sensors_clearFaults() now clears g_systemState fault flags.
+             sensorFaultTimer reset on successful read.
              Removed redundant co2 >= 0 check (uint16_t is always >= 0).
-             Added sensorFaultTimer reset on successful read.
              I2C transactions remain outside critical section.
 
    SCD40 communicates over I2C at address 0x62.
@@ -24,7 +29,6 @@ extern portMUX_TYPE g_stateMux;
 
 static SCD40Data g_scd40Data;
 static bool g_scd40Initialized = false;
-static unsigned long g_lastDataReadyCheck = 0;
 static uint8_t g_consecutiveFailures = 0;
 
 // CRC-8 lookup table for SCD40 (polynomial 0x31, init 0xFF)
@@ -187,20 +191,16 @@ bool sensors_init() {
 
   Serial.println(F("[SCD40] Periodic measurement started. First reading available in ~5s."));
   g_scd40Initialized = true;
-  g_lastDataReadyCheck = millis();
 
   return true;
 }
 
 bool sensors_isDataReady() {
+  // Direct I2C check every call. The data-ready status check is a 3-byte
+  // transaction — negligible overhead. Removed the 500ms cache because it
+  // returned g_scd40Data.valid (stale) instead of actual data-ready status,
+  // causing sensors_poll() to attempt reads when no new data was available.
   if (!g_scd40Initialized) return false;
-
-  // Only check data ready every 500ms to avoid I2C congestion
-  if (millis() - g_lastDataReadyCheck < 500) {
-    // Return cached ready state
-    return g_scd40Data.valid;
-  }
-  g_lastDataReadyCheck = millis();
 
   if (!sendSCD40Command(SCD40_CMD_GET_DATA_READY_STATUS)) {
     return false;
@@ -214,12 +214,7 @@ bool sensors_isDataReady() {
   // Mask with 0x07FF per datasheet (upper 5 bits are reserved)
   uint16_t maskedStatus = status[0] & 0x07FF;
 
-  if (maskedStatus == 0x0000) {
-    return false;  // Data not ready
-  }
-
-  // Data is ready - treat any non-zero low 11 bits as ready signal
-  return true;
+  return (maskedStatus != 0x0000);
 }
 
 void sensors_poll() {
@@ -252,17 +247,12 @@ void sensors_poll() {
   }
 
   // --- Parse data ---
-  // CO2: raw value is ppm
   uint16_t co2 = rawData[0];
-
-  // Temperature: raw = (175 * T[C]) / 65536 - 45
   float temp = -45.0f + 175.0f * ((float)rawData[1] / 65536.0f);
-
-  // Humidity: raw = (100 * RH[%]) / 65536
   float hum = 100.0f * ((float)rawData[2] / 65536.0f);
 
   // --- Range validation ---
-  // co2 is uint16_t so co2 >= 0 is always true — no need to check.
+  // co2 is uint16_t so >= 0 is always true — no check needed.
   // These ranges represent the SCD40's valid operating envelope,
   // NOT grow-room safety thresholds (which are handled by automation).
   bool co2Valid = (co2 <= 40000);
@@ -301,9 +291,20 @@ void sensors_poll() {
     Serial.println(F(" %"));
   } else {
     // --- Data out of valid range ---
-    // This IS a sensor fault — count it.
+    // This IS a sensor fault. Flag it so automation uses last-known-good
+    // values instead of the out-of-range garbage reading.
     g_scd40Data.valid = false;
     g_consecutiveFailures++;
+
+    portENTER_CRITICAL(&g_stateMux);
+    g_systemState.tempSensorFault = !tempValid;
+    g_systemState.humiditySensorFault = !humValid;
+    g_systemState.co2SensorFault = !co2Valid;
+    if (g_systemState.sensorFaultTimer == 0) {
+      g_systemState.sensorFaultTimer = millis();
+    }
+    portEXIT_CRITICAL(&g_stateMux);
+
     Serial.println(F("[SCD40] Data out of valid range:"));
     Serial.print(F("  CO2=")); Serial.print(co2); Serial.print(co2Valid ? F(" OK, ") : F(" BAD, "));
     Serial.print(F("Temp=")); Serial.print(temp); Serial.print(tempValid ? F(" OK, ") : F(" BAD, "));
@@ -361,5 +362,17 @@ bool sensors_hasActiveFault() {
 }
 
 void sensors_clearFaults() {
+  // Clear local failure counter
   g_consecutiveFailures = 0;
+
+  // Clear the system-state fault flags that automation reads.
+  // Without this, the Web UI "clear faults" button would reset
+  // the local counter but leave g_systemState.*SensorFault set,
+  // causing automation to continue using last-known-good values.
+  portENTER_CRITICAL(&g_stateMux);
+  g_systemState.tempSensorFault = false;
+  g_systemState.humiditySensorFault = false;
+  g_systemState.co2SensorFault = false;
+  g_systemState.sensorFaultTimer = 0;
+  portEXIT_CRITICAL(&g_stateMux);
 }
