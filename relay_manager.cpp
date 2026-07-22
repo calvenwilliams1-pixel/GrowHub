@@ -25,6 +25,7 @@
 
 #include "relay_manager.h"
 #include "rtc_handler.h"
+#include "system_state.h"
 
 // External mutex for g_systemState cross-task protection
 extern portMUX_TYPE g_stateMux;
