@@ -19,6 +19,7 @@
 #include "relay_manager.h"
 #include "automation.h"
 #include "network.h"
+#include "system_state.h"
 
 // External declarations
 extern AutomationThresholds* automation_getThresholds();
