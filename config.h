@@ -20,6 +20,7 @@
  *   - Added pre-calculated MANUAL_OVERRIDE_TIMEOUT_MS
  *   - Added humidifier runtime watchdog constants
  *   - Lowered DEFAULT_HUM_CEILING to 88% (below SAFETY_HUM_CEILING_HARD 90%)
+ *   - Added relay GPIO pin definitions
  */
 
 #ifndef CONFIG_H
@@ -41,6 +42,14 @@
 #define RELAY_EXHAUST                   2       // Exhaust Fan (was RELAY_HEATER)
 #define RELAY_COMPRESSOR                3       // Air Compressor (was RELAY_LIGHTS)
 #define RELAY_COUNT                     4
+
+// ============================================================
+// HARDWARE: Relay GPIO Pins
+// ============================================================
+#define RELAY_HOH_PIN                   13
+#define RELAY_AIR_ASSIST_PIN            12
+#define RELAY_EXHAUST_PIN               14
+#define RELAY_COMPRESSOR_PIN            27
 
 // ============================================================
 // HARDWARE: I2C Addresses
