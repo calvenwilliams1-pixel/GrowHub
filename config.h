@@ -54,6 +54,7 @@
 #define SD_SCK_PIN                      18
 #define SD_MISO_PIN                     19
 #define SD_MOSI_PIN                     23
+#define SD_CARD_DETECT_PIN              -1      // Not connected (reserved for future use)
 
 // ============================================================
 // SENSORS: SCD40
