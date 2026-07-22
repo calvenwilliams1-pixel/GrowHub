@@ -11,13 +11,14 @@
  *   - Added PID controller constants
  *   - Added active calibration v1.3 constants
  *   - Added night mode schedule defines
- *   - Centralized I2C addresses
+ *   - Centralized I2C addresses and bus pins
  *   - Added SD card SPI pin definitions
  *   - Added Web UI / WebSocket port definitions
  *   - Added default humidity setpoint
  *   - Renamed safety guardrails to SAFETY_*_HARD pattern (no redefinition)
  *   - Deprecated CALIBRATION_DURATION_SEC in favor of CALIBRATION_TOTAL_SEC
  *   - Added pre-calculated MANUAL_OVERRIDE_TIMEOUT_MS
+ *   - Added humidifier runtime watchdog constants
  *   - Lowered DEFAULT_HUM_CEILING to 88% (below SAFETY_HUM_CEILING_HARD 90%)
  */
 
@@ -194,6 +195,7 @@
 // NOT the ESP32 hardware task watchdog (esp_task_wdt in safety.cpp).
 #define WATCHDOG_HOH_MAX_ON_MS          1800000UL // 30 minutes
 #define WATCHDOG_HOH_WINDOW_MS          7200000UL // 2 hours
+#define WATCHDOG_COOLDOWN_MS            300000UL  // 5 min HOH lockout after watchdog trip
 
 // ============================================================
 // SAFETY: Absolute Guardrails (Hard Limits)
