@@ -28,6 +28,7 @@
 #include "sensors.h"
 #include "safety.h"
 #include <ESPmDNS.h>
+#include "system_state.h"
 
 // ============================================
 // FreeRTOS Concurrency Guard
