@@ -1,39 +1,13 @@
 /*
    web_ui.cpp
    GrowHub32 - Local Web Application Interface Implementation
-   Version: 1.2.6
-   Revision: Updated rtc_getTimeString() call to new caller-provided buffer API.
-             Replaced all String allocations in WebSocket hot path with stack-allocated
-             char arrays and serializeJson(doc, buffer, sizeof(buffer)) to eliminate
-             heap fragmentation during long-term uptime.
-             Replaced String cmd comparisons with strcmp for zero-allocation parsing.
-             Added JSON serialization overflow checks on all WebSocket push functions.
-             Added "Already at or above target" message for simulation.
-             Clamped EMA weight input to EMA_WEIGHT_MIN/MAX range.
-             Added Cache-Control: no-store header to prevent browser caching stale UI.
-             Added WebSocket reconnect exponential backoff in JavaScript (3s→30s max).
-             Added target NaN guard in runSimulation() JavaScript.
-             Fixed sendConfigUpdate() clientNum==0 broadcast bug.
-             Increased JSON document sizes for sensor data (768) and commands (512).
-             Changed g_server.send() to send_P() for PROGMEM HTML (avoids RAM copy).
-             Removed duplicate g_server.handleClient()/g_webSocket.loop() from pushUpdates().
-             Fixed calibration countdown edge case (check active state after updateCalibration).
-             Fixed manual relay override: activate override BEFORE setRelay so automation
-             doesn't immediately countermand ON commands.
-             Added relay index bounds check in WebSocket handler.
-             Send config and calibration state on WebSocket connect.
-             Fixed simulation NaN input guard in JavaScript.
-             Fixed calibration inactive status never sent to UI.
-             Mutex-protected g_systemState reads in WebSocket push functions.
-             Fixed switchTab() to accept element parameter (no implicit event global).
-             Moved simulation type 99 handler into handleMessage() central router.
-             Removed redundant extern declarations (headers already included).
-             Use network_isWiFiConnected()/network_isAPMode() for safe cross-task reads.
-             Use relayManager_isCompressorCooldownActive() instead of direct g_relays access.
-             Added sendWS() helper with WebSocket readyState guard in JavaScript.
-             Added force parameter to manual relay commands — bypasses safety checks
-             (cooldown, cycle limits) for manual UI control while keeping them for automation.
-             Fixed state bool parsing from JSON (use .as<int>() instead of | false).
+   Version: 1.3.0
+   Revision: Updated CALIBRATION_DURATION_SEC to CALIBRATION_TOTAL_SEC.
+             Removed adaptive_updateCalibration() double-call from pushUpdates().
+             Added #include "system_state.h" for centralized state access.
+             Fixed g_systemState.calibrationActive read outside mutex in sendSensorUpdate().
+             Updated UI text for manual override description.
+             Updated default values for 88% ceiling and 20-min calibration.
 
    This serves a single-page application directly from program memory
    to avoid SPIFFS/LittleFS dependency. The HTML, CSS, and JavaScript
@@ -51,14 +25,13 @@
 #include "rtc_handler.h"
 #include "safety.h"
 #include "network.h"
-#include "sd_logger.h"
+#include "system_state.h"
 #include <ArduinoJson.h>
 
 static WebServer g_server(WEB_SERVER_PORT);
 static WebSocketsServer g_webSocket(WEBSOCKET_PORT);
 static unsigned long g_lastWSUpdate = 0;
 
-// External declarations (only those NOT already declared in included headers)
 extern portMUX_TYPE g_stateMux;
 
 // Forward declarations
@@ -78,7 +51,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-<title>GrowHub32 v1.2</title>
+<title>GrowHub32 v1.3</title>
 <style>
   *{margin:0;padding:0;box-sizing:border-box;}
   body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0d1117;color:#c9d1d9;min-height:100vh;}
@@ -186,12 +159,13 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
     <div class="config-row"><label>WiFi</label><span id="wifiStatus">--</span></div>
     <div class="config-row"><label>RTC Time</label><span id="rtcTime">--</span></div>
     <div class="config-row"><label>Fridge Node</label><span id="fridgeStatus">--</span></div>
+    <div class="config-row"><label>Control Mode</label><span id="controlMode">--</span></div>
   </div>
 </div>
 
 <div id="controls" class="tab-content">
   <h3>Manual Relay Override</h3>
-  <p style="font-size:0.75em;color:#8b949e;">Calibration mode must be OFF to use manual controls. Manual commands bypass safety limits.</p>
+  <p style="font-size:0.75em;color:#8b949e;">Calibration mode must be OFF to use manual controls. Manual commands pause automation. Safety interlocks (such as compressor cooldown) remain active.</p>
   <div class="override-panel" id="overridePanel">
     Automation PAUSED - <span id="overrideTime">0:00</span> remaining
     <br><button class="btn btn-off" style="margin-top:6px;" onclick="resumeAutomation()">Resume Automation Now</button>
@@ -208,16 +182,16 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   <div class="config-group">
     <h3>Humidity Thresholds</h3>
     <div class="config-row"><label>HOH Floor (%)</label><input type="number" id="humHoHFloor" value="80" step="1"></div>
-    <div class="config-row"><label>Assist Floor (%)</label><input type="number" id="humAssistFloor" value="75" step="1"></div>
-    <div class="config-row"><label>Ceiling (%)</label><input type="number" id="humCeiling" value="95" step="1"></div>
-    <div class="config-row"><label>Assist ON (sec)</label><input type="number" id="assistOn" value="5" step="1"></div>
-    <div class="config-row"><label>Assist OFF (sec)</label><input type="number" id="assistOff" value="15" step="1"></div>
+    <div class="config-row"><label>Assist Floor (%)</label><input type="number" id="humAssistFloor" value="70" step="1"></div>
+    <div class="config-row"><label>Ceiling (%)</label><input type="number" id="humCeiling" value="88" step="1"></div>
+    <div class="config-row"><label>Assist ON (sec)</label><input type="number" id="assistOn" value="3" step="1"></div>
+    <div class="config-row"><label>Assist OFF (sec)</label><input type="number" id="assistOff" value="10" step="1"></div>
   </div>
   <div class="config-group">
     <h3>CO2 Thresholds</h3>
-    <div class="config-row"><label>High Limit (ppm)</label><input type="number" id="co2High" value="650" step="10"></div>
+    <div class="config-row"><label>High Limit (ppm)</label><input type="number" id="co2High" value="800" step="10"></div>
     <div class="config-row"><label>Low Target (ppm)</label><input type="number" id="co2Low" value="600" step="10"></div>
-    <div class="config-row"><label>Emergency (ppm)</label><input type="number" id="co2Emergency" value="800" step="10"></div>
+    <div class="config-row"><label>Emergency (ppm)</label><input type="number" id="co2Emergency" value="1200" step="10"></div>
   </div>
   <div class="config-group">
     <h3>Adaptive Learning</h3>
@@ -231,7 +205,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
     <h3>Calibration Status</h3>
     <div class="countdown" id="calibCountdown">--</div>
     <p id="calibStatus" style="color:#8b949e;">Not active</p>
-    <button class="btn btn-on" id="calibStartBtn" onclick="startCalibration()">Start 15-Minute Calibration</button>
+    <button class="btn btn-on" id="calibStartBtn" onclick="startCalibration()">Start 20-Minute Calibration</button>
     <button class="btn btn-off" id="calibCancelBtn" onclick="cancelCalibration()" style="display:none;">Cancel Calibration</button>
   </div>
 </div>
@@ -240,7 +214,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   <h3>Recovery Simulation</h3>
   <div class="config-group">
     <div class="config-row"><label>Current RH (%)</label><span id="simCurrentRH">--</span></div>
-    <div class="config-row"><label>Target RH (%)</label><input type="number" id="simTargetRH" value="95" step="1"></div>
+    <div class="config-row"><label>Target RH (%)</label><input type="number" id="simTargetRH" value="88" step="1"></div>
     <div class="config-row"><label>Active Band</label><span id="simBand">--</span></div>
     <div class="config-row"><label>Confidence</label><span id="simConfidence">--</span></div>
   </div>
@@ -258,7 +232,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   </div>
 </div>
 
-<div class="footer">GrowHub32 v1.2 | Calvin</div>
+<div class="footer">GrowHub32 v1.3 | Calvin</div>
 
 <script>
 var ws;
@@ -336,6 +310,7 @@ function updateSensors(msg){
   document.getElementById('simCurrentRH').textContent = msg.hum.toFixed(1);
   document.getElementById('simBand').textContent = 'Band ' + msg.activeBand;
   document.getElementById('simConfidence').textContent = (msg.confidence * 100).toFixed(1) + '%';
+  document.getElementById('controlMode').textContent = msg.controlMode || '--';
 }
 
 function updateRelays(msg){
@@ -491,8 +466,6 @@ connectWS();
 // ============================================================
 
 static void handleRoot() {
-  // Prevent browser caching of the UI so firmware updates with new layouts
-  // or WebSocket commands are immediately visible without manual cache clearing.
   g_server.sendHeader("Cache-Control", "no-store");
   g_server.send_P(200, "text/html", INDEX_HTML);
 }
@@ -584,7 +557,6 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
       }
       else if (msgType == WS_COMMAND && strcmp(cmd, "ema") == 0) {
         float weight = doc["weight"] | DEFAULT_EMA_WEIGHT;
-        // Clamp to valid range to prevent corrupted EMA math
         if (weight < EMA_WEIGHT_MIN) weight = EMA_WEIGHT_MIN;
         if (weight > EMA_WEIGHT_MAX) weight = EMA_WEIGHT_MAX;
         adaptive_setEMAWeight(weight);
@@ -600,7 +572,7 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
       }
       else if (msgType == WS_COMMAND && strcmp(cmd, "simulate") == 0) {
         float current = doc["current"] | 0.0f;
-        float target = doc["target"] | 95.0f;
+        float target = doc["target"] | 88.0f;
         float delta = target - current;
 
         StaticJsonDocument<128> responseDoc;
@@ -637,7 +609,7 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
 static void sendSensorUpdate() {
   float temp, hum, fridgeTemp;
   uint16_t co2;
-  bool tempFault, humFault, co2Fault, nightMode;
+  bool tempFault, humFault, co2Fault, nightMode, calibrationActive;
   uint8_t activeBand;
   float confidence;
 
@@ -649,6 +621,7 @@ static void sendSensorUpdate() {
   humFault = g_systemState.humiditySensorFault;
   co2Fault = g_systemState.co2SensorFault;
   nightMode = g_systemState.nightModeActive;
+  calibrationActive = g_systemState.calibrationActive;
   portEXIT_CRITICAL(&g_stateMux);
 
   fridgeTemp = network_getFridgeTemp();
@@ -662,6 +635,13 @@ static void sendSensorUpdate() {
 
   char timeStr[24];
   rtc_getTimeString(timeStr, sizeof(timeStr));
+
+  const char* controlMode = "Bang-Bang";
+  if (calibrationActive) {
+    controlMode = "Calibration";
+  } else if (profile && profile->valid && profile->confidenceScore >= PID_AUTO_ENABLE_CONFIDENCE) {
+    controlMode = "PID";
+  }
 
   StaticJsonDocument<768> doc;
   doc["type"] = WS_SENSOR_UPDATE;
@@ -679,6 +659,7 @@ static void sendSensorUpdate() {
   doc["fridgeLost"] = fridgeLost;
   doc["activeBand"] = activeBand;
   doc["confidence"] = confidence;
+  doc["controlMode"] = controlMode;
 
   char output[768];
   size_t len = serializeJson(doc, output, sizeof(output));
@@ -751,10 +732,10 @@ static void sendCalibrationUpdate() {
   if (active) {
     unsigned long elapsed = millis() - adaptive_getCalibrationStartTime();
     unsigned long remaining;
-    if (elapsed >= (CALIBRATION_DURATION_SEC * 1000UL)) {
+    if (elapsed >= (CALIBRATION_TOTAL_SEC * 1000UL)) {
       remaining = 0;
     } else {
-      remaining = (CALIBRATION_DURATION_SEC * 1000UL) - elapsed;
+      remaining = (CALIBRATION_TOTAL_SEC * 1000UL) - elapsed;
     }
     calibDoc["remaining"] = remaining / 1000;
     calibDoc["band"] = adaptive_getCurrentBand();
@@ -811,31 +792,26 @@ void webUI_pushUpdates() {
     bool isActive = adaptive_isCalibrating();
 
     if (isActive) {
-      adaptive_updateCalibration();
-      isActive = adaptive_isCalibrating();
-
-      if (isActive) {
-        unsigned long elapsed = now - adaptive_getCalibrationStartTime();
-        unsigned long remaining;
-        if (elapsed >= (CALIBRATION_DURATION_SEC * 1000UL)) {
-          remaining = 0;
-        } else {
-          remaining = (CALIBRATION_DURATION_SEC * 1000UL) - elapsed;
-        }
-
-        StaticJsonDocument<128> calibDoc;
-        calibDoc["type"] = WS_CALIBRATION_STATUS;
-        calibDoc["active"] = true;
-        calibDoc["remaining"] = remaining / 1000;
-        calibDoc["band"] = adaptive_getCurrentBand();
-
-        char outputActive[128];
-        size_t len = serializeJson(calibDoc, outputActive, sizeof(outputActive));
-        if (len >= sizeof(outputActive)) {
-          Serial.println(F("[WS] WARNING: Calibration active JSON truncated"));
-        }
-        g_webSocket.broadcastTXT((const uint8_t*)outputActive, strlen(outputActive));
+      unsigned long elapsed = now - adaptive_getCalibrationStartTime();
+      unsigned long remaining;
+      if (elapsed >= (CALIBRATION_TOTAL_SEC * 1000UL)) {
+        remaining = 0;
+      } else {
+        remaining = (CALIBRATION_TOTAL_SEC * 1000UL) - elapsed;
       }
+
+      StaticJsonDocument<128> calibDoc;
+      calibDoc["type"] = WS_CALIBRATION_STATUS;
+      calibDoc["active"] = true;
+      calibDoc["remaining"] = remaining / 1000;
+      calibDoc["band"] = adaptive_getCurrentBand();
+
+      char outputActive[128];
+      size_t len = serializeJson(calibDoc, outputActive, sizeof(outputActive));
+      if (len >= sizeof(outputActive)) {
+        Serial.println(F("[WS] WARNING: Calibration active JSON truncated"));
+      }
+      g_webSocket.broadcastTXT((const uint8_t*)outputActive, strlen(outputActive));
     }
 
     if (!isActive && wasActive) {
