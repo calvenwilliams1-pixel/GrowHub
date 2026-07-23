@@ -17,7 +17,10 @@
              Cache invalidation now correctly forces fresh RTC read after rtc_setTime().
              Fixed rtc_timeToEpoch() 32-bit overflow risk — uses uint64_t intermediate.
              Fixed I2C storm on RTC failure — retries every 60s instead of every call.
-             Fixed goto crossing initialization in rtc_checkSerialCommand().
+             Fixed goto crossing initialization — replaced with bool parseOk flag.
+             Renamed rtc_getEpochSeconds() → rtc_getGH2000Seconds() (seconds since
+             2000-01-01, NOT Unix epoch — GrowHub internal reference only).
+             Renamed rtc_timeToEpoch() → rtc_timeToGH2000Seconds().
 
    DS3231 communicates over I2C at address 0x68.
    All time values are stored in BCD format internally.
@@ -368,18 +371,27 @@ void rtc_getTimeString(char* buffer, size_t bufferSize) {
   }
 }
 
-unsigned long rtc_getEpochSeconds() {
+// ============================================================
+// v1.3: GH2000 Seconds (NOT Unix epoch — GrowHub internal ref)
+// ============================================================
+// Seconds since 2000-01-01 00:00:00 UTC. Not compatible with Unix
+// epoch (1970-01-01). Use only for elapsed-time differences
+// within GrowHub32. Do NOT export or compare against external
+// timestamps (WiFi, NTP, ntfy.sh, fridge node).
+
+unsigned long rtc_getGH2000Seconds() {
   RTCTime now;
   if (!rtc_readTime(&now)) {
     return 0;
   }
 
-  return rtc_timeToEpoch(&now);
+  return rtc_timeToGH2000Seconds(&now);
 }
 
-unsigned long rtc_timeToEpoch(const RTCTime* time) {
-  // Pure calendar-to-epoch conversion using uint64_t intermediate
+unsigned long rtc_timeToGH2000Seconds(const RTCTime* time) {
+  // Pure calendar-to-seconds conversion using uint64_t intermediate
   // to prevent any possibility of 32-bit overflow through year 2099.
+  // Base year: 2000 (NOT 1970 — not Unix epoch).
   if (!time) return 0;
   if (time->year < 2000 || time->year > 2099) return 0;
   if (time->month < 1 || time->month > 12) return 0;
@@ -466,42 +478,41 @@ void rtc_checkSerialCommand() {
         while (*p == ' ' || *p == '\t') p++;
 
         char* end;
-        long y  = strtol(p, &end, 10); if (end == p) goto parse_fail; p = end; while (*p == ' ' || *p == '\t') p++;
-        long mo = strtol(p, &end, 10); if (end == p) goto parse_fail; p = end; while (*p == ' ' || *p == '\t') p++;
-        long d  = strtol(p, &end, 10); if (end == p) goto parse_fail; p = end; while (*p == ' ' || *p == '\t') p++;
-        long h  = strtol(p, &end, 10); if (end == p) goto parse_fail; p = end; while (*p == ' ' || *p == '\t') p++;
-        long m  = strtol(p, &end, 10); if (end == p) goto parse_fail; p = end; while (*p == ' ' || *p == '\t') p++;
-        long s  = strtol(p, &end, 10); if (end == p) goto parse_fail;
+        bool parseOk = true;
+        long y  = strtol(p, &end, 10); if (end == p) parseOk = false; p = end; while (*p == ' ' || *p == '\t') p++;
+        long mo = strtol(p, &end, 10); if (end == p) parseOk = false; p = end; while (*p == ' ' || *p == '\t') p++;
+        long d  = strtol(p, &end, 10); if (end == p) parseOk = false; p = end; while (*p == ' ' || *p == '\t') p++;
+        long h  = strtol(p, &end, 10); if (end == p) parseOk = false; p = end; while (*p == ' ' || *p == '\t') p++;
+        long m  = strtol(p, &end, 10); if (end == p) parseOk = false; p = end; while (*p == ' ' || *p == '\t') p++;
+        long s  = strtol(p, &end, 10); if (end == p) parseOk = false;
 
-        // Braces isolate these declarations from the goto above
-        {
-          // Validate ranges
-          if (y < 2000 || y > 2099 || mo < 1 || mo > 12 || d < 1 || d > 31 ||
-              h < 0 || h > 23 || m < 0 || m > 59 || s < 0 || s > 59) {
-            Serial.println(F("[RTC] ERROR: Values out of range"));
-            cmdLen = 0;
-            continue;
-          }
-
-          uint8_t dow = computeDayOfWeek((uint16_t)y, (uint8_t)mo, (uint8_t)d);
-
-          if (rtc_setTime((uint8_t)h, (uint8_t)m, (uint8_t)s,
-                          (uint8_t)d, (uint8_t)mo, (uint16_t)y, dow)) {
-            Serial.println(F("[RTC] Time set successfully!"));
-            char timeStr[24];
-            rtc_getTimeString(timeStr, sizeof(timeStr));
-            Serial.print(F("[RTC] Now: "));
-            Serial.println(timeStr);
-          } else {
-            Serial.println(F("[RTC] ERROR: Invalid date/time values. Check ranges."));
-          }
+        if (!parseOk) {
+          Serial.println(F("[RTC] ERROR: Format is: SETTIME YYYY MM DD HH MM SS"));
+          Serial.println(F("[RTC] Example: SETTIME 2026 7 19 20 30 0"));
+          cmdLen = 0;
+          continue;
         }
-        cmdLen = 0;
-        continue;
 
-      parse_fail:
-        Serial.println(F("[RTC] ERROR: Format is: SETTIME YYYY MM DD HH MM SS"));
-        Serial.println(F("[RTC] Example: SETTIME 2026 7 19 20 30 0"));
+        // Validate ranges
+        if (y < 2000 || y > 2099 || mo < 1 || mo > 12 || d < 1 || d > 31 ||
+            h < 0 || h > 23 || m < 0 || m > 59 || s < 0 || s > 59) {
+          Serial.println(F("[RTC] ERROR: Values out of range"));
+          cmdLen = 0;
+          continue;
+        }
+
+        uint8_t dow = computeDayOfWeek((uint16_t)y, (uint8_t)mo, (uint8_t)d);
+
+        if (rtc_setTime((uint8_t)h, (uint8_t)m, (uint8_t)s,
+                        (uint8_t)d, (uint8_t)mo, (uint16_t)y, dow)) {
+          Serial.println(F("[RTC] Time set successfully!"));
+          char timeStr[24];
+          rtc_getTimeString(timeStr, sizeof(timeStr));
+          Serial.print(F("[RTC] Now: "));
+          Serial.println(timeStr);
+        } else {
+          Serial.println(F("[RTC] ERROR: Invalid date/time values. Check ranges."));
+        }
         cmdLen = 0;
       }
     } else if (!overflow) {
