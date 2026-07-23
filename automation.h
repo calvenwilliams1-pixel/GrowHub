@@ -62,15 +62,4 @@ bool automation_isCO2OverrideActive();
 unsigned long automation_getHumidityOverrideRemaining();
 unsigned long automation_getCO2OverrideRemaining();
 
-// Manual override per subsystem (scoped — humidity and CO2 are independent)
-void automation_activateHumidityOverride();
-void automation_activateCO2Override();
-void automation_deactivateHumidityOverride();
-void automation_deactivateCO2Override();
-void automation_deactivateAllOverrides();
-bool automation_isHumidityOverrideActive();
-bool automation_isCO2OverrideActive();
-unsigned long automation_getHumidityOverrideRemaining();
-unsigned long automation_getCO2OverrideRemaining();
-
 #endif // AUTOMATION_H
