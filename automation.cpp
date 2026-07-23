@@ -113,7 +113,7 @@ static void executeHumidityControl();
 // Global PID Instance
 // ============================================================
 
-static PIDController g_humidityPID;
+ PIDController g_humidityPID;
 
 // ============================================================
 // Relay Protection State (min ON/OFF timing for HOH + Air Assist)
