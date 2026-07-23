@@ -206,6 +206,7 @@ bool relayManager_setRelay(uint8_t relayIndex, bool turnOn, bool force) {
     if (relayManager_requiresCooldown(relayIndex)) {
       relay->cooldownLocked = true;
       relay->cooldownStart = now;
+      relay->cooldownOffEpoch = rtc_getGH2000Seconds();
       Serial.print(F("[SAFETY] Cooldown started on "));
       Serial.print(relayNames[relayIndex]);
       Serial.print(F(" - locked for "));
@@ -383,7 +384,6 @@ void relayManager_loadCooldownState(unsigned long lastOffTimestamp, bool wasInCo
       unsigned long remainingMs = COMPRESSOR_COOLDOWN_MS - elapsedMs;
       relay->cooldownLocked = true;
       relay->cooldownStart = now - elapsedMs;
-
       Serial.print(F("[RELAY] Cooldown restored with "));
       Serial.print(remainingMs / 1000);
       Serial.println(F("s remaining"));
