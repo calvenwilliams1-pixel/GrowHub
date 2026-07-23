@@ -48,6 +48,7 @@
 extern void network_sendAlert(const char* title, const char* message);
 extern PIDController g_humidityPID;
 extern portMUX_TYPE g_stateMux;
+extern PIDController g_humidityPID;
 
 static BandProfile g_bandProfiles[4];
 AdaptiveState g_adaptiveState;
