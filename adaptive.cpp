@@ -8,8 +8,9 @@
              Slope-based plateau detection replaces passive rise/fall detection.
              Safety abort on sensor fault or emergency humidity levels.
              Fixed endRisePhase() timestamp bug (capture riseStartTime before overwrite).
-             PID frozen during calibration, re-enabled with reset on complete/cancel.
-             PID access via automation_getPIDController() — proper encapsulation.
+             PID frozen during calibration via automation_suspendPID().
+             PID re-enabled with reset via automation_resumePID().
+             g_adaptiveState calibration writes protected by g_stateMux.
              canStartCalibration() enforces night mode 30-minute buffer.
              Minimum expected RH rise validation (CALIBRATION_MIN_EXPECTED_RISE_PCT).
              Configurable fallback in adaptive_projectRecoveryTime().
@@ -340,37 +341,34 @@ bool adaptive_startCalibration() {
 
   // Freeze PID controller during calibration.
   // Calibration directly controls HOH + Air Assist; PID must not interfere.
-  pid_setEnabled(automation_getPIDController(), false);
+  automation_suspendPID();
 
+  // Initialize all calibration state under mutex — Web UI may read concurrently
+  portENTER_CRITICAL(&g_stateMux);
   g_adaptiveState.calibrationActive = true;
   g_adaptiveState.calibrationStartTime = millis();
   g_adaptiveState.calibrationStartRH = sensors_isHumidityValid() ?
       g_systemState.currentHumidity : g_systemState.lastKnownGoodHumidity;
-
-  // Force all humidity actuators OFF for stabilization
-  relayManager_setRelay(RELAY_HOH, false);
-  relayManager_setRelay(RELAY_AIR_ASSIST, false);
-
-  // Initialize phase tracking
   g_adaptiveState.calibPhase = CALIB_PHASE_STABILIZE;
   g_adaptiveState.calibPhaseStart = millis();
   g_adaptiveState.calibPhaseBaselineRH = g_adaptiveState.calibrationStartRH;
   g_adaptiveState.calibPhasePlateauDetected = false;
   g_adaptiveState.calibPlateauSampleStart = 0;
   g_adaptiveState.calibPlateauSampleRH = 0.0f;
+  g_adaptiveState.calibrationPeakRH = g_adaptiveState.calibrationStartRH;
+  g_adaptiveState.calibrationLowRH = g_adaptiveState.calibrationStartRH;
+  g_systemState.calibrationActive = true;
+  portEXIT_CRITICAL(&g_stateMux);
 
-  // Reset detection variables
+  // Reset detection variables (local to this task, no mutex needed)
   g_calibRiseDetected = false;
   g_calibRiseStartElapsed = 0;
   g_calibFallStartElapsed = 0;
   g_calibRising = true;
 
-  g_adaptiveState.calibrationPeakRH = g_adaptiveState.calibrationStartRH;
-  g_adaptiveState.calibrationLowRH = g_adaptiveState.calibrationStartRH;
-
-  portENTER_CRITICAL(&g_stateMux);
-  g_systemState.calibrationActive = true;
-  portEXIT_CRITICAL(&g_stateMux);
+  // Force all humidity actuators OFF for stabilization
+  relayManager_setRelay(RELAY_HOH, false);
+  relayManager_setRelay(RELAY_AIR_ASSIST, false);
 
   Serial.print(F("[ADAPT] Active calibration started for band "));
   Serial.print(band);
@@ -574,8 +572,7 @@ void adaptive_updateCalibration() {
         }
 
         // Re-enable PID with fresh state after calibration completes
-        pid_reset(automation_getPIDController());
-        pid_setEnabled(automation_getPIDController(), true);
+        automation_resumePID();
 
         portENTER_CRITICAL(&g_stateMux);
         g_systemState.calibrationActive = false;
@@ -619,9 +616,9 @@ bool adaptive_isCalibrating() {
 }
 
 void adaptive_cancelCalibration() {
-  g_adaptiveState.calibrationActive = false;
-
+  // Clear calibration state and system mirror under mutex
   portENTER_CRITICAL(&g_stateMux);
+  g_adaptiveState.calibrationActive = false;
   g_systemState.calibrationActive = false;
   portEXIT_CRITICAL(&g_stateMux);
 
@@ -630,8 +627,7 @@ void adaptive_cancelCalibration() {
   relayManager_setRelay(RELAY_AIR_ASSIST, false);
 
   // Re-enable PID with fresh state after calibration abort
-  pid_reset(automation_getPIDController());
-  pid_setEnabled(automation_getPIDController(), true);
+  automation_resumePID();
 
   Serial.println(F("[ADAPT] Calibration cancelled by user"));
 }
