@@ -7,7 +7,8 @@
              Fixed double-millis() drift in getOnDuration().
              Removed setRelay() call from getOnDuration() (pure getter now).
              Mutex-protected g_systemState writes in setRelay() and forceAllOff().
-             Uses COMPRESSOR_COOLDOWN_MS and COMPRESSOR_MAX_ON_MS from config.h.
+             Uses COMPRESSOR_COOLDOWN_MS from config.h for cooldown enforcement.
+             COMPRESSOR_MAX_ON_MS is enforced by the caller (automation.cpp loop).
              Uses RELAY_CYCLE_WINDOW_MS from config.h.
              Fixed missing cooldownLocked=true in partial restoration path.
 
@@ -48,6 +49,16 @@ static const char* relayNames[RELAY_COUNT] = {
   "Air Compressor"
 };
 
+// Relay capability table — source of truth for per-relay behavior.
+// When configurable relay mapping is implemented, this table will
+// be populated from stored configuration rather than hardcoded.
+static const RelayCapability g_relayCaps[RELAY_COUNT] = {
+    { false, false, false },  // HOH — silent, no cooldown, continuous
+    { true,  false, true  },  // Air Assist — loud, no cooldown, burst cycled
+    { false, false, false },  // Exhaust — moderate, no cooldown, continuous
+    { true,  true,  false }   // Compressor — loud, cooldown, continuous
+};
+
 // ============================================
 // Initialization
 // ============================================
@@ -65,7 +76,7 @@ bool relayManager_init() {
     g_relays[i].cycleWindowStart = millis();
     g_relays[i].cooldownLocked = false;
     g_relays[i].cooldownStart = 0;
-
+    g_relays[i].rapidFireLockoutStart = 0;
     // Configure pin and force HIGH (OFF)
     pinMode(g_relays[i].pin, OUTPUT);
     digitalWrite(g_relays[i].pin, HIGH);
@@ -99,29 +110,69 @@ bool relayManager_setRelay(uint8_t relayIndex, bool turnOn, bool force) {
     return true;  // Already in desired state - not a failure
   }
 
-  unsigned long now = millis();
+   unsigned long now = millis();
 
-  // --- COMPRESSOR COOLDOWN CHECK (GH-SAFE-002) ---
-  // SINGLE SOURCE OF TRUTH: All compressor safety lives here
-   if (relayIndex == RELAY_COMPRESSOR && turnOn && !force) {
+  // --- RAPID-FIRE GUARD (gated on turnOn only — OFF always allowed) ---
+  // Prevents relay damage from UI bugs or network floods.
+  // Allows RELAY_MAX_CYCLES_PER_MIN + RELAY_MANUAL_CYCLE_ALLOWANCE
+  // ON events per window. Exceeding that locks the relay for
+  // RAPID_FIRE_LOCKOUT_MS. OFF commands always proceed — relays
+  // must be able to de-energize unconditionally.
+  if (turnOn) {
+      // Check if currently in lockout
+      if (relay->rapidFireLockoutStart > 0) {
+          if (now - relay->rapidFireLockoutStart < RAPID_FIRE_LOCKOUT_MS) {
+              Serial.print(F("[SAFETY] Rapid-fire lockout active on "));
+              Serial.print(relayNames[relayIndex]);
+              Serial.print(F(" ("));
+              Serial.print((RAPID_FIRE_LOCKOUT_MS - (now - relay->rapidFireLockoutStart)) / 1000);
+              Serial.println(F("s remaining)"));
+              return false;
+          }
+          // Lockout served — reset for a fresh window
+          relay->cycleCount = 0;
+          relay->cycleWindowStart = now;
+          relay->rapidFireLockoutStart = 0;
+      }
+
+      // Count ON events in sliding 60-second window
+      unsigned long windowElapsed = now - relay->cycleWindowStart;
+      if (windowElapsed >= RELAY_CYCLE_WINDOW_MS) {
+          relay->cycleWindowStart = now;
+          relay->cycleCount = 0;
+      }
+
+      uint8_t maxAllowed = RELAY_MAX_CYCLES_PER_MIN + RELAY_MANUAL_CYCLE_ALLOWANCE;
+      if (relay->cycleCount >= maxAllowed) {
+          relay->rapidFireLockoutStart = now;
+          Serial.print(F("[SAFETY] Rapid-fire lockout triggered on "));
+          Serial.print(relayNames[relayIndex]);
+          Serial.print(F(" ("));
+          Serial.print(relay->cycleCount);
+          Serial.println(F(" ON events/min) — locked for 5s"));
+          return false;
+      }
+  }
+
+  // --- COOLDOWN CHECK (bypassed when force=true) ---
+  if (relayManager_requiresCooldown(relayIndex) && turnOn && !force) {
     if (relay->cooldownLocked) {
       unsigned long elapsedSinceOff = now - relay->cooldownStart;
       if (elapsedSinceOff < COMPRESSOR_COOLDOWN_MS) {
         unsigned long remaining = COMPRESSOR_COOLDOWN_MS - elapsedSinceOff;
-        Serial.print(F("[SAFETY] Compressor cooldown active - "));
+        Serial.print(F("[SAFETY] Cooldown active - "));
         Serial.print(remaining / 1000);
         Serial.println(F("s remaining. Refusing to start."));
         return false;
       } else {
-        // Cooldown has expired
         relay->cooldownLocked = false;
-        Serial.println(F("[SAFETY] Compressor cooldown complete - available for use"));
+        Serial.println(F("[SAFETY] Cooldown complete - available for use"));
       }
     }
   }
 
-  // --- RELAY CYCLE LIMIT CHECK (GH-SAFE-001) ---
-   if (turnOn && !force) {
+  // --- RELAY CYCLE LIMIT CHECK (bypassed when force=true) ---
+  if (turnOn && !force) {
     if (!relayManager_canToggle(relayIndex)) {
       Serial.print(F("[SAFETY] Relay cycle limit reached for "));
       Serial.print(relayNames[relayIndex]);
@@ -131,7 +182,7 @@ bool relayManager_setRelay(uint8_t relayIndex, bool turnOn, bool force) {
       return false;
     }
   }
-
+   
   // --- EXECUTE STATE CHANGE ---
   if (turnOn) {
     digitalWrite(relay->pin, LOW);   // Active LOW = ON
@@ -151,11 +202,13 @@ bool relayManager_setRelay(uint8_t relayIndex, bool turnOn, bool force) {
     relay->lastOffTime = now;
     relay->totalOnDuration = 0;
 
-    // Compressor cooldown on every OFF event (GH-SAFE-002)
-    if (relayIndex == RELAY_COMPRESSOR) {
+      // Cooldown on every OFF event for relays that require it
+    if (relayManager_requiresCooldown(relayIndex)) {
       relay->cooldownLocked = true;
       relay->cooldownStart = now;
-      Serial.print(F("[SAFETY] Compressor cooldown started - locked for "));
+      Serial.print(F("[SAFETY] Cooldown started on "));
+      Serial.print(relayNames[relayIndex]);
+      Serial.print(F(" - locked for "));
       Serial.print(COMPRESSOR_COOLDOWN_SEC / 60);
       Serial.println(F(" minutes"));
     }
@@ -348,6 +401,19 @@ void relayManager_loadCooldownState(unsigned long lastOffTimestamp, bool wasInCo
   Serial.print(COMPRESSOR_COOLDOWN_SEC / 60);
   Serial.println(F(" minutes"));
 }
+bool relayManager_isRelayLoud(uint8_t relayIndex) {
+    if (relayIndex >= RELAY_COUNT) return false;
+    return g_relayCaps[relayIndex].isLoud;
+}
+
+bool relayManager_requiresCooldown(uint8_t relayIndex) {
+    if (relayIndex >= RELAY_COUNT) return false;
+    return g_relayCaps[relayIndex].requiresCooldown;
+}
+bool relayManager_isBurstCycled(uint8_t relayIndex) {
+    if (relayIndex >= RELAY_COUNT) return false;
+    return g_relayCaps[relayIndex].isBurstCycled;
+}
 
 // ============================================
 // Emergency Shutdown
@@ -362,8 +428,8 @@ void relayManager_forceAllOff() {
     g_relays[i].lastOffTime = millis();
     g_relays[i].totalOnDuration = 0;
 
-    // Compressor enters cooldown on emergency shutdown too
-    if (i == RELAY_COMPRESSOR) {
+        // Relays requiring cooldown enter cooldown on emergency shutdown
+    if (relayManager_requiresCooldown(i)) {
       g_relays[i].cooldownLocked = true;
       g_relays[i].cooldownStart = millis();
     }
