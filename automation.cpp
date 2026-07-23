@@ -961,14 +961,24 @@ bool automation_isAirAssistBurstActive() {
 // Public API: PID Controller Access
 // ============================================================
 
-PIDController* automation_getPIDController() {
-    return &g_humidityPID;
+// ============================================================
+// Public API: PID Suspend/Resume (for adaptive.cpp calibration)
+// ============================================================
+
+void automation_suspendPID() {
+    if (pid_isEnabled(&g_humidityPID)) {
+        suspendPID();
+    }
+}
+
+void automation_resumePID() {
+    pid_reset(&g_humidityPID);
+    pid_setEnabled(&g_humidityPID, true);
 }
 
 // ============================================================
 // Public API: Manual Overrides
 // ============================================================
-
 void automation_activateHumidityOverride() {
     portENTER_CRITICAL(&g_stateMux);
     g_humidityOverrideActive = true;
