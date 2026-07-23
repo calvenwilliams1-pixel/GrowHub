@@ -48,9 +48,6 @@ void automation_updateThresholds(const AutomationThresholds* newThresholds);
 // Air Assist burst timing state (exposed for logging)
 bool automation_isAirAssistBurstActive();
 
-// Air Assist burst timing state (exposed for logging)
-bool automation_isAirAssistBurstActive();
-
 // PID controller access (for adaptive.cpp calibration)
 PIDController* automation_getPIDController();
 
