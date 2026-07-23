@@ -305,7 +305,7 @@ void relayManager_loadCooldownState(unsigned long lastOffTimestamp, bool wasInCo
 
   // If we have a valid RTC timestamp, check actual elapsed time
   if (lastOffTimestamp > 0) {
-    unsigned long currentTimestamp = rtc_getEpochSeconds();
+    unsigned long currentTimestamp = rtc_getGH2000Seconds();
 
     // Sanity check: reject if RTC appears to have gone backwards (dead battery, reset).
     // Also cap maximum believable downtime at 24h to prevent absurdly large deltas
