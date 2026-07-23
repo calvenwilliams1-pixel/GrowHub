@@ -26,6 +26,7 @@
  *   - Added OTA update constants
  *   - Added safety watchdog, dry-run, and fan stall constants
  *   - Added temperature band index constants
+ *   - Added SENSOR_LKG_MAX_AGE_MS and TEMP_ALERT_COOLDOWN_MS
  */
 
 #ifndef CONFIG_H
@@ -103,6 +104,7 @@
 #define SENSOR_POLL_INTERVAL_MS         2000
 #define SENSOR_RETRY_INTERVAL_MS        5000
 #define SENSOR_FAULT_TIMEOUT_MS         10000UL // 10 seconds without valid data = fault
+#define SENSOR_LKG_MAX_AGE_MS           30000UL // Max age of last-known-good value before safe mode
 #define SCD40_TEMP_OFFSET               0.0f
 #define SCD40_ALTITUDE                  0
 
@@ -126,6 +128,7 @@
 // ============================================================
 #define TEMP_ALERT_HIGH_C               32.0f
 #define TEMP_ALERT_LOW_C                12.0f
+#define TEMP_ALERT_COOLDOWN_MS          300000UL  // Min time between repeat temperature alerts
 
 // ============================================================
 // TEMPERATURE BANDS (Adaptive Learning)
