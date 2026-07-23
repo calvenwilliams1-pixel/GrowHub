@@ -442,7 +442,7 @@ bool sdLogger_loadCooldownState() {
 bool sdLogger_purgeOldLogs() {
   if (!g_sdAvailable) return false;
 
-  unsigned long nowEpoch = rtc_getEpochSeconds();
+ unsigned long nowEpoch = rtc_getGH2000Seconds();
   if (nowEpoch == 0) {
     Serial.println(F("[SD] Cannot purge logs - RTC unavailable (epoch is 0, skipping to avoid mass deletion)"));
     return false;
@@ -485,7 +485,7 @@ bool sdLogger_purgeOldLogs() {
     fileDate.month = (uint8_t)fileMonth;
     fileDate.date = (uint8_t)fileDay;
 
-    unsigned long fileEpoch = rtc_timeToEpoch(&fileDate);
+   unsigned long fileEpoch = rtc_timeToGH2000Seconds(&fileDate);
     if (fileEpoch == 0) continue;
 
     if (nowEpoch <= fileEpoch) continue;
