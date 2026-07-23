@@ -24,7 +24,7 @@
  *   overrides run identically regardless of which humidity mode is active.
  * 
  * CONTROL FLOW (every loop iteration):
- *   1. Night mode check (lock out compressor + air assist if active)
+ *   1. Night mode check (reset all actuators, manual overrides respected) 
  *   2. Temperature alerts
  *   3. CO2 control (exhaust fan)
  *   4. Humidity control:
@@ -161,7 +161,7 @@ static bool g_airAssistInOnPhase = false;
 // ============================================================
 
 static bool g_inEmergencyRecovery = false;
-
+    
 // ============================================================
 // Manual Override State
 // ============================================================
@@ -170,7 +170,8 @@ static bool g_humidityOverrideActive = false;
 static unsigned long g_humidityOverrideStart = 0;
 static bool g_co2OverrideActive = false;
 static unsigned long g_co2OverrideStart = 0;
-
+static bool g_compressorOverrideActive = false;
+static unsigned long g_compressorOverrideStart = 0;
 // ============================================================
 // PID Runtime State
 // ============================================================
@@ -418,8 +419,9 @@ static void updateWatchdog() {
  * prevent stale timers on morning transition.
  */
 static void runAirAssistBursts() {
-    // Night mode lockout — Air Assist is loud, compressor is loud.
-    // HOH is silent and continues to operate normally at night.
+      // Night mode lockout — Air Assist is loud, compressor is loud.
+    // HOH is briefly reset on night mode entry then re-engages via
+    // the normal humidity loop if RH is below floor.
     if (g_systemState.nightModeActive) {
         // Reset burst state so morning starts clean
         if (g_airAssistBurstActive || relayManager_isRelayOn(RELAY_AIR_ASSIST)) {
@@ -835,19 +837,13 @@ void automation_checkNightMode() {
         if (nightMode) {
             Serial.println(F("[AUTO] Night Mode ACTIVATED (21:00-10:00)"));
 
-            // Lock out compressor and Air Assist per noise ordinance.
-            // HOH is silent — allowed to continue operating at night.
-            // Compressor cooldown is enforced by relay_manager internally;
-            // turning OFF is always safe (cooldown only prevents re-start).
-            relayManager_setRelay(RELAY_COMPRESSOR, false);
-            if (relayManager_isRelayOn(RELAY_AIR_ASSIST)) {
-                relayManager_setRelay(RELAY_AIR_ASSIST, false);
+             // Full reset of humidity actuators on night mode transition.
+            // Manual overrides are respected — if the user has explicitly
+            // opted in, the compressor is not force-killed on the edge.
+            if (!automation_isCompressorOverrideActive()) {
+                relayManager_setRelay(RELAY_COMPRESSOR, false);
             }
-
-            // Reset burst state so morning starts clean
-            g_airAssistBurstActive = false;
-            g_airAssistInOnPhase = false;
-            g_airAssistBurstStart = 0;
+            stopHumidityOutputs();
 
             // Abort any running calibration immediately.
             // Starts are prevented within 30 minutes of night mode
@@ -862,11 +858,13 @@ void automation_checkNightMode() {
     }
 
     // Continuous enforcement during night mode
+       // Continuous enforcement during night mode.
+    // Manual overrides take precedence — exempt from lockout.
     if (nightMode) {
-        if (relayManager_isRelayOn(RELAY_COMPRESSOR)) {
+        if (relayManager_isRelayOn(RELAY_COMPRESSOR) && !automation_isCompressorOverrideActive()) {
             relayManager_setRelay(RELAY_COMPRESSOR, false);
         }
-        if (relayManager_isRelayOn(RELAY_AIR_ASSIST)) {
+        if (relayManager_isRelayOn(RELAY_AIR_ASSIST) && !automation_isHumidityOverrideActive()) {
             relayManager_setRelay(RELAY_AIR_ASSIST, false);
             g_airAssistBurstActive = false;
             g_airAssistInOnPhase = false;
@@ -958,9 +956,55 @@ bool automation_isAirAssistBurstActive() {
 }
 
 // ============================================================
-// Public API: PID Controller Access
+// Public API: Compressor Override
 // ============================================================
 
+void automation_activateCompressorOverride() {
+    portENTER_CRITICAL(&g_stateMux);
+    g_compressorOverrideActive = true;
+    g_compressorOverrideStart = millis();
+    portEXIT_CRITICAL(&g_stateMux);
+    Serial.println(F("[AUTO] Compressor override ACTIVATED"));
+}
+
+bool automation_isCompressorOverrideActive() {
+    bool active;
+    unsigned long start;
+    portENTER_CRITICAL(&g_stateMux);
+    active = g_compressorOverrideActive;
+    start = g_compressorOverrideStart;
+    portEXIT_CRITICAL(&g_stateMux);
+
+    if (active && (millis() - start >= MANUAL_OVERRIDE_TIMEOUT_MS)) {
+        portENTER_CRITICAL(&g_stateMux);
+        g_compressorOverrideActive = false;
+        portEXIT_CRITICAL(&g_stateMux);
+        Serial.println(F("[AUTO] Compressor override TIMEOUT"));
+        return false;
+    }
+    return active;
+}
+
+void automation_deactivateCompressorOverride() {
+    portENTER_CRITICAL(&g_stateMux);
+    g_compressorOverrideActive = false;
+    portEXIT_CRITICAL(&g_stateMux);
+    Serial.println(F("[AUTO] Compressor override DEACTIVATED"));
+}
+
+unsigned long automation_getCompressorOverrideRemaining() {
+    bool active;
+    unsigned long start;
+    portENTER_CRITICAL(&g_stateMux);
+    active = g_compressorOverrideActive;
+    start = g_compressorOverrideStart;
+    portEXIT_CRITICAL(&g_stateMux);
+
+    if (!active) return 0;
+    unsigned long elapsed = millis() - start;
+    if (elapsed >= MANUAL_OVERRIDE_TIMEOUT_MS) return 0;
+    return MANUAL_OVERRIDE_TIMEOUT_MS - elapsed;
+}
 // ============================================================
 // Public API: PID Suspend/Resume (for adaptive.cpp calibration)
 // ============================================================
@@ -975,6 +1019,7 @@ void automation_resumePID() {
     pid_reset(&g_humidityPID);
     pid_setEnabled(&g_humidityPID, true);
 }
+
 
 // ============================================================
 // Public API: Manual Overrides
@@ -1025,6 +1070,7 @@ void automation_deactivateAllOverrides() {
     portENTER_CRITICAL(&g_stateMux);
     g_humidityOverrideActive = false;
     g_co2OverrideActive = false;
+    g_compressorOverrideActive = false;
     portEXIT_CRITICAL(&g_stateMux);
     g_lastPidCompute = 0;  // Force immediate PID computation on resume
     Serial.println(F("[AUTO] All overrides DEACTIVATED"));
