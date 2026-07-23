@@ -40,13 +40,13 @@
 #define AP_PASSWORD                     "growhub123"
 
 // Static IP configuration
-#define STATIC_IP_OCTET_1               192
-#define STATIC_IP_OCTET_2               168
-#define STATIC_IP_OCTET_3               1
-#define STATIC_IP_OCTET_4               100
-#define GATEWAY_OCTET_1                 192
-#define GATEWAY_OCTET_2                 168
-#define GATEWAY_OCTET_3                 1
+#define STATIC_IP_OCTET_1               10
+#define STATIC_IP_OCTET_2               0
+#define STATIC_IP_OCTET_3               0
+#define STATIC_IP_OCTET_4               20
+#define GATEWAY_OCTET_1                 10
+#define GATEWAY_OCTET_2                 0
+#define GATEWAY_OCTET_3                 0
 #define GATEWAY_OCTET_4                 1
 
 // ntfy.sh push notification endpoint
@@ -285,7 +285,7 @@ bool network_init() {
 
   IPAddress staticIP(STATIC_IP_OCTET_1, STATIC_IP_OCTET_2, STATIC_IP_OCTET_3, STATIC_IP_OCTET_4);
   IPAddress gateway(GATEWAY_OCTET_1, GATEWAY_OCTET_2, GATEWAY_OCTET_3, GATEWAY_OCTET_4);
-  IPAddress subnet(255, 255, 255, 0);
+  IPAddress subnet(255, 255, 254, 0);
   IPAddress dns1(8, 8, 8, 8);
   IPAddress dns2(8, 8, 4, 4);
 
