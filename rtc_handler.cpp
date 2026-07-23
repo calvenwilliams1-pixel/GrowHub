@@ -17,6 +17,7 @@
              Cache invalidation now correctly forces fresh RTC read after rtc_setTime().
              Fixed rtc_timeToEpoch() 32-bit overflow risk — uses uint64_t intermediate.
              Fixed I2C storm on RTC failure — retries every 60s instead of every call.
+             Fixed goto crossing initialization in rtc_checkSerialCommand().
 
    DS3231 communicates over I2C at address 0x68.
    All time values are stored in BCD format internally.
@@ -472,25 +473,28 @@ void rtc_checkSerialCommand() {
         long m  = strtol(p, &end, 10); if (end == p) goto parse_fail; p = end; while (*p == ' ' || *p == '\t') p++;
         long s  = strtol(p, &end, 10); if (end == p) goto parse_fail;
 
-        // Validate ranges
-        if (y < 2000 || y > 2099 || mo < 1 || mo > 12 || d < 1 || d > 31 ||
-            h < 0 || h > 23 || m < 0 || m > 59 || s < 0 || s > 59) {
-          Serial.println(F("[RTC] ERROR: Values out of range"));
-          cmdLen = 0;
-          continue;
-        }
+        // Braces isolate these declarations from the goto above
+        {
+          // Validate ranges
+          if (y < 2000 || y > 2099 || mo < 1 || mo > 12 || d < 1 || d > 31 ||
+              h < 0 || h > 23 || m < 0 || m > 59 || s < 0 || s > 59) {
+            Serial.println(F("[RTC] ERROR: Values out of range"));
+            cmdLen = 0;
+            continue;
+          }
 
-        uint8_t dow = computeDayOfWeek((uint16_t)y, (uint8_t)mo, (uint8_t)d);
+          uint8_t dow = computeDayOfWeek((uint16_t)y, (uint8_t)mo, (uint8_t)d);
 
-        if (rtc_setTime((uint8_t)h, (uint8_t)m, (uint8_t)s,
-                        (uint8_t)d, (uint8_t)mo, (uint16_t)y, dow)) {
-          Serial.println(F("[RTC] Time set successfully!"));
-          char timeStr[24];
-          rtc_getTimeString(timeStr, sizeof(timeStr));
-          Serial.print(F("[RTC] Now: "));
-          Serial.println(timeStr);
-        } else {
-          Serial.println(F("[RTC] ERROR: Invalid date/time values. Check ranges."));
+          if (rtc_setTime((uint8_t)h, (uint8_t)m, (uint8_t)s,
+                          (uint8_t)d, (uint8_t)mo, (uint16_t)y, dow)) {
+            Serial.println(F("[RTC] Time set successfully!"));
+            char timeStr[24];
+            rtc_getTimeString(timeStr, sizeof(timeStr));
+            Serial.print(F("[RTC] Now: "));
+            Serial.println(timeStr);
+          } else {
+            Serial.println(F("[RTC] ERROR: Invalid date/time values. Check ranges."));
+          }
         }
         cmdLen = 0;
         continue;
