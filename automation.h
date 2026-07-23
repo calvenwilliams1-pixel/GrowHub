@@ -16,6 +16,7 @@
 
 #include <Arduino.h>
 #include "config.h"
+#include "pid_controller.h"
 
 // Runtime-adjustable thresholds (modifiable via Web UI)
 // Relationship requirements enforced by automation_updateThresholds():
@@ -46,6 +47,23 @@ void automation_updateThresholds(const AutomationThresholds* newThresholds);
 
 // Air Assist burst timing state (exposed for logging)
 bool automation_isAirAssistBurstActive();
+
+// Air Assist burst timing state (exposed for logging)
+bool automation_isAirAssistBurstActive();
+
+// PID controller access (for adaptive.cpp calibration)
+PIDController* automation_getPIDController();
+
+// Manual override per subsystem (scoped — humidity and CO2 are independent)
+void automation_activateHumidityOverride();
+void automation_activateCO2Override();
+void automation_deactivateHumidityOverride();
+void automation_deactivateCO2Override();
+void automation_deactivateAllOverrides();
+bool automation_isHumidityOverrideActive();
+bool automation_isCO2OverrideActive();
+unsigned long automation_getHumidityOverrideRemaining();
+unsigned long automation_getCO2OverrideRemaining();
 
 // Manual override per subsystem (scoped — humidity and CO2 are independent)
 void automation_activateHumidityOverride();
