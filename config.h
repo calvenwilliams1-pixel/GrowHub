@@ -25,6 +25,7 @@
  *   - Added ESP-NOW, WiFi timing, and push notification constants
  *   - Added OTA update constants
  *   - Added safety watchdog, dry-run, and fan stall constants
+ *   - Added temperature band index constants
  */
 
 #ifndef CONFIG_H
@@ -138,6 +139,10 @@
 #define BAND_27_30_LOW                  27.0f
 #define BAND_27_30_HIGH                 30.0f
 
+#define BAND_18_21_INDEX                0
+#define BAND_21_24_INDEX                1
+#define BAND_24_27_INDEX                2
+#define BAND_27_30_INDEX                3
 #define NUM_TEMP_BANDS                  4
 
 // SD card profile filenames per band
