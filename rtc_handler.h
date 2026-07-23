@@ -71,14 +71,19 @@ bool rtc_isValid();
 // Caller must ensure bufferSize is at least 20 bytes. Safe and reentrant.
 void rtc_getTimeString(char* buffer, size_t bufferSize);
 
-// Epoch seconds from RTC (calendar-aware, monotonic).
-// Computes a pseudo-epoch offset from 2000-01-01 00:00:00 UTC.
-// Returns 0 on RTC read failure.
-unsigned long rtc_getEpochSeconds();
+// GH2000 seconds from RTC (calendar-aware, monotonic).
+// Computes seconds since 2000-01-01 00:00:00 UTC — NOT Unix epoch (1970).
+// Suitable ONLY for elapsed-time differences within GrowHub32.
+// Do NOT compare against external timestamps. Returns 0 on RTC read failure.
+unsigned long rtc_getGH2000Seconds();
 
-// Convert a calendar date/time to monotonic pseudo-epoch seconds.
-// Used by sd_logger for log purge age calculation.
-unsigned long rtc_timeToEpoch(const RTCTime* time);
+// Convert a calendar date/time to GH2000 seconds (since 2000-01-01).
+// Same algorithm as rtc_getGH2000Seconds() but accepts an explicit RTCTime
+// instead of reading from hardware. Used by sd_logger for log purge age
+// calculation without requiring a live RTC read per file.
+// Returns 0 if the input pointer is NULL or the date is outside the valid
+// range (year 2000–2099, month 1–12, date validated against actual month length).
+unsigned long rtc_timeToGH2000Seconds(const RTCTime* time);
 
 // ============================================================
 // v1.3: Night Mode Scheduling Helper
