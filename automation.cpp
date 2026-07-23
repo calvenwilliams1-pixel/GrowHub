@@ -113,7 +113,7 @@ static void executeHumidityControl();
 // Global PID Instance
 // ============================================================
 
- PIDController g_humidityPID;
+ static PIDController g_humidityPID;
 
 // ============================================================
 // Relay Protection State (min ON/OFF timing for HOH + Air Assist)
@@ -673,7 +673,7 @@ void automation_runHumidityLoop() {
 
         if (sensorValid) {
             currentHumidity = liveRH;
-        } else if (faultTimer > 0 && (millis() - faultTimer < 30000UL)) {
+        } else if (faultTimer > 0 && (millis() - faultTimer < SENSOR_LKG_MAX_AGE_MS)) {
             // Fault is recent — use last known good value
             currentHumidity = lastGoodRH;
         } else {
@@ -890,7 +890,7 @@ void automation_checkTemperatureAlerts() {
     // High temperature alert with 5-minute cooldown between alerts.
     // lastHighAlertTime==0 allows first alert to fire immediately.
     if (currentTemp >= TEMP_ALERT_HIGH_C) {
-        if (!highAlertSent && (lastHighAlertTime == 0 || millis() - lastHighAlertTime >= 300000UL)) {
+       if (!highAlertSent && (lastHighAlertTime == 0 || millis() - lastHighAlertTime >= TEMP_ALERT_COOLDOWN_MS)) {
             highAlertSent = true;
             lastHighAlertTime = millis();
             char msg[48];
@@ -904,7 +904,7 @@ void automation_checkTemperatureAlerts() {
     // Low temperature alert with 5-minute cooldown between alerts.
     // lastLowAlertTime==0 allows first alert to fire immediately.
     if (currentTemp <= TEMP_ALERT_LOW_C) {
-        if (!lowAlertSent && (lastLowAlertTime == 0 || millis() - lastLowAlertTime >= 300000UL)) {
+        if (!lowAlertSent && (lastLowAlertTime == 0 || millis() - lastLowAlertTime >= TEMP_ALERT_COOLDOWN_MS)) {
             lowAlertSent = true;
             lastLowAlertTime = millis();
             char msg[48];
@@ -955,6 +955,14 @@ void automation_updateThresholds(const AutomationThresholds* newThresholds) {
 
 bool automation_isAirAssistBurstActive() {
     return g_airAssistBurstActive;
+}
+
+// ============================================================
+// Public API: PID Controller Access
+// ============================================================
+
+PIDController* automation_getPIDController() {
+    return &g_humidityPID;
 }
 
 // ============================================================
