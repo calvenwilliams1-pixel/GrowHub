@@ -9,6 +9,7 @@
              Safety abort on sensor fault or emergency humidity levels.
              Fixed endRisePhase() timestamp bug (capture riseStartTime before overwrite).
              PID frozen during calibration, re-enabled with reset on complete/cancel.
+             PID access via automation_getPIDController() — proper encapsulation.
              canStartCalibration() enforces night mode 30-minute buffer.
              Minimum expected RH rise validation (CALIBRATION_MIN_EXPECTED_RISE_PCT).
              Configurable fallback in adaptive_projectRecoveryTime().
@@ -41,14 +42,13 @@
 #include "network.h"
 #include "relay_manager.h"
 #include "pid_controller.h"
+#include "automation.h"
 #include "system_state.h"
 #include <SD.h>
 #include <ArduinoJson.h>
 
 extern void network_sendAlert(const char* title, const char* message);
-extern PIDController g_humidityPID;
 extern portMUX_TYPE g_stateMux;
-extern PIDController g_humidityPID;
 
 static BandProfile g_bandProfiles[4];
 AdaptiveState g_adaptiveState;
@@ -340,7 +340,7 @@ bool adaptive_startCalibration() {
 
   // Freeze PID controller during calibration.
   // Calibration directly controls HOH + Air Assist; PID must not interfere.
-  pid_setEnabled(&g_humidityPID, false);
+  pid_setEnabled(automation_getPIDController(), false);
 
   g_adaptiveState.calibrationActive = true;
   g_adaptiveState.calibrationStartTime = millis();
@@ -574,8 +574,8 @@ void adaptive_updateCalibration() {
         }
 
         // Re-enable PID with fresh state after calibration completes
-        pid_reset(&g_humidityPID);
-        pid_setEnabled(&g_humidityPID, true);
+        pid_reset(automation_getPIDController());
+        pid_setEnabled(automation_getPIDController(), true);
 
         portENTER_CRITICAL(&g_stateMux);
         g_systemState.calibrationActive = false;
@@ -630,8 +630,8 @@ void adaptive_cancelCalibration() {
   relayManager_setRelay(RELAY_AIR_ASSIST, false);
 
   // Re-enable PID with fresh state after calibration abort
-  pid_reset(&g_humidityPID);
-  pid_setEnabled(&g_humidityPID, true);
+  pid_reset(automation_getPIDController());
+  pid_setEnabled(automation_getPIDController(), true);
 
   Serial.println(F("[ADAPT] Calibration cancelled by user"));
 }
