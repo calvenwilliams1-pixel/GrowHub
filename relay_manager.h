@@ -82,6 +82,19 @@ void relayManager_forceAllOff();
 #define RELAY_COMPRESSOR  3
 #define RELAY_COUNT       4
 
+// ============================================================
+// Relay Capabilities (v1.4 foundation for configurable mapping)
+// ============================================================
+struct RelayCapability {
+    bool isLoud;           // Triggers night mode confirmation popup in Web UI
+    bool requiresCooldown; // Enforces compressor-style cooldown on re-start
+    bool isBurstCycled;    // Uses ON/OFF burst timing (Air Assist behavior)
+};
+
+// Query relay capabilities
+bool relayManager_isRelayLoud(uint8_t relayIndex);
+bool relayManager_requiresCooldown(uint8_t relayIndex);
+
 // Exposed for safety module and UI (read-only)
 extern RelayState g_relays[RELAY_COUNT];
 
