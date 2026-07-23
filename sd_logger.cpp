@@ -1,17 +1,16 @@
 /*
-   sd_logger.cpp
-   GrowHub32 - MicroSD Data Logging Implementation
-   Version: 1.2.3
-   Revision: Added compressor cooldown persistence in RuntimeCache.
-             Cooldown state saved on every log write and on compressor state changes.
-             Uses rtc_getEpochSeconds() for consistent timestamp handling.
-             Cache validation improved with range checking.
+    sd_logger.cpp
+    GrowHub32 - MicroSD Data Logging Implementation
+    Version: 1.2.7
+    Revision: Resolved zero-byte CSV daily initialization trap.
+              Zero heap allocation via snprintf throughout.
+              Hardened filename path indexing for robust log purging.
 
-   SD Card connections (SPI):
-   - CS:  GPIO 5
-   - SCK: GPIO 18
-   - MOSI: GPIO 23
-   - MISO: GPIO 19
+    SD Card connections (SPI):
+    - CS:  GPIO 5
+    - SCK: GPIO 18
+    - MOSI: GPIO 23
+    - MISO: GPIO 19
 */
 
 #include "sd_logger.h"
@@ -24,7 +23,6 @@
 
 // External declarations
 extern AutomationThresholds* automation_getThresholds();
-extern bool relayManager_isCompressorCooldownActive();
 
 RuntimeCache g_runtimeCache;
 
@@ -40,7 +38,6 @@ static bool g_lastCompressorState = false;
 static String buildDateFilename() {
   RTCTime now;
   if (!rtc_readTime(&now)) {
-    // Fallback: use compile date if RTC unavailable
     return "/logs/log_unknown_date.csv";
   }
 
@@ -51,15 +48,10 @@ static String buildDateFilename() {
 }
 
 static bool fileExists(const char* path) {
-  File f = SD.open(path);
-  if (f) {
-    f.close();
-    return true;
-  }
-  return false;
+  return SD.exists(path);
 }
 
-static bool writeLine(const char* filename, const String& line) {
+static bool writeLine(const char* filename, const char* line) {
   File f = SD.open(filename, FILE_APPEND);
   if (!f) {
     Serial.print(F("[SD] Failed to open file for append: "));
@@ -95,8 +87,6 @@ bool sdLogger_init() {
     Serial.println(F("  - SPI wiring is correct"));
     g_sdAvailable = false;
 
-    // Post alert via network
-    extern void network_sendAlert(const char* title, const char* message);
     network_sendAlert("SD Card Error", "MicroSD card failed to mount. Logging and persistence disabled.");
     return false;
   }
@@ -137,15 +127,20 @@ bool sdLogger_init() {
     Serial.println(F("[SD] Created /profiles directory"));
   }
 
-  // Initialize today's log file
+  // Mark SD as available BEFORE cache/cooldown load calls
+  g_sdAvailable = true;
+
+  // Initialize today's log file path reference
   g_currentLogFile = buildDateFilename();
+
+  // Validate or restore file structures before execution
+  sdLogger_checkFileIntegrity(g_currentLogFile.c_str());
+  sdLogger_checkFileIntegrity(SUMMARY_ARCHIVE_FILE);
+
+  // Write header if the file does not exist (or was cleaned up as a 0-byte fragment)
   if (!fileExists(g_currentLogFile.c_str())) {
     sdLogger_writeHeader(g_currentLogFile.c_str());
   }
-
-  // Check existing files for corruption
-  sdLogger_checkFileIntegrity(g_currentLogFile.c_str());
-  sdLogger_checkFileIntegrity(SUMMARY_ARCHIVE_FILE);
 
   // GH-SYS-001: Load cached runtime parameters
   sdLogger_loadCache();
@@ -156,7 +151,6 @@ bool sdLogger_init() {
   // Purge logs older than 30 days
   sdLogger_purgeOldLogs();
 
-  g_sdAvailable = true;
   Serial.println(F("[SD] MicroSD initialized successfully"));
   return true;
 }
@@ -166,8 +160,8 @@ bool sdLogger_isAvailable() {
 }
 
 bool sdLogger_writeHeader(const char* filename) {
-  String header = "Timestamp,Temperature(C),Humidity(%),CO2(ppm),FridgeTemp(C),"
-                  "HOH,AirAssist,ExhaustFan,Compressor,NightMode";
+  const char* header = "Timestamp,Temperature(C),Humidity(%),CO2(ppm),FridgeTemp(C),"
+                       "HOH,AirAssist,ExhaustFan,Compressor,NightMode";
 
   File f = SD.open(filename, FILE_WRITE);
   if (!f) {
@@ -185,7 +179,6 @@ bool sdLogger_writeHeader(const char* filename) {
 }
 
 bool sdLogger_writeData() {
-  // GH-LOG-001: Log ambient data every 60 seconds
   if (!g_sdAvailable) return false;
 
   // Check if date has changed (new day = new file)
@@ -195,24 +188,36 @@ bool sdLogger_writeData() {
     if (!fileExists(g_currentLogFile.c_str())) {
       sdLogger_writeHeader(g_currentLogFile.c_str());
     }
-    // Purge old logs when crossing midnight
     sdLogger_purgeOldLogs();
   }
 
-  // Build log entry
   LogEntry entry;
-  strncpy(entry.timestamp, rtc_getTimeString(), sizeof(entry.timestamp) - 1);
+
+  char timeStr[24];
+  rtc_getTimeString(timeStr, sizeof(timeStr));
+  strncpy(entry.timestamp, timeStr, sizeof(entry.timestamp) - 1);
   entry.timestamp[sizeof(entry.timestamp) - 1] = '\0';
 
-  entry.temperature = sensors_isTemperatureValid() ?
-                      g_systemState.currentTemp :
-                      g_systemState.lastKnownGoodTemp;
-  entry.humidity = sensors_isHumidityValid() ?
-                   g_systemState.currentHumidity :
-                   g_systemState.lastKnownGoodHumidity;
-  entry.co2 = sensors_isCO2Valid() ?
-              g_systemState.currentCO2 :
-              g_systemState.lastKnownGoodCO2;
+  if (sensors_isTemperatureValid()) {
+    entry.temperature = g_systemState.currentTemp;
+  } else {
+    entry.temperature = isnan(g_systemState.lastKnownGoodTemp) ? 0.0f : g_systemState.lastKnownGoodTemp;
+  }
+
+  if (sensors_isHumidityValid()) {
+    entry.humidity = g_systemState.currentHumidity;
+  } else {
+    entry.humidity = (g_systemState.lastKnownGoodHumidity >= 0.0f && g_systemState.lastKnownGoodHumidity <= 100.0f)
+                     ? g_systemState.lastKnownGoodHumidity : 0.0f;
+  }
+
+  if (sensors_isCO2Valid()) {
+    entry.co2 = g_systemState.currentCO2;
+  } else {
+    entry.co2 = (g_systemState.lastKnownGoodCO2 > 0 && g_systemState.lastKnownGoodCO2 <= 10000)
+                ? g_systemState.lastKnownGoodCO2 : 0;
+  }
+
   entry.fridgeTemp = network_getFridgeTemp();
   entry.hoHActive = g_systemState.hoHActive;
   entry.airAssistActive = g_systemState.airAssistActive;
@@ -220,34 +225,38 @@ bool sdLogger_writeData() {
   entry.compressorActive = g_systemState.compressorActive;
   entry.nightMode = g_systemState.nightModeActive;
 
-  // Format CSV line
-  String line = String(entry.timestamp) + ",";
-  line += String(entry.temperature, 2) + ",";
-  line += String(entry.humidity, 2) + ",";
-  line += String(entry.co2) + ",";
-  line += String(entry.fridgeTemp, 2) + ",";
-  line += (entry.hoHActive ? "1" : "0") + String(",");
-  line += (entry.airAssistActive ? "1" : "0") + String(",");
-  line += (entry.exhaustFanActive ? "1" : "0") + String(",");
-  line += (entry.compressorActive ? "1" : "0") + String(",");
-  line += (entry.nightMode ? "1" : "0");
+  char line[128];
+  int len = snprintf(line, sizeof(line), "%s,%.2f,%.2f,%d,%.2f,%d,%d,%d,%d,%d",
+                     entry.timestamp,
+                     entry.temperature,
+                     entry.humidity,
+                     entry.co2,
+                     entry.fridgeTemp,
+                     entry.hoHActive ? 1 : 0,
+                     entry.airAssistActive ? 1 : 0,
+                     entry.exhaustFanActive ? 1 : 0,
+                     entry.compressorActive ? 1 : 0,
+                     entry.nightMode ? 1 : 0);
+
+  if (len < 0 || (size_t)len >= sizeof(line)) {
+    Serial.println(F("[SD] ERROR: Log line formatting failed or truncated"));
+    return false;
+  }
 
   bool writeSuccess = writeLine(g_currentLogFile.c_str(), line);
 
-  // GH-SAFE-002 persistent: Save cooldown state on every log write
-  // Also save when compressor state changes (detected by edge)
+  // GH-SAFE-002 persistent: Track state switches cleanly
   bool compressorCurrentlyOn = g_systemState.compressorActive;
   if (compressorCurrentlyOn != g_lastCompressorState) {
     g_lastCompressorState = compressorCurrentlyOn;
 
     if (!compressorCurrentlyOn && relayManager_isCompressorCooldownActive()) {
-      // Compressor just turned off and cooldown is active - persist immediately
       sdLogger_saveCooldownState();
       Serial.println(F("[SD] Compressor OFF - cooldown state persisted"));
     }
   }
 
-  // Periodic cooldown persistence even without state changes
+  // Periodic cooldown persistence balance window
   static unsigned long lastCooldownSave = 0;
   if (millis() - lastCooldownSave >= 300000UL) {  // Every 5 minutes
     lastCooldownSave = millis();
@@ -270,7 +279,6 @@ bool sdLogger_loadCache() {
 
   if (!SD.exists(cacheFile)) {
     Serial.println(F("[SD] No cache file found - using factory defaults"));
-    // Initialize cache with safe defaults
     g_runtimeCache.totalRuntimeHours = 0;
     g_runtimeCache.lastActiveBand = 0;
     g_runtimeCache.emaWeight = DEFAULT_EMA_WEIGHT;
@@ -289,7 +297,6 @@ bool sdLogger_loadCache() {
   f.close();
 
   if (bytesRead == sizeof(RuntimeCache)) {
-    // Validate loaded data ranges
     bool cacheValid = true;
 
     if (g_runtimeCache.emaWeight < EMA_WEIGHT_MIN || g_runtimeCache.emaWeight > EMA_WEIGHT_MAX) {
@@ -322,9 +329,25 @@ bool sdLogger_loadCache() {
       Serial.print(F("[SD]   Cooldown was active: "));
       Serial.println(g_runtimeCache.compressorCooldownActive ? "YES" : "no");
       return true;
+    } else {
+      sdLogger_saveCache();
+      return false;
     }
   } else {
-    Serial.println(F("[SD] Cache file size mismatch - may be corrupted"));
+    Serial.print(F("[SD] Cache size mismatch (expected "));
+    Serial.print(sizeof(RuntimeCache));
+    Serial.print(F(", got "));
+    Serial.print(bytesRead);
+    Serial.println(F(") - resetting to defaults for new format"));
+
+    g_runtimeCache.totalRuntimeHours = 0;
+    g_runtimeCache.lastActiveBand = 0;
+    g_runtimeCache.emaWeight = DEFAULT_EMA_WEIGHT;
+    g_runtimeCache.compressorLastOffTimestamp = 0;
+    g_runtimeCache.compressorCooldownActive = false;
+
+    sdLogger_saveCache();
+    return false;
   }
 
   return false;
@@ -335,6 +358,10 @@ bool sdLogger_saveCache() {
 
   const char* cacheFile = "/cache.dat";
 
+  if (SD.exists(cacheFile)) {
+    SD.remove(cacheFile);
+  }
+
   File f = SD.open(cacheFile, FILE_WRITE);
   if (!f) {
     Serial.println(F("[SD] Failed to save runtime cache"));
@@ -344,12 +371,7 @@ bool sdLogger_saveCache() {
   size_t written = f.write((uint8_t*)&g_runtimeCache, sizeof(RuntimeCache));
   f.close();
 
-  if (written == sizeof(RuntimeCache)) {
-    return true;
-  }
-
-  Serial.println(F("[SD] Cache write incomplete - card may be full"));
-  return false;
+  return (written == sizeof(RuntimeCache));
 }
 
 // ============================================
@@ -359,20 +381,22 @@ bool sdLogger_saveCache() {
 bool sdLogger_saveCooldownState() {
   if (!g_sdAvailable) return false;
 
-  // Update cache with current cooldown state
   g_runtimeCache.compressorCooldownActive = relayManager_isCompressorCooldownActive();
+  unsigned long offEpoch = g_relays[RELAY_COMPRESSOR].cooldownOffEpoch;
 
-  // Store RTC timestamp for accurate cross-reboot time comparison
-  g_runtimeCache.compressorLastOffTimestamp = rtc_getEpochSeconds();
+  if (offEpoch > 0) {
+    g_runtimeCache.compressorLastOffTimestamp = offEpoch;
+  } else if (g_runtimeCache.compressorLastOffTimestamp == 0) {
+    Serial.println(F("[SD] WARNING: RTC unavailable at compressor OFF - no timestamp to persist"));
+  }
 
-  // Save entire cache (includes all runtime params plus cooldown state)
   bool saved = sdLogger_saveCache();
 
   if (saved) {
     Serial.print(F("[SD] Cooldown state persisted: "));
     Serial.print(g_runtimeCache.compressorCooldownActive ? "ACTIVE" : "inactive");
     if (g_runtimeCache.compressorLastOffTimestamp > 0) {
-      Serial.print(F(", timestamp: "));
+      Serial.print(F(", offEpoch: "));
       Serial.print(g_runtimeCache.compressorLastOffTimestamp);
     }
     Serial.println();
@@ -387,42 +411,28 @@ bool sdLogger_loadCooldownState() {
     return false;
   }
 
-  if (g_runtimeCache.compressorCooldownActive) {
-    Serial.println(F("[SD] Restoring compressor cooldown state from cache..."));
-
-    // Calculate elapsed time since last compressor OFF
-    unsigned long elapsedSinceOff = 0;
-    unsigned long currentTimestamp = rtc_getEpochSeconds();
-
-    if (currentTimestamp > 0 && g_runtimeCache.compressorLastOffTimestamp > 0) {
-      if (currentTimestamp > g_runtimeCache.compressorLastOffTimestamp) {
-        elapsedSinceOff = currentTimestamp - g_runtimeCache.compressorLastOffTimestamp;
-      }
-    }
-
-    Serial.print(F("[SD] Time since compressor OFF: "));
-    Serial.print(elapsedSinceOff);
-    Serial.println(F(" seconds"));
-
-    // Pass to relay manager to restore the cooldown timer
-    extern void relayManager_loadCooldownState(unsigned long lastOffTimestamp, bool wasInCooldown);
-    relayManager_loadCooldownState(
-      g_runtimeCache.compressorLastOffTimestamp,
-      g_runtimeCache.compressorCooldownActive
-    );
-
-    // If cooldown has expired during downtime, update the cache
-    if (elapsedSinceOff >= COMPRESSOR_COOLDOWN_SEC) {
-      g_runtimeCache.compressorCooldownActive = false;
-      sdLogger_saveCache();
-      Serial.println(F("[SD] Cooldown expired during downtime - cache updated"));
-    }
-
-    return true;
+  if (!g_runtimeCache.compressorCooldownActive) {
+    Serial.println(F("[SD] No active cooldown to restore"));
+    return false;
   }
 
-  Serial.println(F("[SD] No active cooldown to restore"));
-  return false;
+  Serial.println(F("[SD] Restoring compressor cooldown state from cache..."));
+  Serial.print(F("[SD]   Cached offEpoch: "));
+  Serial.println(g_runtimeCache.compressorLastOffTimestamp);
+
+  relayManager_loadCooldownState(
+    g_runtimeCache.compressorLastOffTimestamp,
+    g_runtimeCache.compressorCooldownActive
+  );
+
+  bool stillActive = relayManager_isCompressorCooldownActive();
+  if (!stillActive && g_runtimeCache.compressorCooldownActive) {
+    g_runtimeCache.compressorCooldownActive = false;
+    sdLogger_saveCache();
+    Serial.println(F("[SD] Cooldown expired during downtime - cache updated"));
+  }
+
+  return true;
 }
 
 // ============================================
@@ -430,14 +440,15 @@ bool sdLogger_loadCooldownState() {
 // ============================================
 
 bool sdLogger_purgeOldLogs() {
-  // GH-LOG-002: Remove log files older than 30 days
   if (!g_sdAvailable) return false;
 
-  RTCTime now;
-  if (!rtc_readTime(&now)) {
-    Serial.println(F("[SD] Cannot purge logs - RTC unavailable"));
+ unsigned long nowEpoch = rtc_getGH2000Seconds();
+  if (nowEpoch == 0) {
+    Serial.println(F("[SD] Cannot purge logs - RTC unavailable (epoch is 0, skipping to avoid mass deletion)"));
     return false;
   }
+
+  unsigned long retentionSeconds = (unsigned long)LOG_RETENTION_DAYS * 86400UL;
 
   File root = SD.open("/logs");
   if (!root) {
@@ -451,15 +462,16 @@ bool sdLogger_purgeOldLogs() {
     File entry = root.openNextFile();
     if (!entry) break;
 
-    String filename = entry.name();
+    String rawName = entry.name();
     entry.close();
 
-    // Only process log CSV files
+    int lastSlash = rawName.lastIndexOf('/');
+    String filename = (lastSlash >= 0) ? rawName.substring(lastSlash + 1) : rawName;
+
     if (!filename.startsWith("log_") || !filename.endsWith(".csv")) {
       continue;
     }
 
-    // Extract date from filename: log_YYYY-MM-DD.csv
     if (filename.length() < 15) continue;
 
     int fileYear = filename.substring(4, 8).toInt();
@@ -468,12 +480,20 @@ bool sdLogger_purgeOldLogs() {
 
     if (fileYear == 0 || fileMonth == 0 || fileDay == 0) continue;
 
-    // Calculate approximate age in days
-    int fileTotalDays = fileYear * 365 + fileMonth * 30 + fileDay;
-    int nowTotalDays = now.year * 365 + now.month * 30 + now.date;
-    int ageDays = nowTotalDays - fileTotalDays;
+    RTCTime fileDate = {0};
+    fileDate.year = (uint16_t)fileYear;
+    fileDate.month = (uint8_t)fileMonth;
+    fileDate.date = (uint8_t)fileDay;
 
-    if (ageDays > LOG_RETENTION_DAYS) {
+   unsigned long fileEpoch = rtc_timeToGH2000Seconds(&fileDate);
+    if (fileEpoch == 0) continue;
+
+    if (nowEpoch <= fileEpoch) continue;
+
+    unsigned long ageSeconds = nowEpoch - fileEpoch;
+
+    if (ageSeconds > retentionSeconds) {
+      unsigned long ageDays = ageSeconds / 86400UL;
       String fullPath = "/logs/" + filename;
       Serial.print(F("[SD] Purging old log: "));
       Serial.print(fullPath);
@@ -502,41 +522,36 @@ bool sdLogger_purgeOldLogs() {
 }
 
 bool sdLogger_checkFileIntegrity(const char* path) {
-  // GH-LOG-003: Check if file is readable
   if (!g_sdAvailable) return false;
 
   if (!SD.exists(path)) {
-    // File doesn't exist - that's OK, not corruption
     return true;
   }
 
   File f = SD.open(path, FILE_READ);
   if (!f) {
-    Serial.print(F("[SD] CORRUPTION DETECTED: Cannot open "));
+    Serial.print(F("[SD] WARNING: Temporary read lock or block issue on opening: "));
     Serial.println(path);
-
-    // Try to remove corrupted file
-    if (SD.remove(path)) {
-      Serial.print(F("[SD] Removed corrupted file: "));
-      Serial.println(path);
-
-      extern void network_sendAlert(const char* title, const char* message);
-      network_sendAlert("SD Card Corruption",
-                       ("Corrupted file detected and removed: " + String(path)).c_str());
-    }
-
     return false;
   }
 
-  // File is readable - check it has reasonable size
   size_t fileSize = f.size();
   f.close();
 
-  if (fileSize == 0 && strstr(path, ".json") != NULL) {
-    // Empty JSON profile file - flag as corrupted
-    Serial.print(F("[SD] WARNING: Empty profile file: "));
-    Serial.println(path);
-    return false;
+  // Handle empty file states defensively
+  if (fileSize == 0) {
+    if (strstr(path, ".json") != NULL) {
+      Serial.print(F("[SD] WARNING: Empty profile file: "));
+      Serial.println(path);
+      return false;
+    }
+
+    // Drop empty CSV file targets so initialization code is forced to regenerate structural headers
+    if (strstr(path, ".csv") != NULL) {
+      Serial.print(F("[SD] Purging uninitialized zero-byte data fragment: "));
+      Serial.println(path);
+      SD.remove(path);
+    }
   }
 
   return true;
@@ -547,7 +562,11 @@ void sdLogger_logSystemEvent(const char* event) {
 
   const char* eventFile = "/system_events.log";
 
-  String line = String(rtc_getTimeString()) + " | " + String(event);
+  char timeStr[24];
+  rtc_getTimeString(timeStr, sizeof(timeStr));
+
+  char line[128];
+  snprintf(line, sizeof(line), "%s | %s", timeStr, event);
 
   writeLine(eventFile, line);
   Serial.print(F("[SD] Event logged: "));

@@ -1,7 +1,9 @@
 /*
    sensors.h
    GrowHub32 - SCD40 CO2/Temperature/Humidity Sensor Driver
-   Version: 1.2.1
+   Version: 1.3.0
+   Revision: Added sensors_update() inline alias for backward compatibility
+             with PID-based automation code. Centralized I2C address to config.h.
 
    SCD40 communicates over I2C at address 0x62.
    Measurement interval in periodic mode is approximately 5 seconds.
@@ -65,5 +67,16 @@ uint16_t sensors_getCO2();
 // Sensor fault management
 bool sensors_hasActiveFault();
 void sensors_clearFaults();
+
+// ============================================================
+// v1.3: Backward Compatibility Alias
+// ============================================================
+// sensors_update() is the legacy name used by the PID-based automation
+// system. It is functionally identical to sensors_poll(). This inline
+// alias prevents breaking existing code while we unify the automation
+// architecture. Both names call the exact same implementation.
+inline void sensors_update() {
+    sensors_poll();
+}
 
 #endif // SENSORS_H

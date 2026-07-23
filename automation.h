@@ -1,7 +1,7 @@
 /*
    automation.h
    GrowHub32 - Environmental Automation Logic
-   Version: 1.2.3
+   Version: 1.3.0
 
    Handles:
    - Humidity control loop (GH-HUM)
@@ -16,6 +16,7 @@
 
 #include <Arduino.h>
 #include "config.h"
+#include "pid_controller.h"
 
 // Runtime-adjustable thresholds (modifiable via Web UI)
 // Relationship requirements enforced by automation_updateThresholds():
@@ -46,6 +47,10 @@ void automation_updateThresholds(const AutomationThresholds* newThresholds);
 
 // Air Assist burst timing state (exposed for logging)
 bool automation_isAirAssistBurstActive();
+
+// PID suspend/resume (for adaptive.cpp calibration)
+void automation_suspendPID();
+void automation_resumePID();
 
 // Manual override per subsystem (scoped — humidity and CO2 are independent)
 void automation_activateHumidityOverride();

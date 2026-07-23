@@ -1,8 +1,8 @@
 /*
    GrowHub32_MainNode.ino
    Main Automation Node - ESP32 30-Pin Dev Board
-   Version: 1.2.5
-   Author: Calven
+   Version: 1.3.0
+   Author: Calvin
 
    Hardware:
    - ESP32 30-Pin Dev Board (CP2102 Type-C)
@@ -11,23 +11,24 @@
    - 4-Channel Relay Board (Active LOW, JD-VCC jumper for external 5V)
    - TF MicroSD SPI Module
 
-   Revision History:
-   - 1.2.5: Added OTA (Over-The-Air) wireless firmware updates.
-            Relay safety shutdown + calibration abort in onStart callback.
-   - 1.2.4: Explicit compressor max-ON enforcement (getOnDuration is now pure getter).
-            Uses COMPRESSOR_MAX_ON_MS constant from config.h.
-   - 1.2.3: Deferred watchdog alert to after network init (fixes silent failure).
-            Added compressor max-ON enforcement call in main loop.
-            Scoped manual overrides per subsystem (humidity/CO2).
-            Threshold cross-validation with relational checks.
-            Night mode logging without false provenance claims.
-            rtc_getEpochSeconds() deduplication.
+   v1.3 Revision:
+   - Unified automation architecture (PID + bang-bang hybrid)
+   - SystemState struct extracted to system_state.h
+   - Added PID controller state fields to initializer
+   - Fixed boot order: adaptive_loadProfiles() after adaptive_init()
+   - Active calibration v1.3 with phase state machine
+   - Night mode calibration scheduling via rtc_minutesUntilNightMode()
+   - All g_systemState writes protected by g_stateMux
+   - Heap-free alert paths (snprintf stack buffers)
+   - Watchdog cooldown recovery for humidifier runtime watchdog
+   - checkSensorFaults() simplified to alerting only (sensors.cpp owns fault flags)
 */
 
 #include <Arduino.h>
 #include <ESPmDNS.h>
 #include <ArduinoOTA.h>
 #include "config.h"
+#include "system_state.h"
 #include "sensors.h"
 #include "rtc_handler.h"
 #include "relay_manager.h"
@@ -38,19 +39,15 @@
 #include "adaptive.h"
 #include "safety.h"
 
-// ============================================
-// External Function Declarations
-// ============================================
+// ============================================================
+// External Declarations
+// ============================================================
 
 extern void network_sendAlert(const char* title, const char* message);
-extern float network_getFridgeTemp();
-extern bool network_isFridgeHeartbeatLost();
-extern bool relayManager_isCompressorCooldownActive();
-extern unsigned long relayManager_getCompressorCooldownRemaining();
 
-// ============================================
+// ============================================================
 // Global System State
-// ============================================
+// ============================================================
 
 SystemState g_systemState = {
   .currentTemp = 0.0f,
@@ -74,23 +71,32 @@ SystemState g_systemState = {
   .lastNTFYAlert = 0,
   .fridgeHeartbeatLost = false,
   .fridgeLastSequence = 0,
-  .fridgeTemp = 4.0f
+  .fridgeTemp = 4.0f,
+  .currentDutyCycle = 0.0f,
+  .pidOutput = 0.0f,
+  .setpointHumidity = 87.5f,
+  .currentBand = 0
 };
 
-// ============================================
+// ============================================================
 // Timing Variables
-// ============================================
+// ============================================================
 
 static unsigned long g_lastSensorPoll = 0;
 static unsigned long g_lastLogWrite = 0;
 static unsigned long g_lastESPNOWCheck = 0;
 static unsigned long g_lastWiFiCheck = 0;
 static unsigned long g_lastSDCacheSave = 0;
-static unsigned long g_loopCount = 0;
 
-// ============================================
+// ============================================================
+// Forward Declarations
+// ============================================================
+
+void checkSensorFaults(unsigned long now);
+
+// ============================================================
 // SETUP
-// ============================================
+// ============================================================
 
 void setup() {
   Serial.begin(115200);
@@ -98,7 +104,7 @@ void setup() {
 
   Serial.println(F(""));
   Serial.println(F("============================================"));
-  Serial.println(F("       GrowHub32 Main Node v1.2.5"));
+  Serial.println(F("       GrowHub32 Main Node v1.3.0"));
   Serial.println(F("  Environmental Automation Controller"));
   Serial.println(F("============================================"));
   Serial.println(F(""));
@@ -142,8 +148,6 @@ void setup() {
   safety_feedWatchdog();
   if (!sdLogger_init()) {
     Serial.println(F("[BOOT] WARNING: SD card init FAILED - logging and profiles disabled"));
-  } else {
-    adaptive_loadProfiles();
   }
   safety_feedWatchdog();
 
@@ -206,14 +210,14 @@ void setup() {
   Serial.println(F("[BOOT] Step 8: Web UI init..."));
   webUI_init();
 
-  // Step 9: Automation Engine
+  // Step 9: Automation Engine (v1.3 - fixed boot order)
   Serial.println(F("[BOOT] Step 9: Automation engine init..."));
   automation_init();
   adaptive_init();
+  adaptive_loadProfiles();  // Must be after adaptive_init()
 
   // Step 10: System Ready
   safety_feedWatchdog();
-
   Serial.println(F(""));
   Serial.println(F("============================================"));
   Serial.println(F("       System Initialization Complete"));
@@ -221,22 +225,23 @@ void setup() {
   Serial.print(F("       IP: "));
   Serial.println(network_getIPAddress());
   Serial.print(F("       RTC: "));
-  Serial.println(rtc_getTimeString());
+  char timeStr[24];
+  rtc_getTimeString(timeStr, sizeof(timeStr));
+  Serial.println(timeStr);
   Serial.print(F("       OTA: port "));
   Serial.println(OTA_PORT);
   Serial.println(F("============================================"));
   Serial.println(F(""));
-
-  network_sendAlert("GrowHub32 Online", "Main Node v1.2.5 booted successfully.");
-  sdLogger_logSystemEvent("System boot complete - v1.2.5");
+  network_sendAlert("GrowHub32 Online", "Main Node v1.3.0 booted successfully.");
+  sdLogger_logSystemEvent("System boot complete - v1.3.0");
 
   g_lastSensorPoll = millis();
   g_lastLogWrite = millis();
 }
 
-// ============================================
+// ============================================================
 // MAIN LOOP
-// ============================================
+// ============================================================
 
 void loop() {
   unsigned long now = millis();
@@ -247,7 +252,8 @@ void loop() {
   // Handle OTA updates (non-blocking when idle)
   ArduinoOTA.handle();
 
-  g_loopCount++;
+  // Handle RTC serial commands
+  rtc_checkSerialCommand();
 
   // Sensor polling every 2 seconds
   if (now - g_lastSensorPoll >= SENSOR_POLL_INTERVAL_MS) {
@@ -259,26 +265,27 @@ void loop() {
   // Night mode check every loop
   automation_checkNightMode();
 
+  // Temperature alerts every loop
+  automation_checkTemperatureAlerts();
+
   // Automation logic every loop
   automation_runHumidityLoop();
   automation_runCO2Loop();
-  automation_checkTemperatureAlerts();
 
   // Safety checks every loop
   safety_checkDryRun(now);
   safety_checkFanStall(now);
 
-  // Enforce compressor max ON time (GH-SAFE-002: 5-minute cutoff)
-  // getOnDuration() is a pure getter — we handle enforcement here explicitly
+  // Enforce compressor max ON time (GH-SAFE-002)
   {
     unsigned long compressorOnDuration = relayManager_getOnDuration(RELAY_COMPRESSOR);
     if (compressorOnDuration >= COMPRESSOR_MAX_ON_MS) {
-      Serial.println(F("[SAFETY] Compressor max ON time (5 min) reached - forcing OFF"));
+      Serial.println(F("[SAFETY] Compressor max ON time reached - forcing OFF"));
       relayManager_setRelay(RELAY_COMPRESSOR, false);
     }
   }
 
-  // Adaptive learning update
+  // Adaptive learning update (calibration state machine)
   adaptive_updateCalibration();
 
   // Network health check every 10 seconds
@@ -320,81 +327,18 @@ void loop() {
   delay(10);
 }
 
-// ============================================
-// SENSOR FAULT DETECTION
-// ============================================
+// ============================================================
+// SENSOR FAULT ALERTING
+// ============================================================
+// Fault detection and flagging is owned by sensors.cpp.
+// This function only handles alerting — it reads the fault flags
+// that sensors.cpp sets under g_stateMux and sends notifications
+// on state transitions. It does NOT write to g_systemState.
 
 void checkSensorFaults(unsigned long now) {
-  static unsigned long tempFailStart = 0;
-  static unsigned long humFailStart = 0;
-  static unsigned long co2FailStart = 0;
-  static bool tempWasFault = false;
-  static bool humWasFault = false;
-  static bool co2WasFault = false;
   static bool sensorFaultAlertSent = false;
 
-  bool tempOk = sensors_isTemperatureValid();
-  bool humOk = sensors_isHumidityValid();
-  bool co2Ok = sensors_isCO2Valid();
-
-  // Temperature fault tracking
-  if (!tempOk) {
-    if (!tempWasFault) {
-      tempFailStart = now;
-      tempWasFault = true;
-    } else if (now - tempFailStart >= SENSOR_FAULT_TIMEOUT_MS) {
-      if (!g_systemState.tempSensorFault) {
-        g_systemState.tempSensorFault = true;
-        Serial.println(F("[FAULT] Temperature sensor FAULT - 30s timeout"));
-      }
-    }
-  } else {
-    if (tempWasFault && g_systemState.tempSensorFault) {
-      Serial.println(F("[FAULT] Temperature sensor RECOVERED"));
-    }
-    tempWasFault = false;
-    g_systemState.tempSensorFault = false;
-  }
-
-  // Humidity fault tracking
-  if (!humOk) {
-    if (!humWasFault) {
-      humFailStart = now;
-      humWasFault = true;
-    } else if (now - humFailStart >= SENSOR_FAULT_TIMEOUT_MS) {
-      if (!g_systemState.humiditySensorFault) {
-        g_systemState.humiditySensorFault = true;
-        Serial.println(F("[FAULT] Humidity sensor FAULT - 30s timeout"));
-      }
-    }
-  } else {
-    if (humWasFault && g_systemState.humiditySensorFault) {
-      Serial.println(F("[FAULT] Humidity sensor RECOVERED"));
-    }
-    humWasFault = false;
-    g_systemState.humiditySensorFault = false;
-  }
-
-  // CO2 fault tracking
-  if (!co2Ok) {
-    if (!co2WasFault) {
-      co2FailStart = now;
-      co2WasFault = true;
-    } else if (now - co2FailStart >= SENSOR_FAULT_TIMEOUT_MS) {
-      if (!g_systemState.co2SensorFault) {
-        g_systemState.co2SensorFault = true;
-        Serial.println(F("[FAULT] CO2 sensor FAULT - 30s timeout"));
-      }
-    }
-  } else {
-    if (co2WasFault && g_systemState.co2SensorFault) {
-      Serial.println(F("[FAULT] CO2 sensor RECOVERED"));
-    }
-    co2WasFault = false;
-    g_systemState.co2SensorFault = false;
-  }
-
-  // Combined sensor fault alert
+  // Read fault flags set by sensors.cpp
   bool anyFault = g_systemState.tempSensorFault ||
                   g_systemState.humiditySensorFault ||
                   g_systemState.co2SensorFault;

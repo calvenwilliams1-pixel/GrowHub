@@ -1,0 +1,116 @@
+# GrowHub32 v1.3.0 — Unified Architecture Release
+
+## Overview
+Merged two divergent automation systems (PID-based and threshold-based) into a single unified controller. Extracted shared state to a dedicated header. Added active calibration with night mode scheduling. Hardened thread safety, memory safety, and relay protection throughout.
+
+---
+
+## New Files
+- **`system_state.h`** — Central `SystemState` struct definition with documented field ownership and thread safety rules
+
+---
+
+## Major Changes
+
+### `automation.cpp` — Complete Rewrite
+- Merged PID and bang-bang into single hybrid controller
+- PID activates when band confidence ≥ 0.70, falls back to bang-bang otherwise
+- `suspendPID()` helper called from all PID exit paths (emergency, ceiling, watchdog, override, calibration)
+- Transition-based emergency recovery prevents repeated PID resets
+- `applyRelayProtection()` delegates to `relayManager_setRelay()` — never touches GPIO directly
+- Humidifier runtime watchdog limits HOH to 30 min per 2-hour window with 5-min cooldown recovery
+- Night mode aborts calibration, locks compressor + air assist, allows HOH (silent)
+- Air Assist always burst-cycled (never continuous), gated by night mode
+- All `String` allocations replaced with `snprintf` stack buffers
+- All `g_systemState` writes wrapped in `portENTER_CRITICAL`
+- `currentBand` updated every loop iteration from `adaptive_getCurrentBand()`
+- Auto-tune rate-limited to confidence changes >0.05
+- Threshold validation uses bounds (1-60s ON, 1-300s OFF) instead of ON<OFF rule
+- Null check on `automation_updateThresholds()`
+
+### `adaptive.cpp` — v1.3.1
+- Active calibration state machine: STABILIZE → RISE → DECAY → COMPLETE
+- Slope-based plateau detection replaces passive rise/fall tracking
+- `canStartCalibration()` enforces 30-minute buffer before night mode via `rtc_minutesUntilNightMode()`
+- PID frozen during calibration, reset and re-enabled on complete/cancel
+- `endRisePhase()` timestamp bug fixed — `riseStartTime` captured before `calibPhaseStart` overwrite
+- Minimum expected RH rise validation (3%) with enhanced failure alerts
+- Configurable recovery rate fallback in `adaptive_projectRecoveryTime()`
+- `g_systemState.calibrationActive` writes protected by `g_stateMux`
+- `String` concatenation replaced with `snprintf` in `readProfileJSON()`
+
+### `config.h` — Expanded
+- Fixed relay mapping: `RELAY_HEATER`/`RELAY_LIGHTS` → `RELAY_EXHAUST`/`RELAY_COMPRESSOR`
+- Added 30+ constants: PID tuning, calibration phases, night mode schedule, I2C addresses, I2C bus pins, SD SPI pins, WebSocket ports, default thresholds, watchdog timing, manual override timeout, recovery rate
+- `DEFAULT_HUM_CEILING` lowered to 88% (below `SAFETY_HUM_CEILING_HARD` 90%)
+- Safety guardrails renamed to `SAFETY_*_HARD` pattern
+- `CALIBRATION_DURATION_SEC` deprecated in favor of `CALIBRATION_TOTAL_SEC`
+- `MANUAL_OVERRIDE_TIMEOUT_MS` pre-calculated to prevent caller overflow
+- `PID_DUTY_CLAMP_*` values as floats for type consistency
+
+### `sensors.cpp` — Hardened
+- `g_systemState` writes protected by `g_stateMux` (I2C transactions outside critical section)
+- `sensors_isDataReady()` 500ms cache removed — was returning stale `g_scd40Data.valid`
+- `g_consecutiveFailures` only counts actual errors, not "data not ready" (normal condition)
+- Fault flags set on validation failure so automation uses last-known-good values
+- `sensors_clearFaults()` now clears `g_systemState` fault flags
+- `sensorFaultTimer` reset on successful read
+- Redundant `co2 >= 0` check removed (`uint16_t` always ≥ 0)
+
+### `rtc_handler.cpp` — Extended
+- Added `rtc_minutesUntilNightMode()` with midnight boundary handling (21:00 → 10:00 next day)
+- Returns -1 on RTC failure, 0 if night mode active, positive minutes otherwise
+
+### `sensors.h` — Extended
+- Added `inline void sensors_update()` alias for backward compatibility
+- Centralized I2C addresses to `config.h`
+
+### `web_ui.cpp` — Updated
+- `CALIBRATION_DURATION_SEC` → `CALIBRATION_TOTAL_SEC`
+- Removed `adaptive_updateCalibration()` double-call from `webUI_pushUpdates()`
+- Added `#include "system_state.h"`
+- `g_systemState.calibrationActive` read moved inside mutex in `sendSensorUpdate()`
+- Added "Control Mode" dashboard display (PID / Bang-Bang / Calibration)
+- UI defaults updated: 88% ceiling, 20-minute calibration text
+- Manual override text clarified: "pause automation" not "bypass safety limits"
+
+### `GrowHub32_MainNode.ino` — Cleaned
+- `SystemState` struct definition removed (now in `system_state.h`)
+- Initializer updated with v1.3 PID fields (`currentDutyCycle`, `pidOutput`, `setpointHumidity`, `currentBand`)
+- Boot order fixed: `adaptive_loadProfiles()` after `adaptive_init()`
+- `checkSensorFaults()` simplified to alerting only — fault flags owned by `sensors.cpp`
+- Removed unused `g_loopCount`
+
+---
+
+## Minor Changes
+- **`sd_logger.cpp`**, **`relay_manager.cpp`**, **`network.cpp`**, **`safety.cpp`** — Added `#include "system_state.h"`, removed `extern SystemState` declarations
+- **`adaptive.h`** — Added `CalibrationPhase` enum and phase tracking fields to `AdaptiveState`
+- **`pid_controller.h/.cpp`** — Already finalized at v1.3.3 (conditional integral, derivative filter, initialized flag, Ki/Kd rescaled to minutes)
+
+---
+
+## Thread Safety
+- All `g_systemState` writes across all files protected by `g_stateMux` (`portMUX_TYPE` spinlock)
+- Documented in `system_state.h`: which tasks access which fields, mutex requirements
+- `sensors.cpp`: I2C reads outside critical section, state writes inside
+- `web_ui.cpp`: all `g_systemState` reads inside critical section
+- `automation.cpp`: all telemetry writes (`currentDutyCycle`, `pidOutput`, `setpointHumidity`, `nightModeActive`, `currentBand`) under mutex
+- `adaptive.cpp`: `calibrationActive` writes under mutex
+
+---
+
+## Memory Safety
+- Zero heap allocations in hot paths (all `String` → `snprintf` stack buffers)
+- `StaticJsonDocument` for WebSocket JSON (stack-allocated)
+- HTML served from PROGMEM (flash, not RAM)
+- No dynamic allocation in control loops
+
+---
+
+## Breaking Changes
+- Relay indices renamed: `RELAY_HEATER` → `RELAY_EXHAUST`, `RELAY_LIGHTS` → `RELAY_COMPRESSOR`
+- `CALIBRATION_DURATION_SEC` deprecated (use `CALIBRATION_TOTAL_SEC`)
+- `MANUAL_OVERRIDE_TIMEOUT_SEC` deprecated (use `MANUAL_OVERRIDE_TIMEOUT_MS`)
+- `DEFAULT_HUM_CEILING` changed from 95% to 88%
+- Safety guardrails renamed to `SAFETY_*_HARD` pattern

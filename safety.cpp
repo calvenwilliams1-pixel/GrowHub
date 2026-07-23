@@ -11,6 +11,7 @@
 #include "safety.h"
 #include "relay_manager.h"
 #include "sensors.h"
+#include "system_state.h"
 
 static DryRunState g_dryRunState = {0, 0.0f, false};
 static FanStallState g_fanStallState = {0, 0, false};

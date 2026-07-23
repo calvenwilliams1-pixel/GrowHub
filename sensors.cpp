@@ -1,7 +1,17 @@
 /*
    sensors.cpp
    GrowHub32 - SCD40 Sensor Driver Implementation
-   Version: 1.2.1
+   Version: 1.3.0
+   Revision: Thread-safe g_systemState writes via g_stateMux.
+             Removed sensors_isDataReady() 500ms cache — was returning
+               stale g_scd40Data.valid instead of actual data-ready status.
+             g_consecutiveFailures only counts actual errors (I2C, CRC, range).
+             Fault flags now set on validation failure so automation uses
+               last-known-good values during sensor faults.
+             sensors_clearFaults() now clears g_systemState fault flags.
+             sensorFaultTimer reset on successful read.
+             Removed redundant co2 >= 0 check (uint16_t is always >= 0).
+             I2C transactions remain outside critical section.
 
    SCD40 communicates over I2C at address 0x62.
    Measurement interval in periodic mode is approximately 5 seconds.
@@ -11,10 +21,14 @@
 */
 
 #include "sensors.h"
+#include "system_state.h"
+
+// External mutex for cross-task g_systemState protection.
+// Defined in network.cpp, used here and in relay_manager.cpp.
+extern portMUX_TYPE g_stateMux;
 
 static SCD40Data g_scd40Data;
 static bool g_scd40Initialized = false;
-static unsigned long g_lastDataReadyCheck = 0;
 static uint8_t g_consecutiveFailures = 0;
 
 // CRC-8 lookup table for SCD40 (polynomial 0x31, init 0xFF)
@@ -64,7 +78,7 @@ static uint8_t computeCRC8(const uint8_t* data, uint8_t len) {
 }
 
 static bool sendSCD40Command(uint16_t command) {
-  Wire.beginTransmission(SCD40_I2C_ADDRESS);
+  Wire.beginTransmission(SCD40_I2C_ADDR);
   Wire.write(command >> 8);
   Wire.write(command & 0xFF);
   uint8_t result = Wire.endTransmission();
@@ -81,7 +95,7 @@ static bool readSCD40Words(uint8_t count, uint16_t* buffer) {
   // Each word is 3 bytes: 2 data + 1 CRC
   uint8_t bytesNeeded = count * 3;
 
-  Wire.requestFrom((uint8_t)SCD40_I2C_ADDRESS, bytesNeeded);
+  Wire.requestFrom((uint8_t)SCD40_I2C_ADDR, bytesNeeded);
   if (Wire.available() != bytesNeeded) {
     Serial.println(F("[SCD40] Read error: insufficient bytes"));
     return false;
@@ -132,7 +146,7 @@ bool sensors_init() {
   g_consecutiveFailures = 0;
 
   // Check if device is present on I2C bus
-  Wire.beginTransmission(SCD40_I2C_ADDRESS);
+  Wire.beginTransmission(SCD40_I2C_ADDR);
   if (Wire.endTransmission() != 0) {
     Serial.println(F("[SCD40] Device not found on I2C bus. Check wiring."));
     return false;
@@ -177,20 +191,16 @@ bool sensors_init() {
 
   Serial.println(F("[SCD40] Periodic measurement started. First reading available in ~5s."));
   g_scd40Initialized = true;
-  g_lastDataReadyCheck = millis();
 
   return true;
 }
 
 bool sensors_isDataReady() {
+  // Direct I2C check every call. The data-ready status check is a 3-byte
+  // transaction — negligible overhead. Removed the 500ms cache because it
+  // returned g_scd40Data.valid (stale) instead of actual data-ready status,
+  // causing sensors_poll() to attempt reads when no new data was available.
   if (!g_scd40Initialized) return false;
-
-  // Only check data ready every 500ms to avoid I2C congestion
-  if (millis() - g_lastDataReadyCheck < 500) {
-    // Return cached ready state
-    return g_scd40Data.valid;
-  }
-  g_lastDataReadyCheck = millis();
 
   if (!sendSCD40Command(SCD40_CMD_GET_DATA_READY_STATUS)) {
     return false;
@@ -204,12 +214,7 @@ bool sensors_isDataReady() {
   // Mask with 0x07FF per datasheet (upper 5 bits are reserved)
   uint16_t maskedStatus = status[0] & 0x07FF;
 
-  if (maskedStatus == 0x0000) {
-    return false;  // Data not ready
-  }
-
-  // Data is ready - treat any non-zero low 11 bits as ready signal
-  return true;
+  return (maskedStatus != 0x0000);
 }
 
 void sensors_poll() {
@@ -217,44 +222,46 @@ void sensors_poll() {
     return;
   }
 
+  // --- Check if data is ready ---
+  // "Data not ready" is NORMAL for SCD40 — it produces new data every ~5s
+  // but we poll every 2s. This is NOT a sensor failure, so we do NOT
+  // increment g_consecutiveFailures here. Simply return and try again
+  // on the next poll cycle.
   if (!sensors_isDataReady()) {
-    // Data not ready yet (SCD40 produces new data every ~5s)
-    g_consecutiveFailures++;
-    if (g_consecutiveFailures > 10) {
-      // Over 10 polling cycles (20+ seconds) with no data - flag fault
-      g_scd40Data.valid = false;
-    }
     return;
   }
 
-  // Read measurement
+  // --- Read measurement via I2C ---
+  // I2C transactions happen OUTSIDE the critical section. Holding a
+  // spinlock during I2C would block the other core for the duration
+  // of the bus transaction, which is bad practice on ESP32.
   if (!sendSCD40Command(SCD40_CMD_READ_MEASUREMENT)) {
-    g_consecutiveFailures++;
+    g_consecutiveFailures++;  // Actual I2C failure — count it
     return;
   }
 
   uint16_t rawData[3];
   if (!readSCD40Words(3, rawData)) {
-    g_consecutiveFailures++;
+    g_consecutiveFailures++;  // CRC or read failure — count it
     return;
   }
 
-  // Parse data
-  // CO2: raw value is ppm
+  // --- Parse data ---
   uint16_t co2 = rawData[0];
-
-  // Temperature: raw = (175 * T[C]) / 65536 - 45
   float temp = -45.0f + 175.0f * ((float)rawData[1] / 65536.0f);
-
-  // Humidity: raw = (100 * RH[%]) / 65536
   float hum = 100.0f * ((float)rawData[2] / 65536.0f);
 
-  // Range validation
-  bool co2Valid = (co2 >= 0 && co2 <= 40000);
+  // --- Range validation ---
+  // co2 is uint16_t so >= 0 is always true — no check needed.
+  // These ranges represent the SCD40's valid operating envelope,
+  // NOT grow-room safety thresholds (which are handled by automation).
+  bool co2Valid = (co2 <= 40000);
   bool tempValid = (temp >= -10.0f && temp <= 60.0f);
   bool humValid = (hum >= 0.0f && hum <= 100.0f);
 
   if (co2Valid && tempValid && humValid) {
+    // --- Valid data received ---
+    // Update local driver cache (no mutex needed — only this task accesses it)
     g_scd40Data.co2_ppm = co2;
     g_scd40Data.temperature_c = temp;
     g_scd40Data.humidity_pct = hum;
@@ -262,15 +269,18 @@ void sensors_poll() {
     g_scd40Data.valid = true;
     g_consecutiveFailures = 0;
 
-    // Update system state
+    // --- Update shared system state UNDER MUTEX ---
+    // g_stateMux protects against concurrent reads from ESP-NOW
+    // and WiFi callbacks running on the other core.
+    portENTER_CRITICAL(&g_stateMux);
     g_systemState.currentTemp = temp;
     g_systemState.currentHumidity = hum;
     g_systemState.currentCO2 = co2;
-
-    // Update last known good values
     g_systemState.lastKnownGoodTemp = temp;
     g_systemState.lastKnownGoodHumidity = hum;
     g_systemState.lastKnownGoodCO2 = co2;
+    g_systemState.sensorFaultTimer = 0;  // Clear fault timer on good data
+    portEXIT_CRITICAL(&g_stateMux);
 
     Serial.print(F("[SCD40] CO2: "));
     Serial.print(co2);
@@ -280,8 +290,21 @@ void sensors_poll() {
     Serial.print(hum, 1);
     Serial.println(F(" %"));
   } else {
+    // --- Data out of valid range ---
+    // This IS a sensor fault. Flag it so automation uses last-known-good
+    // values instead of the out-of-range garbage reading.
     g_scd40Data.valid = false;
     g_consecutiveFailures++;
+
+    portENTER_CRITICAL(&g_stateMux);
+    g_systemState.tempSensorFault = !tempValid;
+    g_systemState.humiditySensorFault = !humValid;
+    g_systemState.co2SensorFault = !co2Valid;
+    if (g_systemState.sensorFaultTimer == 0) {
+      g_systemState.sensorFaultTimer = millis();
+    }
+    portEXIT_CRITICAL(&g_stateMux);
+
     Serial.println(F("[SCD40] Data out of valid range:"));
     Serial.print(F("  CO2=")); Serial.print(co2); Serial.print(co2Valid ? F(" OK, ") : F(" BAD, "));
     Serial.print(F("Temp=")); Serial.print(temp); Serial.print(tempValid ? F(" OK, ") : F(" BAD, "));
@@ -339,5 +362,17 @@ bool sensors_hasActiveFault() {
 }
 
 void sensors_clearFaults() {
+  // Clear local failure counter
   g_consecutiveFailures = 0;
+
+  // Clear the system-state fault flags that automation reads.
+  // Without this, the Web UI "clear faults" button would reset
+  // the local counter but leave g_systemState.*SensorFault set,
+  // causing automation to continue using last-known-good values.
+  portENTER_CRITICAL(&g_stateMux);
+  g_systemState.tempSensorFault = false;
+  g_systemState.humiditySensorFault = false;
+  g_systemState.co2SensorFault = false;
+  g_systemState.sensorFaultTimer = 0;
+  portEXIT_CRITICAL(&g_stateMux);
 }

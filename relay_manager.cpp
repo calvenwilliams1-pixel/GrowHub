@@ -25,6 +25,7 @@
 
 #include "relay_manager.h"
 #include "rtc_handler.h"
+#include "system_state.h"
 
 // External mutex for g_systemState cross-task protection
 extern portMUX_TYPE g_stateMux;
@@ -86,7 +87,7 @@ bool relayManager_init() {
 // Core Relay Control
 // ============================================
 
-bool relayManager_setRelay(uint8_t relayIndex, bool turnOn) {
+bool relayManager_setRelay(uint8_t relayIndex, bool turnOn, bool force) {
   if (relayIndex >= RELAY_COUNT) {
     return false;
   }
@@ -102,7 +103,7 @@ bool relayManager_setRelay(uint8_t relayIndex, bool turnOn) {
 
   // --- COMPRESSOR COOLDOWN CHECK (GH-SAFE-002) ---
   // SINGLE SOURCE OF TRUTH: All compressor safety lives here
-  if (relayIndex == RELAY_COMPRESSOR && turnOn) {
+   if (relayIndex == RELAY_COMPRESSOR && turnOn && !force) {
     if (relay->cooldownLocked) {
       unsigned long elapsedSinceOff = now - relay->cooldownStart;
       if (elapsedSinceOff < COMPRESSOR_COOLDOWN_MS) {
@@ -120,7 +121,7 @@ bool relayManager_setRelay(uint8_t relayIndex, bool turnOn) {
   }
 
   // --- RELAY CYCLE LIMIT CHECK (GH-SAFE-001) ---
-  if (turnOn) {
+   if (turnOn && !force) {
     if (!relayManager_canToggle(relayIndex)) {
       Serial.print(F("[SAFETY] Relay cycle limit reached for "));
       Serial.print(relayNames[relayIndex]);
@@ -304,7 +305,7 @@ void relayManager_loadCooldownState(unsigned long lastOffTimestamp, bool wasInCo
 
   // If we have a valid RTC timestamp, check actual elapsed time
   if (lastOffTimestamp > 0) {
-    unsigned long currentTimestamp = rtc_getEpochSeconds();
+    unsigned long currentTimestamp = rtc_getGH2000Seconds();
 
     // Sanity check: reject if RTC appears to have gone backwards (dead battery, reset).
     // Also cap maximum believable downtime at 24h to prevent absurdly large deltas
