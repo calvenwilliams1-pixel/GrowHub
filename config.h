@@ -107,6 +107,8 @@
 #define SENSOR_FAULT_TIMEOUT_MS         10000UL // 10 seconds without valid data = fault
 #define SENSOR_LKG_MAX_AGE_MS           30000UL // Max age of last-known-good value before safe mode
 #define SCD40_TEMP_OFFSET               0.0f
+#define SCD40_HUM_OFFSET                0.0f    // Calibration offset for humidity (%)
+#define SCD40_CO2_OFFSET                0       // Calibration offset for CO2 (ppm)
 #define SCD40_ALTITUDE                  0
 
 // ============================================================
