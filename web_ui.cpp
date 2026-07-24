@@ -273,7 +273,17 @@ function handleMessage(msg){
   switch(msg.type){
     case 0: updateSensors(msg); break;
     case 1: updateRelays(msg); updateOverrideStatus(msg); break;
-    case 2: addLog(msg.message, msg.level || 'warn'); break;
+       case 2:
+      if(msg.message === "CONFIRM_LOUD_NIGHT"){
+        var relayNames = ["Humidifier","Air Assist","Exhaust Fan","Compressor"];
+        var relayName = relayNames[msg.relay] || "This device";
+        if(confirm(relayName + " is loud. Are you sure you want to turn it on during night mode?\n\nIt will run for 10 minutes before night mode lockout resumes.")){
+          sendWS({type: 6, cmd: 'relay', index: msg.relay, state: 1, force: true, confirmed: true});
+        }
+      } else {
+        addLog(msg.message, msg.level || 'warn');
+      }
+      break;
     case 3: updateConfig(msg); break;
     case 4: updateCalibration(msg); break;
     case 5: addLog(msg.message, msg.level || 'info'); break;
@@ -404,7 +414,11 @@ function switchTab(element, tabId){
 }
 
 function relayCmd(index, state){
-  sendWS({type: 6, cmd: 'relay', index: index, state: state, force: true});
+  if(state === 1){
+    sendWS({type: 6, cmd: 'relay', index: index, state: state, force: true, confirmed: false});
+  } else {
+    sendWS({type: 6, cmd: 'relay', index: index, state: state, force: true, confirmed: true});
+  }
 }
 
 function saveThresholds(){
@@ -507,15 +521,49 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
       uint8_t msgType = doc["type"] | 0;
       const char* cmd = doc["cmd"] | "";
 
-      if (msgType == WS_COMMAND && strcmp(cmd, "relay") == 0) {
+            if (msgType == WS_COMMAND && strcmp(cmd, "relay") == 0) {
         uint8_t index = doc["index"] | 0;
         bool state = (doc["state"].as<int>() != 0);
         bool force = (doc["force"].as<int>() != 0);
+        bool confirmed = (doc["confirmed"].as<int>() != 0);
 
         if (index >= RELAY_COUNT) {
           Serial.print(F("[WS] Invalid relay index: "));
           Serial.println(index);
           return;
+        }
+
+        // Night mode confirmation for loud relays.
+        // If night mode is active, user is trying to turn ON a loud relay,
+        // and hasn't confirmed yet, send a confirmation request back.
+        if (state && !confirmed && relayManager_isRelayLoud(index)) {
+          bool nightMode;
+          portENTER_CRITICAL(&g_stateMux);
+          nightMode = g_systemState.nightModeActive;
+          portEXIT_CRITICAL(&g_stateMux);
+
+          if (nightMode) {
+            StaticJsonDocument<128> confirmDoc;
+            confirmDoc["type"] = 2;  // WS_ALERT            confirmDoc["message"] = "CONFIRM_LOUD_NIGHT";
+            confirmDoc["level"] = "warn";
+            confirmDoc["relay"] = index;
+            char confirmOutput[128];
+            serializeJson(confirmDoc, confirmOutput, sizeof(confirmOutput));
+            g_webSocket.sendTXT(num, (const uint8_t*)confirmOutput, strlen(confirmOutput));
+            return;
+          }
+        }
+
+        // If compressor is being turned ON and confirmed during night mode,
+        // activate the compressor override so continuous enforcement respects it.
+        if (state && confirmed && index == RELAY_COMPRESSOR) {
+          bool nightMode;
+          portENTER_CRITICAL(&g_stateMux);
+          nightMode = g_systemState.nightModeActive;
+          portEXIT_CRITICAL(&g_stateMux);
+          if (nightMode) {
+            automation_activateCompressorOverride();
+          }
         }
 
         bool calibrationActive;

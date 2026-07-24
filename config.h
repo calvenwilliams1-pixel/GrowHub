@@ -68,8 +68,9 @@
 // HARDWARE: Relay Cycle Protection
 // ============================================================
 #define RELAY_CYCLE_WINDOW_MS           60000UL   // 60 second cycle window
-#define RELAY_MAX_CYCLES_PER_MIN        2         // Max relay toggles per minute
-
+#define RELAY_MAX_CYCLES_PER_MIN        2         // Max relay toggles per minute (automation)
+#define RELAY_MANUAL_CYCLE_ALLOWANCE    8         // Additional toggles allowed for manual control
+#define RAPID_FIRE_LOCKOUT_MS           5000UL    // Lockout duration after rapid-fire detection
 // ============================================================
 // HARDWARE: I2C Addresses
 // ============================================================

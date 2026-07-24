@@ -52,6 +52,12 @@ bool automation_isAirAssistBurstActive();
 void automation_suspendPID();
 void automation_resumePID();
 
+// Compressor override (for night mode manual control)
+void automation_activateCompressorOverride();
+void automation_deactivateCompressorOverride();
+bool automation_isCompressorOverrideActive();
+unsigned long automation_getCompressorOverrideRemaining();
+
 // Manual override per subsystem (scoped — humidity and CO2 are independent)
 void automation_activateHumidityOverride();
 void automation_activateCO2Override();
