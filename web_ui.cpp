@@ -296,10 +296,10 @@ function handleMessage(msg){
 }
 
 function updateSensors(msg){
-  document.getElementById('tempValue').textContent = msg.temp.toFixed(1);
-  document.getElementById('humValue').textContent = msg.hum.toFixed(1);
-  document.getElementById('co2Value').textContent = msg.co2;
-  document.getElementById('fridgeValue').textContent = msg.fridge.toFixed(1);
+  document.getElementById('tempValue').textContent = (typeof msg.temp === 'number') ? msg.temp.toFixed(1) : '--';
+  document.getElementById('humValue').textContent = (typeof msg.hum === 'number') ? msg.hum.toFixed(1) : '--';
+  document.getElementById('co2Value').textContent = (msg.co2 != null) ? msg.co2 : '--';
+  document.getElementById('fridgeValue').textContent = (typeof msg.fridge === 'number') ? msg.fridge.toFixed(1) : '--';
 
   document.getElementById('tempDot').className = 'status-dot ' + (msg.tempFault ? 'fault' : 'ok');
   document.getElementById('humDot').className = 'status-dot ' + (msg.humFault ? 'fault' : 'ok');
@@ -317,9 +317,9 @@ function updateSensors(msg){
   document.getElementById('wifiStatus').textContent = msg.wifiConnected ? 'Connected' : (msg.apMode ? 'AP Mode' : 'Disconnected');
   document.getElementById('rtcTime').textContent = msg.rtcTime || '--';
   document.getElementById('fridgeStatus').textContent = msg.fridgeLost ? 'OFFLINE' : 'Online';
-  document.getElementById('simCurrentRH').textContent = msg.hum.toFixed(1);
-  document.getElementById('simBand').textContent = 'Band ' + msg.activeBand;
-  document.getElementById('simConfidence').textContent = (msg.confidence * 100).toFixed(1) + '%';
+  document.getElementById('simCurrentRH').textContent = (typeof msg.hum === 'number') ? msg.hum.toFixed(1) : '--';
+  document.getElementById('simBand').textContent = (msg.activeBand != null) ? 'Band ' + msg.activeBand : '--';
+document.getElementById('simConfidence').textContent = (typeof msg.confidence === 'number') ? (msg.confidence * 100).toFixed(1) + '%' : '--';
   document.getElementById('controlMode').textContent = msg.controlMode || '--';
 }
 
@@ -397,15 +397,15 @@ function updateCalibration(msg){
 
 function addLog(message, level){
   var now = new Date().toLocaleTimeString();
-  logLines.unshift({time: now, msg: message, level: level});
-  if(logLines.length > 100) logLines.pop();
-
   var logArea = document.getElementById('logArea');
-  logArea.innerHTML = logLines.map(function(l){
-    return '<div class="log-entry ' + l.level + '">[' + l.time + '] ' + l.msg + '</div>';
-  }).join('');
+  var div = document.createElement('div');
+  div.className = 'log-entry ' + (level || 'info');
+  div.textContent = '[' + now + '] ' + message;
+  logArea.insertBefore(div, logArea.firstChild);
+  while (logArea.children.length > 100) {
+    logArea.removeChild(logArea.lastChild);
+  }
 }
-
 function switchTab(element, tabId){
   document.querySelectorAll('.tab').forEach(function(t){ t.classList.remove('active'); });
   document.querySelectorAll('.tab-content').forEach(function(c){ c.classList.remove('active'); });
@@ -421,16 +421,39 @@ function relayCmd(index, state){
   }
 }
 
+```javascript
 function saveThresholds(){
+  var hohFloor = parseFloat(document.getElementById('humHoHFloor').value);
+  var assistFloor = parseFloat(document.getElementById('humAssistFloor').value);
+  var ceiling = parseFloat(document.getElementById('humCeiling').value);
+  var assistOn = parseInt(document.getElementById('assistOn').value, 10);
+  var assistOff = parseInt(document.getElementById('assistOff').value, 10);
+  var co2High = parseInt(document.getElementById('co2High').value, 10);
+  var co2Low = parseInt(document.getElementById('co2Low').value, 10);
+  var co2Emer = parseInt(document.getElementById('co2Emergency').value, 10);
+
+  if (isNaN(hohFloor) || isNaN(assistFloor) || isNaN(ceiling)) {
+    addLog('Invalid humidity threshold value', 'warn');
+    return;
+  }
+  if (isNaN(assistOn) || isNaN(assistOff)) {
+    addLog('Invalid assist timing value', 'warn');
+    return;
+  }
+  if (isNaN(co2High) || isNaN(co2Low) || isNaN(co2Emer)) {
+    addLog('Invalid CO2 threshold value', 'warn');
+    return;
+  }
+
   var thresholds = {
-    humHoHFloor: parseFloat(document.getElementById('humHoHFloor').value),
-    humAssistFloor: parseFloat(document.getElementById('humAssistFloor').value),
-    humCeiling: parseFloat(document.getElementById('humCeiling').value),
-    assistOnSec: parseInt(document.getElementById('assistOn').value),
-    assistOffSec: parseInt(document.getElementById('assistOff').value),
-    co2HighLimit: parseInt(document.getElementById('co2High').value),
-    co2LowTarget: parseInt(document.getElementById('co2Low').value),
-    co2Emergency: parseInt(document.getElementById('co2Emergency').value)
+    humHoHFloor: hohFloor,
+    humAssistFloor: assistFloor,
+    humCeiling: ceiling,
+    assistOnSec: assistOn,
+    assistOffSec: assistOff,
+    co2HighLimit: co2High,
+    co2LowTarget: co2Low,
+    co2Emergency: co2Emer
   };
   sendWS({type: 6, cmd: 'thresholds', data: thresholds});
 
@@ -439,6 +462,7 @@ function saveThresholds(){
 
   addLog('Settings saved!', 'info');
 }
+```
 
 function startCalibration(){
   sendWS({type: 6, cmd: 'calibrate_start'});
@@ -544,7 +568,8 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
 
           if (nightMode) {
             StaticJsonDocument<128> confirmDoc;
-            confirmDoc["type"] = 2;  // WS_ALERT            confirmDoc["message"] = "CONFIRM_LOUD_NIGHT";
+            confirmDoc["type"] = 2;
+            confirmDoc["message"] = "CONFIRM_LOUD_NIGHT";
             confirmDoc["level"] = "warn";
             confirmDoc["relay"] = index;
             char confirmOutput[128];
@@ -713,6 +738,7 @@ static void sendSensorUpdate() {
   size_t len = serializeJson(doc, output, sizeof(output));
   if (len >= sizeof(output)) {
     Serial.println(F("[WS] WARNING: Sensor update JSON truncated — increase buffer size"));
+     return;
   }
   g_webSocket.broadcastTXT((const uint8_t*)output, strlen(output));
 }
@@ -743,6 +769,7 @@ static void sendSystemStatus() {
   size_t len = serializeJson(doc, output, sizeof(output));
   if (len >= sizeof(output)) {
     Serial.println(F("[WS] WARNING: System status JSON truncated — increase buffer size"));
+    return; 
   }
   g_webSocket.broadcastTXT((const uint8_t*)output, strlen(output));
 }
@@ -766,6 +793,7 @@ static void sendConfigUpdate(uint8_t clientNum) {
   size_t len = serializeJson(doc, output, sizeof(output));
   if (len >= sizeof(output)) {
     Serial.println(F("[WS] WARNING: Config update JSON truncated — increase buffer size"));
+     return;
   }
   g_webSocket.sendTXT(clientNum, (const uint8_t*)output, strlen(output));
 }
@@ -796,6 +824,7 @@ static void sendCalibrationUpdate() {
   size_t len = serializeJson(calibDoc, output, sizeof(output));
   if (len >= sizeof(output)) {
     Serial.println(F("[WS] WARNING: Calibration update JSON truncated — increase buffer size"));
+     return;
   }
   g_webSocket.broadcastTXT((const uint8_t*)output, strlen(output));
 }
@@ -858,6 +887,7 @@ void webUI_pushUpdates() {
       size_t len = serializeJson(calibDoc, outputActive, sizeof(outputActive));
       if (len >= sizeof(outputActive)) {
         Serial.println(F("[WS] WARNING: Calibration active JSON truncated"));
+        return; 
       }
       g_webSocket.broadcastTXT((const uint8_t*)outputActive, strlen(outputActive));
     }
@@ -872,6 +902,7 @@ void webUI_pushUpdates() {
       size_t len = serializeJson(calibDoc, outputInactive, sizeof(outputInactive));
       if (len >= sizeof(outputInactive)) {
         Serial.println(F("[WS] WARNING: Calibration inactive JSON truncated"));
+         return;
       }
       g_webSocket.broadcastTXT((const uint8_t*)outputInactive, strlen(outputInactive));
     }
