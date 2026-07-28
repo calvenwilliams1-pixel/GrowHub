@@ -37,6 +37,7 @@ bool network_init();
 void network_checkConnection();
 void network_checkFridgeHeartbeat();
 void network_sendAlert(const char* title, const char* message);
+void network_sendAlivePing();
 bool network_isWiFiConnected();
 bool network_isAPMode();
 String network_getIPAddress();
