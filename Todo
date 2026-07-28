@@ -8,11 +8,29 @@
 |--------|------|--------|
 | `v1.3` | Unified architecture merge (19 files) | ✅ Done |
 | `fix/nightmode-manual-override` | Night mode Air Assist bug + compressor override + manual control exemptions | ✅ Done |
-| `feat/v1.4-improvements` | Full branch: sensor calibration offsets, high humidity exhaust, RTC Web UI time setting, offline alert framework, Web UI visual upgrade, JS hardening | ✅ Done |
+| `feat/v1.4-improvements` | Sensor calibration offsets | ✅ Done |
+| `feat/v1.4-improvements` | High humidity exhaust mode | ✅ Done |
+| `feat/v1.4-improvements` | RTC time setting from Web UI (backend) | ✅ Done |
+| `feat/v1.4-improvements` | GrowHub offline alert framework | ✅ Done |
+| `feat/v1.4-improvements` | Web UI visual upgrade | ✅ Done |
+| `feat/v1.4-improvements` | Web UI JS hardening | ✅ Done |
 
 ---
 
-## NOW: Ready for Next Branch
+## NOW: v1.4 Release Readiness (Before Merge)
+
+| Priority | Item | Effort | Files |
+|----------|------|--------|-------|
+| 🔴 P0 | RTC Web UI bridge — `setRTCTime()` JS function + `"rtc"` WebSocket handler | Small | `web_ui.cpp` |
+| 🔴 P0 | Verify `onESPNOWReceive` signature matches between `.h` and `.cpp` | Tiny | `network.h`, `network.cpp` |
+| 🟡 P1 | Bump firmware version to 1.4.0 (config + boot banner + boot alert) | Tiny | `config.h`, `.ino` |
+| 🟡 P1 | Verify `sdLogger_getCurrentLogFilename()` implementation exists | Tiny | `sd_logger.cpp` |
+| 🟢 P2 | Document `DEFAULT_HUM_EXHAUST_ON` = 95% default (dormant until configured) | Tiny | `config.h` (comment) |
+| 🟢 P3 | Update `CHANGELOG.md` with v1.4 entries | Small | `CHANGELOG.md` |
+
+---
+
+## NEXT: Feature Branches (After v1.4 Merge)
 
 | Priority | Branch | Item | Effort |
 |----------|--------|------|--------|
@@ -37,4 +55,12 @@ All thresholds that control equipment are user-configurable via Web UI. The only
 
 ---
 
-Ready for `feat/fridge-alarms` when you are.
+## Design Decision: Dormant-by-Default Features
+
+Two v1.4 features ship dormant to prevent unintended behavior on existing installs:
+- **`NTFY_ENABLED`** defaults to `false` — alive pings won't fire until the user sets this to `true` and configures their ntfy.sh endpoint
+- **`DEFAULT_HUM_EXHAUST_ON`** defaults to `95.0f` (equal to `SAFETY_HUM_CEILING_HARD`) — the high-humidity exhaust won't trigger independently until the user lowers it via Web UI (recommended: 92%)
+
+---
+
+Want me to write the P0 RTC Web UI bridge code now and get v1.4 ready to merge?
