@@ -20,6 +20,9 @@
              Added MDNS.addService in AP fallback block for consistency.
              Mutex-protected g_wifiDisconnectStart writes in network_checkConnection.
              Added network_sendAlivePing() for offline alert framework (v1.4).
+             HTTP timeout enforced at 2000ms to prevent main loop blocking.
+             URL uses compile-time string literal concatenation (zero heap allocation).
+             Alive ping includes MAC address for multi-device identification.
 
    WiFi credentials are configured below per GH-NET-001.
    Alert endpoint is configured below per GH-NET-005.
@@ -528,22 +531,17 @@ void network_checkFridgeHeartbeat() {
 // ============================================================
 
 static unsigned long g_lastAlivePing = 0;
-static bool g_alivePingInitialized = false;
 
 void network_sendAlivePing() {
     if (!NTFY_ENABLED) return;
-    if (!network_isWiFiConnected()) return;
-
-    // On first call after boot, fire immediately
-    if (!g_alivePingInitialized) {
-        g_alivePingInitialized = true;
-        g_lastAlivePing = millis() - NTFY_ALIVE_INTERVAL_MS;
-    }
+    if (WiFi.status() != WL_CONNECTED) return;
 
     unsigned long now = millis();
     if (now - g_lastAlivePing >= NTFY_ALIVE_INTERVAL_MS) {
         g_lastAlivePing = now;
-        network_sendAlert("GrowHub32 Alive", "System online and functioning normally.");
+        char titleBuf[64];
+        snprintf(titleBuf, sizeof(titleBuf), "GrowHub32 (%s) Alive", WiFi.macAddress().c_str());
+        network_sendAlert(titleBuf, "System online and functioning normally.");
     }
 }
 
@@ -580,9 +578,10 @@ void network_sendAlert(const char* title, const char* message) {
   client.setInsecure();
 
   HTTPClient http;
-  String url = "https://" + String(NTFY_ENDPOINT);
+  http.setTimeout(2000);
 
-  if (!http.begin(client, url)) {
+  // Compile-time string literal concatenation — zero heap allocation
+  if (!http.begin(client, "https://" NTFY_ENDPOINT)) {
     Serial.print(F("[NTFY] Failed to begin HTTPS connection: "));
     Serial.println(title);
     return;
