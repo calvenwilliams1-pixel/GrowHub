@@ -299,6 +299,7 @@ void loop() {
   if (now - g_lastESPNOWCheck >= 5000) {
     g_lastESPNOWCheck = now;
     network_checkFridgeHeartbeat();
+    network_sendAlivePing();
   }
 
   // SD card logging every 60 seconds
