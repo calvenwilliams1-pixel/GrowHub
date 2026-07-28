@@ -631,6 +631,7 @@ void automation_loadDefaults() {
     g_thresholds.co2HighLimit = DEFAULT_CO2_HIGH_LIMIT;
     g_thresholds.co2LowTarget = DEFAULT_CO2_LOW_TARGET;
     g_thresholds.co2Emergency = DEFAULT_CO2_EMERGENCY;
+     g_thresholds.humExhaustOn = DEFAULT_HUM_EXHAUST_ON;
 
     Serial.println(F("[AUTO] Loaded default thresholds"));
 }
@@ -780,6 +781,27 @@ void automation_runHumidityLoop() {
             applyRelayProtection(RELAY_AIR_ASSIST, false);
             g_airAssistBurstActive = false;
             g_airAssistInOnPhase = false;
+        }
+    }
+}
+void automation_runHighHumidityExhaust() {
+    if (g_systemState.calibrationActive) return;
+    if (automation_isHumidityOverrideActive()) return;
+
+    float currentHumidity = sensors_isHumidityValid() ?
+        g_systemState.currentHumidity : g_systemState.lastKnownGoodHumidity;
+
+    if (currentHumidity > g_thresholds.humExhaustOn) {
+        if (!relayManager_isRelayOn(RELAY_EXHAUST)) {
+            relayManager_setRelay(RELAY_EXHAUST, true);
+        }
+    } else if (currentHumidity <= g_thresholds.humCeiling) {
+        if (relayManager_isRelayOn(RELAY_EXHAUST)) {
+            uint16_t currentCO2 = sensors_isCO2Valid() ?
+                g_systemState.currentCO2 : g_systemState.lastKnownGoodCO2;
+            if (currentCO2 <= g_thresholds.co2LowTarget) {
+                relayManager_setRelay(RELAY_EXHAUST, false);
+            }
         }
     }
 }
@@ -933,6 +955,8 @@ void automation_updateThresholds(const AutomationThresholds* newThresholds) {
     if (newThresholds->co2Emergency < 400 || newThresholds->co2Emergency > 5000) return;
     if (newThresholds->humAssistFloor > newThresholds->humHoHFloor) return;
     if (newThresholds->humHoHFloor >= newThresholds->humCeiling) return;
+    if (newThresholds->humExhaustOn < 0 || newThresholds->humExhaustOn > 100) return;
+    if (newThresholds->humExhaustOn <= newThresholds->humCeiling) return;
     // Validate ordering before hysteresis check
     if (newThresholds->co2LowTarget >= newThresholds->co2HighLimit) return;
     // CO2 hysteresis: require at least 100ppm gap between high and low thresholds
