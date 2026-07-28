@@ -8,23 +8,11 @@
 |--------|------|--------|
 | `v1.3` | Unified architecture merge (19 files) | ✅ Done |
 | `fix/nightmode-manual-override` | Night mode Air Assist bug + compressor override + manual control exemptions | ✅ Done |
+| `feat/v1.4-improvements` | Full branch: sensor calibration offsets, high humidity exhaust, RTC Web UI time setting, offline alert framework, Web UI visual upgrade, JS hardening | ✅ Done |
 
 ---
 
-## NOW: Branch 2 — `feat/v1.4-improvements` (single branch, sequential commits)
-
-| Step | Feature | Files | Status |
-|------|---------|-------|--------|
-| 1 | Sensor calibration offsets | `config.h`, `sensors.cpp`, `web_ui.cpp` | ✅ Done |
-| 2 | High humidity exhaust mode | `config.h`, `automation.h`, `automation.cpp`, `web_ui.cpp`, `.ino` | ✅ Done |
-| 3 | RTC time setting from Web UI | `rtc_handler.h`, `rtc_handler.cpp`, `web_ui.cpp` | ✅ Done |
-| 4 | GrowHub offline alert framework | `config.h`, `network.h`, `network.cpp`, `.ino` | ⬜ TODO |
-| — | Web UI visual upgrade | `web_ui.cpp` (HTML/CSS only) | ✅ Done |
-| — | Web UI JS hardening | `web_ui.cpp` (JS only) | ✅ Done |
-
----
-
-## FUTURE: Remaining Branches
+## NOW: Ready for Next Branch
 
 | Priority | Branch | Item | Effort |
 |----------|--------|------|--------|
@@ -33,13 +21,20 @@
 | 🟢 P3 | `feat/fridge-bridge` | Fridge module data integration | Medium |
 | 🟢 P3 | `feat/satellite-display` | Satellite display node (WiFi WebSocket + OLED) | Medium |
 | 🟢 P3 | `feat/graph-dashboard` | Dynamic graph dashboard (pinch/zoom, multi-tab, historical) | Large |
-| 🟢 P4 | move off gpi012 to a different one as its causing bootstrapping issue
+| 🟢 P4 | Move off GPIO12 | Bootstrapping issue fix | Small |
+
 ---
 
 ## Design Decision: No Hardcoded Equipment Limits
 
-All thresholds that control equipment are user-configurable via Web UI. The only non-configurable values are physical safety limits (`SAFETY_HUM_CEILING_HARD` at 95%) that act as emergency brakes.
+All thresholds that control equipment are user-configurable via Web UI. The only non-configurable values are physical safety limits (`SAFETY_HUM_CEILING_HARD` at 95%) that act as emergency brakes — they don't control normal operation, they prevent disaster.
 
 ---
 
-Step 3 complete. Ready for Step 4 — GrowHub offline alert framework.
+## Design Decision: Alert Rate Limiting
+
+`network_sendAlert()` enforces `NTFY_MIN_INTERVAL_MS` (60s) globally. Alive pings reuse this function and inherit the rate limiting automatically. Critical alerts and alive pings share the same cooldown — alive pings fire every 30 min so collision is unlikely, but if both queue simultaneously, rate limiting applies. The alive ping runs in `loop()` via `network_sendAlivePing()` with WiFi connectivity guard and immediate-first-ping-on-boot logic.
+
+---
+
+Ready for `feat/fridge-alarms` when you are.
