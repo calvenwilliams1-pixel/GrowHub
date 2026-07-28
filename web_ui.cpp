@@ -195,6 +195,11 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
     <div class="config-row"><label>Emergency (ppm)</label><input type="number" id="co2Emergency" value="1200" step="10"></div>
   </div>
   <div class="config-group">
+  <div class="config-group">
+    <h3>Real-Time Clock</h3>
+    <div class="config-row"><label>Set Date/Time</label><input type="datetime-local" id="rtcDateTime"></div>
+    <button class="btn btn-on" onclick="setRTCTime()">Set RTC Time</button>
+  </div>
     <h3>Adaptive Learning</h3>
     <div class="config-row"><label>EMA Weight (0.10-0.50)</label><input type="number" id="emaWeight" value="0.30" step="0.05" min="0.10" max="0.50"></div>
   </div>
