@@ -257,10 +257,10 @@
 // Automation thresholds (above) can be adjusted at runtime; these cannot.
 // SAFETY_HUM_CEILING_HARD must be > DEFAULT_HUM_CEILING (88%).
 #define SAFETY_HUM_FLOOR_HARD           40.0f
-#define SAFETY_HUM_CEILING_HARD         90.0f   // Emergency cutoff, calibration abort
+#define SAFETY_HUM_CEILING_HARD         95.0f   // Emergency cutoff, calibration abort
 #define SAFETY_TEMP_FLOOR_HARD          15.0f
 #define SAFETY_TEMP_CEILING_HARD        35.0f
-
+#define DEFAULT_HUM_EXHAUST_ON          95.0f   // Exhaust fan ON above this (user-configurable)
 // ============================================================
 // WEB UI & WEBSOCKET
 // ============================================================
