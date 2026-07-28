@@ -159,6 +159,10 @@ bool sdLogger_isAvailable() {
   return g_sdAvailable;
 }
 
+String sdLogger_getCurrentLogFilename() {
+  return g_currentLogFile;
+}
+
 bool sdLogger_writeHeader(const char* filename) {
   const char* header = "Timestamp,Temperature(C),Humidity(%),CO2(ppm),FridgeTemp(C),"
                        "HOH,AirAssist,ExhaustFan,Compressor,NightMode";
