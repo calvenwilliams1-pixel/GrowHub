@@ -271,6 +271,7 @@ void loop() {
   // Automation logic every loop
   automation_runHumidityLoop();
   automation_runCO2Loop();
+  automation_runHighHumidityExhaust();
 
   // Safety checks every loop
   safety_checkDryRun(now);
