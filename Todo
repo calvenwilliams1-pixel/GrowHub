@@ -17,8 +17,10 @@
 |------|---------|-------|--------|
 | 1 | Sensor calibration offsets | `config.h`, `sensors.cpp`, `web_ui.cpp` | ✅ Done |
 | 2 | High humidity exhaust mode | `config.h`, `automation.h`, `automation.cpp`, `web_ui.cpp`, `.ino` | ✅ Done |
-| 3 | RTC time setting from Web UI | `rtc_handler.h`, `rtc_handler.cpp`, `web_ui.cpp` | ⬜ TODO |
+| 3 | RTC time setting from Web UI | `rtc_handler.h`, `rtc_handler.cpp`, `web_ui.cpp` | ✅ Done |
 | 4 | GrowHub offline alert framework | `config.h`, `network.h`, `network.cpp`, `.ino` | ⬜ TODO |
+| — | Web UI visual upgrade | `web_ui.cpp` (HTML/CSS only) | ✅ Done |
+| — | Web UI JS hardening | `web_ui.cpp` (JS only) | ✅ Done |
 
 ---
 
@@ -36,8 +38,8 @@
 
 ## Design Decision: No Hardcoded Equipment Limits
 
-All thresholds that control equipment are user-configurable via Web UI. The only non-configurable values are physical safety limits (`SAFETY_HUM_CEILING_HARD` at 95%) that act as emergency brakes — they don't control normal operation, they prevent disaster.
+All thresholds that control equipment are user-configurable via Web UI. The only non-configurable values are physical safety limits (`SAFETY_HUM_CEILING_HARD` at 95%) that act as emergency brakes.
 
 ---
 
-Ready for Feature 3 — RTC time setting from Web UI.
+Step 3 complete. Ready for Step 4 — GrowHub offline alert framework.
