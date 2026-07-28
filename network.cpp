@@ -524,6 +524,30 @@ void network_checkFridgeHeartbeat() {
 }
 
 // ============================================================
+// Periodic Alive Ping (NTFY_ENABLED must be true)
+// ============================================================
+
+static unsigned long g_lastAlivePing = 0;
+static bool g_alivePingInitialized = false;
+
+void network_sendAlivePing() {
+    if (!NTFY_ENABLED) return;
+    if (!network_isWiFiConnected()) return;
+
+    // On first call after boot, fire immediately
+    if (!g_alivePingInitialized) {
+        g_alivePingInitialized = true;
+        g_lastAlivePing = millis() - NTFY_ALIVE_INTERVAL_MS;
+    }
+
+    unsigned long now = millis();
+    if (now - g_lastAlivePing >= NTFY_ALIVE_INTERVAL_MS) {
+        g_lastAlivePing = now;
+        network_sendAlert("GrowHub32 Alive", "System online and functioning normally.");
+    }
+}
+
+// ============================================================
 // Push Notifications (GH-NET-005)
 // ============================================================
 
