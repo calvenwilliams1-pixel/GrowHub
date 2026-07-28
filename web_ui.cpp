@@ -183,6 +183,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
     <h3>Humidity Thresholds</h3>
     <div class="config-row"><label>HOH Floor (%)</label><input type="number" id="humHoHFloor" value="80" step="1"></div>
     <div class="config-row"><label>Assist Floor (%)</label><input type="number" id="humAssistFloor" value="70" step="1"></div>
+   <div class="config-row"><label>Exhaust ON (%)</label><input type="number" id="humExhaustOn" value="92" step="1"></div>
     <div class="config-row"><label>Ceiling (%)</label><input type="number" id="humCeiling" value="88" step="1"></div>
     <div class="config-row"><label>Assist ON (sec)</label><input type="number" id="assistOn" value="3" step="1"></div>
     <div class="config-row"><label>Assist OFF (sec)</label><input type="number" id="assistOff" value="10" step="1"></div>
@@ -347,6 +348,7 @@ function updateConfig(msg){
   document.getElementById('humHoHFloor').value = msg.humHoHFloor;
   document.getElementById('humAssistFloor').value = msg.humAssistFloor;
   document.getElementById('humCeiling').value = msg.humCeiling;
+  document.getElementById('humExhaustOn').value = msg.humExhaustOn;
   document.getElementById('assistOn').value = msg.assistOnSec;
   document.getElementById('assistOff').value = msg.assistOffSec;
   document.getElementById('co2High').value = msg.co2HighLimit;
@@ -431,8 +433,9 @@ function saveThresholds(){
   var co2High = parseInt(document.getElementById('co2High').value, 10);
   var co2Low = parseInt(document.getElementById('co2Low').value, 10);
   var co2Emer = parseInt(document.getElementById('co2Emergency').value, 10);
+  var exhaustOn = parseFloat(document.getElementById('humExhaustOn').value);
 
-  if (isNaN(hohFloor) || isNaN(assistFloor) || isNaN(ceiling)) {
+    if (isNaN(hohFloor) || isNaN(assistFloor) || isNaN(ceiling) || isNaN(exhaustOn)) {
     addLog('Invalid humidity threshold value', 'warn');
     return;
   }
@@ -449,6 +452,7 @@ function saveThresholds(){
     humHoHFloor: hohFloor,
     humAssistFloor: assistFloor,
     humCeiling: ceiling,
+    humExhaustOn: exhaustOn,
     assistOnSec: assistOn,
     assistOffSec: assistOff,
     co2HighLimit: co2High,
@@ -620,6 +624,7 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
         newThresholds.humHoHFloor = doc["data"]["humHoHFloor"] | thresholds->humHoHFloor;
         newThresholds.humAssistFloor = doc["data"]["humAssistFloor"] | thresholds->humAssistFloor;
         newThresholds.humCeiling = doc["data"]["humCeiling"] | thresholds->humCeiling;
+        newThresholds.humExhaustOn = doc["data"]["humExhaustOn"] | thresholds->humExhaustOn;
         newThresholds.assistOnSec = doc["data"]["assistOnSec"] | thresholds->assistOnSec;
         newThresholds.assistOffSec = doc["data"]["assistOffSec"] | thresholds->assistOffSec;
         newThresholds.co2HighLimit = doc["data"]["co2HighLimit"] | thresholds->co2HighLimit;
@@ -782,6 +787,7 @@ static void sendConfigUpdate(uint8_t clientNum) {
   doc["humHoHFloor"] = t->humHoHFloor;
   doc["humAssistFloor"] = t->humAssistFloor;
   doc["humCeiling"] = t->humCeiling;
+  doc["humExhaustOn"] = t->humExhaustOn;
   doc["assistOnSec"] = t->assistOnSec;
   doc["assistOffSec"] = t->assistOffSec;
   doc["co2HighLimit"] = t->co2HighLimit;
