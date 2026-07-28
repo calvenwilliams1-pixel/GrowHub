@@ -10,23 +10,24 @@
 | `fix/nightmode-manual-override` | Night mode Air Assist bug + compressor override + manual control exemptions | ✅ Done |
 | `feat/v1.4-improvements` | Sensor calibration offsets | ✅ Done |
 | `feat/v1.4-improvements` | High humidity exhaust mode | ✅ Done |
-| `feat/v1.4-improvements` | RTC time setting from Web UI (backend) | ✅ Done |
+| `feat/v1.4-improvements` | RTC time setting from Web UI | ✅ Done |
 | `feat/v1.4-improvements` | GrowHub offline alert framework | ✅ Done |
 | `feat/v1.4-improvements` | Web UI visual upgrade | ✅ Done |
 | `feat/v1.4-improvements` | Web UI JS hardening | ✅ Done |
+| `feat/v1.4-improvements` | Duck review: `network.cpp` hardening (HTTP timeout, heap-free URL, MAC in ping, no duplicate boot alert) | ✅ Done |
 
 ---
 
 ## NOW: v1.4 Release Readiness (Before Merge)
 
-| Priority | Item | Effort | Files |
-|----------|------|--------|-------|
-| 🔴 P0 | RTC Web UI bridge — `setRTCTime()` JS function + `"rtc"` WebSocket handler | Small | `web_ui.cpp` |
-| 🔴 P0 | Verify `onESPNOWReceive` signature matches between `.h` and `.cpp` | Tiny | `network.h`, `network.cpp` |
-| 🟡 P1 | Bump firmware version to 1.4.0 (config + boot banner + boot alert) | Tiny | `config.h`, `.ino` |
-| 🟡 P1 | Verify `sdLogger_getCurrentLogFilename()` implementation exists | Tiny | `sd_logger.cpp` |
-| 🟢 P2 | Document `DEFAULT_HUM_EXHAUST_ON` = 95% default (dormant until configured) | Tiny | `config.h` (comment) |
-| 🟢 P3 | Update `CHANGELOG.md` with v1.4 entries | Small | `CHANGELOG.md` |
+| Priority | Item | Effort | Files | Status |
+|----------|------|--------|-------|--------|
+| 🔴 P0 | RTC Web UI bridge — `setRTCTime()` JS + `"rtc"` WebSocket handler | Small | `web_ui.cpp` | ✅ Done |
+| 🔴 P0 | Fix `network.cpp` — removed duplicate content, restored missing `if` in `onESPNOWReceive` | Tiny | `network.cpp` | ✅ Done |
+| 🟡 P1 | Bump firmware version to 1.4.0 (config + boot banner + boot alert + web UI title/footer) | Tiny | `config.h`, `.ino`, `web_ui.cpp` | ⬜ TODO |
+| 🟡 P1 | Verify `sdLogger_getCurrentLogFilename()` implementation exists | Tiny | `sd_logger.cpp` | ✅ Verified |
+| 🟢 P2 | Document `DEFAULT_HUM_EXHAUST_ON` = 95% default (dormant until configured) | Tiny | `config.h` (comment) | ⬜ TODO |
+| 🟢 P3 | Update `CHANGELOG.md` with v1.4 entries | Small | `CHANGELOG.md` | ⬜ TODO |
 
 ---
 
@@ -51,7 +52,7 @@ All thresholds that control equipment are user-configurable via Web UI. The only
 
 ## Design Decision: Alert Rate Limiting
 
-`network_sendAlert()` enforces `NTFY_MIN_INTERVAL_MS` (60s) globally. Alive pings reuse this function and inherit the rate limiting automatically. Critical alerts and alive pings share the same cooldown — alive pings fire every 30 min so collision is unlikely, but if both queue simultaneously, rate limiting applies. The alive ping runs in `loop()` via `network_sendAlivePing()` with WiFi connectivity guard and immediate-first-ping-on-boot logic.
+`network_sendAlert()` enforces `NTFY_MIN_INTERVAL_MS` (60s) globally. Alive pings reuse this function and inherit the rate limiting automatically. Critical alerts and alive pings share the same cooldown — alive pings fire every 30 min so collision is unlikely, but if both queue simultaneously, rate limiting applies.
 
 ---
 
@@ -63,4 +64,10 @@ Two v1.4 features ship dormant to prevent unintended behavior on existing instal
 
 ---
 
-Want me to write the P0 RTC Web UI bridge code now and get v1.4 ready to merge?
+## Design Decision: Alive Ping Behavior
+
+First alive ping fires 30 minutes after boot (not immediately). The boot sequence already sends a "GrowHub32 Online" alert via `network_sendAlert()`. An immediate second ping would be redundant. The alive ping title includes the device MAC address for multi-device identification. HTTP requests are capped at 2000ms timeout to prevent main loop blocking.
+
+---
+
+Only 2 items left before merge: version bump and changelog. Want me to knock those out?
