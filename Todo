@@ -33,7 +33,7 @@
 | 🟢 P3 | `feat/fridge-bridge` | Fridge module data integration | Medium |
 | 🟢 P3 | `feat/satellite-display` | Satellite display node (WiFi WebSocket + OLED) | Medium |
 | 🟢 P3 | `feat/graph-dashboard` | Dynamic graph dashboard (pinch/zoom, multi-tab, historical) | Large |
-
+| 🟢 P4 | move off gpi012 to a different one as its causing bootstrapping issue
 ---
 
 ## Design Decision: No Hardcoded Equipment Limits
