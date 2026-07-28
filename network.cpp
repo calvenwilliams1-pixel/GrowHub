@@ -104,8 +104,7 @@ uint16_t network_crc16(const uint8_t* data, size_t len) {
 // ESP-NOW Receive Callback (WiFi Task Context)
 // ============================================================
 
-void onESPNOWReceive(const esp_now_recv_info* info, const uint8_t* incomingData, int len) { 
-   if (len != sizeof(FridgePacket)) {
+void onESPNOWReceive(const uint8_t* mac, const uint8_t* incomingData, int len) {
   
     Serial.print(F("[ESPNOW] Invalid packet size: "));
     Serial.print(len);
