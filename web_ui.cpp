@@ -510,6 +510,16 @@ function runSimulation(){
   sendWS({type: 6, cmd: 'simulate', current: current, target: target});
 }
 
+function setRTCTime(){
+  var dt = document.getElementById('rtcDateTime').value;
+  if(!dt){
+    addLog('Please select a date and time', 'warn');
+    return;
+  }
+  sendWS({type: 6, cmd: 'rtc', datetime: dt});
+  addLog('RTC time update sent', 'info');
+}
+
 function resumeAutomation(){
   sendWS({type: 6, cmd: 'resume_automation'});
   addLog('Automation resumed', 'info');
@@ -657,6 +667,46 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
         if (weight > EMA_WEIGHT_MAX) weight = EMA_WEIGHT_MAX;
         adaptive_setEMAWeight(weight);
       }
+      else if (msgType == WS_COMMAND && strcmp(cmd, "rtc") == 0) {
+        const char* datetime = doc["datetime"] | "";
+        if (strlen(datetime) == 0) {
+          Serial.println(F("[WS] RTC command received with empty datetime"));
+          return;
+        }
+        int year, month, day, hour, minute;
+        if (sscanf(datetime, "%d-%d-%dT%d:%d", &year, &month, &day, &hour, &minute) != 5) {
+          Serial.print(F("[WS] Failed to parse datetime: "));
+          Serial.println(datetime);
+          return;
+        }
+        if (year < 2000 || year > 2099 || month < 1 || month > 12 ||
+            day < 1 || day > 31 || hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+          Serial.print(F("[WS] RTC datetime out of range: "));
+          Serial.println(datetime);
+          return;
+        }
+        if (rtc_setTime((uint8_t)hour, (uint8_t)minute, 0,
+                        (uint8_t)day, (uint8_t)month, (uint16_t)year, 1)) {
+          Serial.println(F("[WS] RTC time set successfully from Web UI"));
+          StaticJsonDocument<128> responseDoc;
+          responseDoc["type"] = 2;
+          responseDoc["message"] = "RTC time updated successfully";
+          responseDoc["level"] = "info";
+          char response[128];
+          serializeJson(responseDoc, response, sizeof(response));
+          g_webSocket.sendTXT(num, (const uint8_t*)response, strlen(response));
+        } else {
+          Serial.println(F("[WS] RTC time set FAILED"));
+          StaticJsonDocument<128> responseDoc;
+          responseDoc["type"] = 2;
+          responseDoc["message"] = "Failed to set RTC time - check date values";
+          responseDoc["level"] = "warn";
+          char response[128];
+          serializeJson(responseDoc, response, sizeof(response));
+          g_webSocket.sendTXT(num, (const uint8_t*)response, strlen(response));
+        }
+      }
+         
       else if (msgType == WS_COMMAND && strcmp(cmd, "calibrate_start") == 0) {
         adaptive_startCalibration();
       }
