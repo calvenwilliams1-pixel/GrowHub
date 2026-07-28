@@ -292,6 +292,8 @@
 // NETWORK: Push Notifications (ntfy.sh)
 // ============================================================
 #define NTFY_MIN_INTERVAL_MS            60000UL   // Minimum time between push alerts (60s)
+#define NTFY_ENABLED                    false        // Set to true when ntfy.sh endpoint is configured
+#define NTFY_ALIVE_INTERVAL_MS          1800000UL    // 30 minutes between alive pings
 
 // ============================================================
 // OTA UPDATES
