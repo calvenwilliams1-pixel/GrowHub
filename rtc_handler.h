@@ -54,6 +54,7 @@ struct RTCTime {
 bool rtc_init();
 bool rtc_readTime(RTCTime* time);
 bool rtc_setTime(uint8_t hours, uint8_t minutes, uint8_t seconds,
+bool rtc_setTimeFromString(const char* cmd);
                  uint8_t date, uint8_t month, uint16_t year,
                  uint8_t dayOfWeek);
 
