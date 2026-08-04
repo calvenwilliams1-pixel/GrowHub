@@ -267,7 +267,7 @@ void loop() {
 
   // Temperature alerts every loop
   automation_checkTemperatureAlerts();
-
+  automation_checkFridgeAlarms();
   // Automation logic every loop
   automation_runHumidityLoop();
   automation_runCO2Loop();
