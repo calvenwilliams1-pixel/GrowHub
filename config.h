@@ -132,6 +132,9 @@
 #define TEMP_ALERT_HIGH_C               32.0f
 #define TEMP_ALERT_LOW_C                12.0f
 #define TEMP_ALERT_COOLDOWN_MS          300000UL  // Min time between repeat temperature alerts
+#define FRIDGE_TEMP_ALERT_HIGH_C        8.0f    // Alert if fridge temp exceeds this
+#define FRIDGE_TEMP_ALERT_LOW_C         0.0f    // Alert if fridge temp drops below this
+#define FRIDGE_TEMP_ALERT_COOLDOWN_MS   600000UL // 10 min between repeat fridge temp alerts
 
 // ============================================================
 // TEMPERATURE BANDS (Adaptive Learning)
@@ -261,6 +264,10 @@
 #define SAFETY_TEMP_FLOOR_HARD          15.0f
 #define SAFETY_TEMP_CEILING_HARD        35.0f
 #define DEFAULT_HUM_EXHAUST_ON          95.0f   // Exhaust fan ON above this (user-configurable)
+                                                // NOTE: Default equals SAFETY_HUM_CEILING_HARD (95%).
+                                                // Feature is dormant until user lowers this via Web UI.
+                                                // Recommended: 92% for early intervention before emergency cutoff.
+
 // ============================================================
 // WEB UI & WEBSOCKET
 // ============================================================
