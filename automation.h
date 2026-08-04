@@ -41,6 +41,7 @@ void automation_runHumidityLoop();
 void automation_runCO2Loop();
 void automation_checkNightMode();
 void automation_checkTemperatureAlerts();
+void automation_checkFridgeAlarms();
 void automation_runHighHumidityExhaust();
 
 // Threshold access (for Web UI)
