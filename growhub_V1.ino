@@ -38,6 +38,7 @@
 #include "web_ui.h"
 #include "adaptive.h"
 #include "safety.h"
+#include <math.h>
 
 // ============================================================
 // External Declarations
@@ -72,6 +73,8 @@ SystemState g_systemState = {
   .fridgeHeartbeatLost = false,
   .fridgeLastSequence = 0,
   .fridgeTemp = 4.0f,
+  .fridgeHumidity = NAN,
+  .fridgeDoorOpen = false,
   .currentDutyCycle = 0.0f,
   .pidOutput = 0.0f,
   .setpointHumidity = 87.5f,
