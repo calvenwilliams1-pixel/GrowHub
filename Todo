@@ -15,6 +15,11 @@
 | `feat/v1.4-improvements` | Web UI visual upgrade | ✅ Done |
 | `feat/v1.4-improvements` | Web UI JS hardening | ✅ Done |
 | `feat/v1.4-improvements` | Duck review: `network.cpp` hardening (HTTP timeout, heap-free URL, MAC in ping, no duplicate boot alert) | ✅ Done |
+| `feat/v1.4-improvements` | RTC Web UI bridge — `setRTCTime()` JS + `"rtc"` WebSocket handler | ✅ Done |
+| `feat/v1.4-improvements` | Fix `network.cpp` — removed duplicate content, restored missing `if` in `onESPNOWReceive` | ✅ Done |
+| `feat/v1.4-improvements` | Document `DEFAULT_HUM_EXHAUST_ON` dormancy | ✅ Done |
+| `feat/fridge-alarms` | Fridge temperature alarm + disconnect → phone alert | ✅ Done |
+| `feat/fridge-alarms` | Kimi review: removed dead `-40.0f` sentinel check | ✅ Done |
 
 ---
 
@@ -22,11 +27,8 @@
 
 | Priority | Item | Effort | Files | Status |
 |----------|------|--------|-------|--------|
-| 🔴 P0 | RTC Web UI bridge — `setRTCTime()` JS + `"rtc"` WebSocket handler | Small | `web_ui.cpp` | ✅ Done |
-| 🔴 P0 | Fix `network.cpp` — removed duplicate content, restored missing `if` in `onESPNOWReceive` | Tiny | `network.cpp` | ✅ Done |
+| 🔴 P0 | Add `automation_checkFridgeAlarms()` declaration to `automation.h` | Tiny | `automation.h` | ⬜ TODO |
 | 🟡 P1 | Bump firmware version to 1.4.0 (config + boot banner + boot alert + web UI title/footer) | Tiny | `config.h`, `.ino`, `web_ui.cpp` | ⬜ TODO |
-| 🟡 P1 | Verify `sdLogger_getCurrentLogFilename()` implementation exists | Tiny | `sd_logger.cpp` | ✅ Verified |
-| 🟢 P2 | Document `DEFAULT_HUM_EXHAUST_ON` = 95% default (dormant until configured) | Tiny | `config.h` (comment) | ⬜ TODO |
 | 🟢 P3 | Update `CHANGELOG.md` with v1.4 entries | Small | `CHANGELOG.md` | ⬜ TODO |
 
 ---
@@ -35,7 +37,6 @@
 
 | Priority | Branch | Item | Effort |
 |----------|--------|------|--------|
-| 🟠 P1 | `feat/fridge-alarms` | Fridge temperature alarm + disconnect → phone alert | Medium |
 | 🟡 P2 | `feat/relay-mapping` | Configurable relay mapping | Large |
 | 🟢 P3 | `feat/fridge-bridge` | Fridge module data integration | Medium |
 | 🟢 P3 | `feat/satellite-display` | Satellite display node (WiFi WebSocket + OLED) | Medium |
@@ -70,4 +71,6 @@ First alive ping fires 30 minutes after boot (not immediately). The boot sequenc
 
 ---
 
-Only 2 items left before merge: version bump and changelog. Want me to knock those out?
+## Design Decision: Fridge Alarm Thresholds
+
+Fridge temperature alarms fire at 8.0°C (high) and 0.0°C (low/freeze risk) with 10-minute cooldown between repeat alerts. Temperature alerts are suppressed when the fridge heartbeat is lost — disconnect is handled separately by `network_checkFridgeHeartbeat()`. The `-40.0f` sentinel was removed after Kimi review confirmed it's unreachable (ESP-NOW drops packets below -40°C before they reach `g_systemState.fridgeTemp`).
