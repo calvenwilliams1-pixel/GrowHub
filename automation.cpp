@@ -936,6 +936,50 @@ void automation_checkTemperatureAlerts() {
     }
 }
 
+
+// ============================================================
+// Public API: Fridge Temperature Alarms
+// ============================================================
+
+void automation_checkFridgeAlarms() {
+    float fridgeTemp = network_getFridgeTemp();
+    bool heartbeatLost = network_isFridgeHeartbeatLost();
+
+    // Don't alert on temperature if we've lost the fridge entirely —
+    // the heartbeat system already handles disconnect alerts.
+    if (heartbeatLost) return;
+
+    static bool highAlertSent = false;
+    static bool lowAlertSent = false;
+    static unsigned long lastHighAlertTime = 0;
+    static unsigned long lastLowAlertTime = 0;
+
+    // High temperature alert
+    if (fridgeTemp >= FRIDGE_TEMP_ALERT_HIGH_C) {
+        if (!highAlertSent && (lastHighAlertTime == 0 || millis() - lastHighAlertTime >= FRIDGE_TEMP_ALERT_COOLDOWN_MS)) {
+            highAlertSent = true;
+            lastHighAlertTime = millis();
+            char msg[64];
+            snprintf(msg, sizeof(msg), "Fridge temperature: %.1f C. Check cooling system!", fridgeTemp);
+            network_sendAlert("Fridge High Temperature", msg);
+        }
+    } else if (fridgeTemp < FRIDGE_TEMP_ALERT_HIGH_C - 0.5f) {
+        highAlertSent = false;
+    }
+
+    // Low temperature alert (freeze risk)
+    if (fridgeTemp <= FRIDGE_TEMP_ALERT_LOW_C) {
+        if (!lowAlertSent && (lastLowAlertTime == 0 || millis() - lastLowAlertTime >= FRIDGE_TEMP_ALERT_COOLDOWN_MS)) {
+            lowAlertSent = true;
+            lastLowAlertTime = millis();
+            char msg[64];
+            snprintf(msg, sizeof(msg), "Fridge temperature: %.1f C. Risk of freezing!", fridgeTemp);
+            network_sendAlert("Fridge Low Temperature", msg);
+        }
+    } else if (fridgeTemp > FRIDGE_TEMP_ALERT_LOW_C + 0.5f) {
+        lowAlertSent = false;
+    }
+}
 // ============================================================
 // Public API: Threshold Management
 // ============================================================
