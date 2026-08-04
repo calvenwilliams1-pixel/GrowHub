@@ -109,31 +109,35 @@ uint16_t network_crc16(const uint8_t* data, size_t len) {
 // ============================================================
 
 void onESPNOWReceive(const uint8_t* mac, const uint8_t* incomingData, int len) {
-  if (len != sizeof(FridgePacket)) {
+  // Accept old (8-byte temperature-only) and new (13-byte full) packets
+  if (len != 13 && len != 8) {
     Serial.print(F("[ESPNOW] Invalid packet size: "));
     Serial.print(len);
-    Serial.print(F(" bytes (expected "));
-    Serial.print(sizeof(FridgePacket));
-    Serial.println(F(") - dropped"));
+    Serial.print(F(" bytes (expected 8 or 13)"));
+    Serial.println(F(" - dropped"));
+    return;
+  }
+
+  // Extract CRC from last 2 bytes — avoids out-of-bounds read via
+  // packed struct pointer when len == 8 (crc16 at offset 11 in struct,
+  // but legacy packets are only 8 bytes).
+  uint16_t receivedCRC = ((uint16_t)incomingData[len - 2] << 8) | incomingData[len - 1];
+  uint16_t calculatedCRC = network_crc16(incomingData, len - sizeof(uint16_t));
+  if (calculatedCRC != receivedCRC) {
+    Serial.print(F("[ESPNOW] CRC-16 mismatch! Calc: 0x"));
+    Serial.print(calculatedCRC, HEX);
+    Serial.print(F(", Received: 0x"));
+    Serial.println(receivedCRC, HEX);
     return;
   }
 
   const FridgePacket* packet = (const FridgePacket*)incomingData;
 
-  uint16_t calculatedCRC = network_crc16(incomingData, sizeof(FridgePacket) - sizeof(uint16_t));
-  if (calculatedCRC != packet->crc16) {
-    Serial.print(F("[ESPNOW] CRC-16 mismatch! Calc: 0x"));
-    Serial.print(calculatedCRC, HEX);
-    Serial.print(F(", Received: 0x"));
-    Serial.println(packet->crc16, HEX);
-    return;
-  }
-
   bool everReceived;
   uint16_t lastSeq;
   portENTER_CRITICAL(&g_stateMux);
   everReceived = g_fridgePacketEverReceived;
-  lastSeq = g_lastFridgeSequence;
+  lastSeq = g_systemState.fridgeLastSequence;
   portEXIT_CRITICAL(&g_stateMux);
 
   uint16_t expectedSeq = lastSeq + 1;
@@ -150,24 +154,60 @@ void onESPNOWReceive(const uint8_t* mac, const uint8_t* incomingData, int len) {
     return;
   }
 
+  // Validate new fields outside critical section (only for 13-byte packets)
+  float humValue = NAN;
+  bool humValid = false;
+  if (len == 13) {
+    float hum = packet->humidity;
+    if (hum >= 0.0f && hum <= 100.0f) {
+      humValue = hum;
+      humValid = true;
+    } else {
+      humValue = hum;
+    }
+  }
+
+  // --- All validation passed. Update shared state under mutex. ---
   portENTER_CRITICAL(&g_stateMux);
+
   g_lastFridgeSequence = packet->sequenceNumber;
   g_lastFridgePacket = millis();
   g_fridgeHeartbeatLost = false;
   g_fridgeHeartbeatAlertSent = false;
   g_fridgePacketEverReceived = true;
+
   g_systemState.fridgeTemp = packet->temperature;
   g_systemState.fridgeLastSequence = packet->sequenceNumber;
   g_systemState.fridgeHeartbeatLost = false;
+
+  if (len == 13) {
+    g_systemState.fridgeHumidity = humValid ? humValue : NAN;
+    g_systemState.fridgeDoorOpen = (packet->doorState == 1);
+  } else {
+    g_systemState.fridgeHumidity = NAN;
+    g_systemState.fridgeDoorOpen = false;
+  }
+
   portEXIT_CRITICAL(&g_stateMux);
+
+  // Log outside critical section — Serial can block on full UART buffer
+  if (!humValid && len == 13) {
+    Serial.print(F("[ESPNOW] Fridge humidity out of range: "));
+    Serial.println(humValue, 1);
+  }
 
   Serial.print(F("[ESPNOW] Fridge packet OK - Seq: "));
   Serial.print(packet->sequenceNumber);
   Serial.print(F(", Temp: "));
   Serial.print(packet->temperature, 2);
+  if (len == 13) {
+    Serial.print(F(", Hum: "));
+    Serial.print(humValid ? humValue : NAN, 1);
+    Serial.print(F(", Door: "));
+    Serial.print(packet->doorState == 1 ? "OPEN" : "CLOSED");
+  }
   Serial.println(F(" C"));
 }
-
 // ============================================================
 // FreeRTOS-Safe Data Accessors
 // ============================================================
