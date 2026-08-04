@@ -154,10 +154,15 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
       <div class="value" id="co2Value">--</div>
       <div class="unit">ppm</div>
     </div>
-    <div class="sensor-card">
+        <div class="sensor-card">
       <div class="label">Fridge</div>
       <div class="value" id="fridgeValue">--</div>
-      <div class="unit">C</div>
+      <div class="unit">C / <span id="fridgeHumValue">--</span>%</div>
+    </div>
+    <div class="sensor-card">
+      <div class="label">Fridge Door</div>
+      <div class="value" id="fridgeDoorValue">--</div>
+      <div class="unit"></div>
     </div>
   </div>
   <div class="relay-grid">
@@ -319,6 +324,21 @@ function updateSensors(msg){
   document.getElementById('humValue').textContent = (typeof msg.hum === 'number') ? msg.hum.toFixed(1) : '--';
   document.getElementById('co2Value').textContent = (msg.co2 != null) ? msg.co2 : '--';
   document.getElementById('fridgeValue').textContent = (typeof msg.fridge === 'number') ? msg.fridge.toFixed(1) : '--';
+    document.getElementById('fridgeHumValue').textContent = (typeof msg.fridgeHum === 'number') ? msg.fridgeHum.toFixed(1) : '--';
+  var doorEl = document.getElementById('fridgeDoorValue');
+  if (msg.fridgeLost) {
+    doorEl.textContent = 'OFFLINE';
+    doorEl.style.color = '#d29922';
+  } else if (msg.fridgeDoor === true) {
+    doorEl.textContent = 'OPEN';
+    doorEl.style.color = '#da3633';
+  } else if (msg.fridgeDoor === false) {
+    doorEl.textContent = 'CLOSED';
+    doorEl.style.color = '#3fb950';
+  } else {
+    doorEl.textContent = '--';
+    doorEl.style.color = '#8b949e';
+  }
 
   document.getElementById('tempDot').className = 'status-dot ' + (msg.tempFault ? 'fault' : 'ok');
   document.getElementById('humDot').className = 'status-dot ' + (msg.humFault ? 'fault' : 'ok');
@@ -795,6 +815,8 @@ static void sendSensorUpdate() {
   doc["hum"] = hum;
   doc["co2"] = co2;
   doc["fridge"] = fridgeTemp;
+  doc["fridgeHum"] = network_getFridgeHumidity();
+  doc["fridgeDoor"] = network_isFridgeDoorOpen();
   doc["tempFault"] = tempFault;
   doc["humFault"] = humFault;
   doc["co2Fault"] = co2Fault;
