@@ -27,6 +27,7 @@
 #include "network.h"
 #include "system_state.h"
 #include <ArduinoJson.h>
+#include <LittleFS.h>
 
 // ============================================================
 // UPDATE VERSION HERE WHEN BUMPING FIRMWARE
@@ -124,6 +125,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   ::-webkit-scrollbar-thumb{background:#3d444d;border-radius:10px;}
   ::-webkit-scrollbar-thumb:hover{background:#58a6ff;}
 </style>
+<script src="/chart-4.4.0.min.js"></script>
 </head>
 <body>
 <div class="header">
@@ -139,6 +141,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   <button class="tab" onclick="switchTab(this, 'config')">Config</button>
   <button class="tab" onclick="switchTab(this, 'calibration')">Calibrate</button>
   <button class="tab" onclick="switchTab(this, 'simulation')">Simulate</button>
+   <button class="tab" onclick="switchTab(this, 'graphs')">Graphs</button>
   <button class="tab" onclick="switchTab(this, 'logs')">Logs</button>
 </div>
 
@@ -218,7 +221,6 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
     <div class="config-row"><label>Emergency (ppm)</label><input type="number" id="co2Emergency" value="1200" step="10"></div>
   </div>
   <div class="config-group">
-  <div class="config-group">
     <h3>Real-Time Clock</h3>
     <div class="config-row"><label>Set Date/Time</label><input type="datetime-local" id="rtcDateTime"></div>
     <button class="btn btn-on" onclick="setRTCTime()">Set RTC Time</button>
@@ -263,6 +265,22 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   </div>
 </div>
 
+<div id="graphs" class="tab-content">
+  <div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap;">
+    <button class="btn btn-neutral graph-tab active" onclick="switchGraphTab(this,0)">Temp</button>
+    <button class="btn btn-neutral graph-tab" onclick="switchGraphTab(this,1)">Humidity</button>
+    <button class="btn btn-neutral graph-tab" onclick="switchGraphTab(this,2)">CO2</button>
+    <button class="btn btn-neutral graph-tab" onclick="switchGraphTab(this,3)">Fridge</button>
+    <span style="flex:1;"></span>
+    <button class="btn btn-neutral graph-range-btn" onclick="setGraphRange(3600,this)">1h</button>
+    <button class="btn btn-neutral graph-range-btn" onclick="setGraphRange(21600,this)">6h</button>
+    <button class="btn btn-neutral graph-range-btn active" onclick="setGraphRange(86400,this)">24h</button>
+  </div>
+  <div style="position:relative;width:100%;height:350px;">
+    <canvas id="graphCanvas"></canvas>
+  </div>
+</div>
+
 <div id="logs" class="tab-content">
   <h3>System Log</h3>
   <div class="log-area" id="logArea">
@@ -287,7 +305,9 @@ function connectWS(){
   ws = new WebSocket('ws://' + location.hostname + ':81/');
   ws.onopen = function(){
     document.getElementById('connectionStatus').textContent = 'Connected | ' + location.hostname;
-    reconnectDelay = 3000;
+      reconnectDelay = 3000;
+    initGraph();
+    requestHistorical();
   };
   ws.onmessage = function(e){
     try{
@@ -325,11 +345,12 @@ function handleMessage(msg){
     case 3: updateConfig(msg); break;
     case 4: updateCalibration(msg); break;
     case 5: addLog(msg.message, msg.level || 'info'); break;
-    case 99:
+      case 99:
       if(msg.simResult){
         document.getElementById('simResult').textContent = msg.simResult;
       }
       break;
+    case 100: handleGraphResponse(msg); break;
   }
 }
 
@@ -374,6 +395,11 @@ function updateSensors(msg){
   document.getElementById('simBand').textContent = (msg.activeBand != null) ? 'Band ' + msg.activeBand : '--';
 document.getElementById('simConfidence').textContent = (typeof msg.confidence === 'number') ? (msg.confidence * 100).toFixed(1) + '%' : '--';
   document.getElementById('controlMode').textContent = msg.controlMode || '--';
+
+  if (typeof msg.temp === 'number') feedLiveGraph(0, msg.temp);
+  if (typeof msg.hum === 'number') feedLiveGraph(1, msg.hum);
+  if (typeof msg.co2 === 'number') feedLiveGraph(2, msg.co2);
+  if (typeof msg.fridge === 'number') feedLiveGraph(3, msg.fridge);
 }
 
 function updateRelays(msg){
@@ -574,6 +600,133 @@ function resumeAutomation(){
   addLog('Automation resumed', 'info');
 }
 
+// ============================================================
+// Graph Engine (v1.4)
+// ============================================================
+var graphChart = null;
+var graphSensor = 0;
+var graphRange = 86400;
+var graphRequestId = 0;
+var graphLastRequestTime = 0;
+var liveBuffers = [[],[],[],[]];
+var GRAPH_MAX_LIVE = 3600;
+var liveUpdatePending = false;
+
+function initGraph() {
+  var canvas = document.getElementById('graphCanvas');
+  if (!canvas) return;
+  if (typeof Chart === 'undefined') {
+    canvas.parentNode.innerHTML = '<p style="color:#d29922;text-align:center;padding:40px;">Chart library not loaded</p>';
+    return;
+  }
+  if (graphChart) { graphChart.destroy(); graphChart = null; }
+  liveBuffers = [[],[],[],[]];
+
+  var ctx = canvas.getContext('2d');
+  graphChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      datasets: [
+        { label: 'Live', data: [], borderColor: '#58a6ff', borderWidth: 1.5, tension: 0.2, pointRadius: 0 },
+        { label: 'History', data: [], borderColor: '#3fb950', borderWidth: 1, tension: 0.2, pointRadius: 0 }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      scales: {
+        x: {
+          type: 'linear',
+          title: { display: true, text: 'Time', color: '#8b949e' },
+          ticks: {
+            color: '#8b949e',
+            callback: function(v) {
+              var d = new Date(v * 1000);
+              if (graphRange >= 86400) {
+                return (d.getMonth()+1) + '/' + d.getDate() + ' ' +
+                       d.getHours() + ':' + String(d.getMinutes()).padStart(2,'0');
+              }
+              return d.getHours() + ':' + String(d.getMinutes()).padStart(2,'0');
+            }
+          },
+          grid: { color: '#21262d' }
+        },
+        y: {
+          title: { display: true, text: '', color: '#8b949e' },
+          ticks: { color: '#8b949e' },
+          grid: { color: '#21262d' }
+        }
+      },
+      plugins: {
+        legend: { labels: { color: '#8b949e' } }
+      }
+    }
+  });
+  updateGraphLabels();
+}
+
+function updateGraphLabels() {
+  var labels = ['Temperature (°C)', 'Humidity (%)', 'CO2 (ppm)', 'Fridge Temp (°C)'];
+  if (graphChart && graphChart.options.scales.y) {
+    graphChart.options.scales.y.title.text = labels[graphSensor] || '';
+  }
+}
+
+function switchGraphTab(btn, sensor) {
+  graphSensor = sensor;
+  document.querySelectorAll('.graph-tab').forEach(function(b){ b.classList.remove('active'); });
+  btn.classList.add('active');
+  if (graphChart) {
+    graphChart.data.datasets[0].data = liveBuffers[sensor];
+  }
+  updateGraphLabels();
+  requestHistorical();
+}
+
+function setGraphRange(seconds, btn) {
+  graphRange = seconds;
+  document.querySelectorAll('.graph-range-btn').forEach(function(b){ b.classList.remove('active'); });
+  btn.classList.add('active');
+  if (graphChart) { graphChart.update('none'); }
+  requestHistorical();
+}
+
+function requestHistorical() {
+  var now = Math.floor(Date.now() / 1000);
+  if (now - graphLastRequestTime < 5) return;
+  graphLastRequestTime = now;
+  graphRequestId = (graphRequestId + 1) & 0xFFFF;
+  var start = now - graphRange;
+  sendWS({type: 100, sensor: graphSensor, start: start, end: now, max: 350, rid: graphRequestId});
+}
+
+function feedLiveGraph(sensor, value) {
+  var now = Math.floor(Date.now() / 1000);
+  liveBuffers[sensor].push({x: now, y: value});
+  if (liveBuffers[sensor].length > GRAPH_MAX_LIVE) {
+    liveBuffers[sensor] = liveBuffers[sensor].slice(-GRAPH_MAX_LIVE);
+  }
+  if (graphChart && sensor === graphSensor && !liveUpdatePending) {
+    liveUpdatePending = true;
+    requestAnimationFrame(function() {
+      liveUpdatePending = false;
+      if (!graphChart) return;
+      graphChart.data.datasets[0].data = liveBuffers[sensor];
+      graphChart.update('none');
+    });
+  }
+}
+
+function handleGraphResponse(msg) {
+  if (msg.rid !== graphRequestId || msg.s !== graphSensor) return;
+  if (!graphChart) return;
+  if (msg.error) return;
+  var points = (msg.p || []).map(function(p){ return {x: p[0], y: p[1]}; });
+  graphChart.data.datasets[1].data = points;
+  graphChart.update('none');
+}
+
 connectWS();
 </script>
 </body>
@@ -626,7 +779,43 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
       uint8_t msgType = doc["type"] | 0;
       const char* cmd = doc["cmd"] | "";
 
-            if (msgType == WS_COMMAND && strcmp(cmd, "relay") == 0) {
+                 if (msgType == WS_GRAPH_DATA) {
+        static unsigned long g_lastGraphRequest[MAX_WS_CLIENTS] = {0};
+        unsigned long now = millis();
+        if (num >= MAX_WS_CLIENTS) return;
+        if (now - g_lastGraphRequest[num] < GRAPH_RATE_LIMIT_MS) return;
+        g_lastGraphRequest[num] = now;
+
+        GraphDataRequest req;
+        req.sensorType = doc["sensor"] | 0;
+        req.startEpoch = doc["start"] | 0;
+        req.endEpoch = doc["end"] | 0;
+        req.maxPoints = doc["max"] | GRAPH_MAX_RESPONSE_POINTS;
+        req.requestId = doc["rid"] | 0;
+
+        if (req.sensorType > 3) return;
+
+        char* graphOutput = (char*)heap_caps_malloc(GRAPH_RESPONSE_BUFFER_SIZE, MALLOC_CAP_8BIT);
+        if (!graphOutput) {
+          StaticJsonDocument<128> errDoc;
+          errDoc["type"] = WS_GRAPH_DATA;
+          errDoc["error"] = "NO_MEMORY";
+          errDoc["rid"] = req.requestId;
+          char errOutput[128];
+          serializeJson(errDoc, errOutput, sizeof(errOutput));
+          g_webSocket.sendTXT(num, (const uint8_t*)errOutput, strlen(errOutput));
+          break;
+        }
+
+        size_t len = sdLogger_getHistoricalData(&req, graphOutput, GRAPH_RESPONSE_BUFFER_SIZE);
+        if (len > 0) {
+          g_webSocket.sendTXT(num, (const uint8_t*)graphOutput, len);
+        }
+        heap_caps_free(graphOutput);
+        break;
+      }
+
+      if (msgType == WS_COMMAND && strcmp(cmd, "relay") == 0) {
         uint8_t index = doc["index"] | 0;
         bool state = (doc["state"].as<int>() != 0);
         bool force = (doc["force"].as<int>() != 0);
@@ -996,9 +1185,19 @@ static void sendCalibrationUpdate() {
 bool webUI_init() {
   Serial.println(F("[WEB] Initializing web server..."));
 
+   g_server.on("/chart-4.4.0.min.js", []() {
+    if (LittleFS.exists("/chart-4.4.0.min.js")) {
+      g_server.sendHeader("Cache-Control", "max-age=31536000, immutable");
+      File f = LittleFS.open("/chart-4.4.0.min.js", "r");
+      g_server.streamFile(f, "application/javascript");
+      f.close();
+    } else {
+      g_server.send(404, "text/plain", "Not Found");
+    }
+  });
+
   g_server.on("/", handleRoot);
   g_server.onNotFound(handleNotFound);
-
   g_server.begin();
   Serial.print(F("[WEB] HTTP server started on port "));
   Serial.println(WEB_SERVER_PORT);
