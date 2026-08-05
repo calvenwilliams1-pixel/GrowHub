@@ -52,11 +52,23 @@
 // ============================================================
 // HARDWARE: Relay GPIO Pins
 // ============================================================
+// @deprecated — Use relay mapping via relayManager. Remove in v1.5.
 #define RELAY_HOH_PIN                   13
-#define RELAY_AIR_ASSIST_PIN            12
+#define RELAY_AIR_ASSIST_PIN            26    // v1.4: moved from GPIO 12 (bootstrap conflict)
 #define RELAY_EXHAUST_PIN               14
 #define RELAY_COMPRESSOR_PIN            27
 
+// ============================================================
+// HARDWARE: Configurable Relay Mapping (v1.4)
+// ============================================================
+#define RELAY_FUNCTION_COUNT             4
+#define RELAY_MAPPING_MAGIC              0x524D  // "RM" — cache validation
+
+// Default GPIO assignments (used on first boot or factory reset)
+#define DEFAULT_PIN_HOH                  13
+#define DEFAULT_PIN_AIR_ASSIST           26      // v1.4: was GPIO 12
+#define DEFAULT_PIN_EXHAUST              14
+#define DEFAULT_PIN_COMPRESSOR           27
 // ============================================================
 // HARDWARE: Compressor Protection
 // ============================================================
