@@ -1,8 +1,8 @@
 /*
    GrowHub32_MainNode.ino
    Main Automation Node - ESP32 30-Pin Dev Board
-   Version: 1.3.0
-   Author: Calvin
+   Version: 1.4.0
+   Author: Calven
 
    Hardware:
    - ESP32 30-Pin Dev Board (CP2102 Type-C)
