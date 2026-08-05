@@ -218,8 +218,17 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
     <div class="config-row"><label>Set Date/Time</label><input type="datetime-local" id="rtcDateTime"></div>
     <button class="btn btn-on" onclick="setRTCTime()">Set RTC Time</button>
   </div>
-    <h3>Adaptive Learning</h3>
+        <h3>Adaptive Learning</h3>
     <div class="config-row"><label>EMA Weight (0.10-0.50)</label><input type="number" id="emaWeight" value="0.30" step="0.05" min="0.10" max="0.50"></div>
+  </div>
+  <div class="config-group">
+    <h3>Relay Mapping</h3>
+    <p style="font-size:0.7em;color:#8b949e;margin-bottom:8px;">Changes take effect immediately. GPIO 0-3,5,12,15,18-23 are blocked.</p>
+    <div class="config-row"><label>HOH Humidifier Pin</label><input type="number" id="pinHOH" value="13" min="0" max="39"></div>
+    <div class="config-row"><label>Air Assist Pin</label><input type="number" id="pinAirAssist" value="26" min="0" max="39"></div>
+    <div class="config-row"><label>Exhaust Fan Pin</label><input type="number" id="pinExhaust" value="14" min="0" max="39"></div>
+    <div class="config-row"><label>Compressor Pin</label><input type="number" id="pinCompressor" value="27" min="0" max="39"></div>
+    <button class="btn btn-on" onclick="saveRelayMapping()">Apply Relay Mapping</button>
   </div>
   <button class="btn btn-on" onclick="saveThresholds()">Save All Settings</button>
 </div>
@@ -393,6 +402,10 @@ function updateConfig(msg){
   document.getElementById('co2Low').value = msg.co2LowTarget;
   document.getElementById('co2Emergency').value = msg.co2Emergency;
   document.getElementById('emaWeight').value = msg.emaWeight;
+  document.getElementById('pinHOH').value = msg.pinHOH;
+  document.getElementById('pinAirAssist').value = msg.pinAirAssist;
+  document.getElementById('pinExhaust').value = msg.pinExhaust;
+  document.getElementById('pinCompressor').value = msg.pinCompressor;
 }
 
 function updateOverrideStatus(msg){
@@ -538,6 +551,17 @@ function setRTCTime(){
   }
   sendWS({type: 6, cmd: 'rtc', datetime: dt});
   addLog('RTC time update sent', 'info');
+}
+
+function saveRelayMapping(){
+  var pins = {
+    pinHOH: parseInt(document.getElementById('pinHOH').value, 10),
+    pinAirAssist: parseInt(document.getElementById('pinAirAssist').value, 10),
+    pinExhaust: parseInt(document.getElementById('pinExhaust').value, 10),
+    pinCompressor: parseInt(document.getElementById('pinCompressor').value, 10)
+  };
+  sendWS({type: 6, cmd: 'relay_mapping', data: pins});
+  addLog('Relay mapping update sent', 'info');
 }
 
 function resumeAutomation(){
@@ -736,6 +760,37 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
       else if (msgType == WS_COMMAND && strcmp(cmd, "resume_automation") == 0) {
         automation_deactivateAllOverrides();
       }
+               else if (msgType == WS_COMMAND && strcmp(cmd, "relay_mapping") == 0) {
+        const RelayMapping* current = relayManager_getMapping();
+        RelayMapping newMapping;
+        newMapping.magic = RELAY_MAPPING_MAGIC;
+        newMapping.pinHOH = doc["data"]["pinHOH"] | current->pinHOH;
+        newMapping.pinAirAssist = doc["data"]["pinAirAssist"] | current->pinAirAssist;
+        newMapping.pinExhaust = doc["data"]["pinExhaust"] | current->pinExhaust;
+        newMapping.pinCompressor = doc["data"]["pinCompressor"] | current->pinCompressor;
+        memset(newMapping.reserved, 0, sizeof(newMapping.reserved));
+
+        if (relayManager_updateMapping(&newMapping)) {
+          memcpy(&g_runtimeCache.relayMapping, relayManager_getMapping(), sizeof(RelayMapping));
+          sdLogger_saveCache();
+
+          StaticJsonDocument<128> responseDoc;
+          responseDoc["type"] = 2;
+          responseDoc["message"] = "Relay mapping applied and saved";
+          responseDoc["level"] = "info";
+          char response[128];
+          serializeJson(responseDoc, response, sizeof(response));
+          g_webSocket.sendTXT(num, (const uint8_t*)response, strlen(response));
+        } else {
+          StaticJsonDocument<128> responseDoc;
+          responseDoc["type"] = 2;
+          responseDoc["message"] = "Invalid relay mapping — check pins";
+          responseDoc["level"] = "warn";
+          char response[128];
+          serializeJson(responseDoc, response, sizeof(response));
+          g_webSocket.sendTXT(num, (const uint8_t*)response, strlen(response));
+        }
+      }
       else if (msgType == WS_COMMAND && strcmp(cmd, "simulate") == 0) {
         float current = doc["current"] | 0.0f;
         float target = doc["target"] | 88.0f;
@@ -884,7 +939,11 @@ static void sendConfigUpdate(uint8_t clientNum) {
   doc["co2LowTarget"] = t->co2LowTarget;
   doc["co2Emergency"] = t->co2Emergency;
   doc["emaWeight"] = adaptive_getEMAWeight();
-
+  const RelayMapping* mapping = relayManager_getMapping();
+  doc["pinHOH"] = mapping->pinHOH;
+  doc["pinAirAssist"] = mapping->pinAirAssist;
+  doc["pinExhaust"] = mapping->pinExhaust;
+  doc["pinCompressor"] = mapping->pinCompressor;
   char output[256];
   size_t len = serializeJson(doc, output, sizeof(output));
   if (len >= sizeof(output)) {
