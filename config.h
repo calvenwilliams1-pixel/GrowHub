@@ -281,6 +281,19 @@
                                                 // Recommended: 92% for early intervention before emergency cutoff.
 
 // ============================================================
+// GRAPH DASHBOARD (v1.4)
+// NOTE: 7-day (604800) not supported in v1.4. Two-pass counting over
+// 600k+ lines takes minutes. v1.5 will use file-size heuristics.
+// ============================================================
+#define GRAPH_LIVE_BUFFER_SIZE          3600
+#define GRAPH_MAX_RESPONSE_POINTS       350
+#define GRAPH_RESPONSE_BUFFER_SIZE      8192
+#define GRAPH_DEFAULT_RANGE_SEC         86400
+#define GRAPH_RATE_LIMIT_MS             5000
+#define GRAPH_YIELD_INTERVAL_MS         50
+#define MAX_WS_CLIENTS                  8
+
+// ============================================================
 // WEB UI & WEBSOCKET
 // ============================================================
 #define WEB_SERVER_PORT                 80
