@@ -1,23 +1,24 @@
 /*
    relay_manager.cpp
    GrowHub32 - Relay Control & Safety Guardrails Implementation
-   Version: 1.2.4
-   Revision: Fixed cooldown restoration to back-date cooldownStart by elapsed downtime.
-             Added RTC sanity check with 24h cap to prevent absurdly large deltas.
-             Fixed double-millis() drift in getOnDuration().
-             Removed setRelay() call from getOnDuration() (pure getter now).
-             Mutex-protected g_systemState writes in setRelay() and forceAllOff().
-             Uses COMPRESSOR_COOLDOWN_MS from config.h for cooldown enforcement.
-             COMPRESSOR_MAX_ON_MS is enforced by the caller (automation.cpp loop).
-             Uses RELAY_CYCLE_WINDOW_MS from config.h.
-             Fixed missing cooldownLocked=true in partial restoration path.
+   Version: 1.4.0
+   Revision: Configurable relay mapping (v1.4). Dynamic pin assignment.
+             GPIO 12 moved to blacklist, Air Assist default → GPIO 26.
+             Mapping persisted via RuntimeCache on SD.
+             Hardware teardown/reinit on mapping change under mutex.
+             Startup order: load mapping before relayManager_init().
+             Pre-latch digitalWrite before pinMode to prevent pulse glitch.
+             All Serial output moved outside critical sections.
+             Mapping validation on init (pin sanity check).
+             Cooldown state preserved across remap (compressor protection).
+             force=true bypasses all safeties including rapid-fire lockout.
+             Emergency shutdown cuts power before any Serial I/O.
 
    RELAY LOGIC: Active LOW
    - digitalWrite(pin, LOW)  = Relay ON, circuit CLOSED
    - digitalWrite(pin, HIGH) = Relay OFF, circuit OPEN
 
    WIRING NOTE:
-   - IN2 (GPIO12) requires external 10k pull-down to GND for safe boot.
    - All relay VCC to external 5V supply (NOT ESP32 3.3V or 5V pin).
    - JD-VCC jumper: use separate supply configuration for optocoupler isolation.
 
@@ -33,13 +34,8 @@ extern portMUX_TYPE g_stateMux;
 
 RelayState g_relays[RELAY_COUNT];
 
-// Pin mapping
-static const uint8_t relayPins[RELAY_COUNT] = {
-  RELAY_HOH_PIN,        // 0: GPIO 13
-  RELAY_AIR_ASSIST_PIN, // 1: GPIO 12
-  RELAY_EXHAUST_PIN,    // 2: GPIO 14
-  RELAY_COMPRESSOR_PIN  // 3: GPIO 27
-};
+// Dynamic pin array — populated from mapping at init
+static uint8_t g_relayPins[RELAY_COUNT];
 
 // Friendly names for serial logging
 static const char* relayNames[RELAY_COUNT] = {
@@ -50,8 +46,8 @@ static const char* relayNames[RELAY_COUNT] = {
 };
 
 // Relay capability table — source of truth for per-relay behavior.
-// When configurable relay mapping is implemented, this table will
-// be populated from stored configuration rather than hardcoded.
+// Capabilities are tied to function index, not GPIO pin.
+// All relay modules are physically identical.
 static const RelayCapability g_relayCaps[RELAY_COUNT] = {
     { false, false, false },  // HOH — silent, no cooldown, continuous
     { true,  false, true  },  // Air Assist — loud, no cooldown, burst cycled
@@ -59,27 +55,217 @@ static const RelayCapability g_relayCaps[RELAY_COUNT] = {
     { true,  true,  false }   // Compressor — loud, cooldown, continuous
 };
 
+// Current relay mapping (file-scope — access via getter/setter)
+static RelayMapping g_relayMapping;
+
+// Default factory mapping
+static const RelayMapping g_defaultMapping = {
+  .magic = RELAY_MAPPING_MAGIC,
+  .pinHOH = DEFAULT_PIN_HOH,
+  .pinAirAssist = DEFAULT_PIN_AIR_ASSIST,
+  .pinExhaust = DEFAULT_PIN_EXHAUST,
+  .pinCompressor = DEFAULT_PIN_COMPRESSOR,
+  .reserved = {0, 0, 0}
+};
+
+// ============================================
+// Pin Validation
+// ============================================
+
+static bool isPinBlacklisted(uint8_t pin) {
+  switch (pin) {
+    case 0: case 1: case 2: case 3:   // Boot + UART (TX/RX)
+    case 5:                           // SD CS
+    case 12: case 15:                 // Bootstrap (MTDI, MTDO)
+    case 18: case 19: case 23:        // SD SPI
+    case 21: case 22:                 // I2C
+      return true;
+    default: return false;
+  }
+}
+
+bool relayManager_isPinValid(uint8_t pin) {
+  if (isPinBlacklisted(pin)) return false;
+  if (pin > 39) return false;
+  // GPIOs 6-11 are connected to internal flash on most ESP32 modules
+  if (pin >= 6 && pin <= 11) return false;
+  // GPIOs 34-39 are input-only
+  if (pin >= 34) return false;
+  return true;
+}
+
+// ============================================
+// Mapping Accessors
+// ============================================
+
+const RelayMapping* relayManager_getMapping() {
+  return &g_relayMapping;
+}
+
+const RelayMapping* relayManager_getDefaultMapping() {
+  return &g_defaultMapping;
+}
+
+uint8_t relayManager_getPin(uint8_t relayIndex) {
+  if (relayIndex >= RELAY_COUNT) return 255;
+  return g_relayPins[relayIndex];
+}
+
+bool relayManager_updateMapping(const RelayMapping* newMapping) {
+  if (!newMapping) return false;
+  if (newMapping->magic != RELAY_MAPPING_MAGIC) return false;
+
+  uint8_t pins[RELAY_FUNCTION_COUNT] = {
+    newMapping->pinHOH,
+    newMapping->pinAirAssist,
+    newMapping->pinExhaust,
+    newMapping->pinCompressor
+  };
+
+  // Validate all pins
+  for (int i = 0; i < RELAY_FUNCTION_COUNT; i++) {
+    if (!relayManager_isPinValid(pins[i])) {
+      Serial.print(F("[RELAY] Invalid pin in mapping: "));
+      Serial.println(pins[i]);
+      return false;
+    }
+    if (pins[i] == 255) {
+      Serial.println(F("[RELAY] Pin 255 is reserved — rejected"));
+      return false;
+    }
+  }
+
+  // Check for duplicate pins
+  for (int i = 0; i < RELAY_FUNCTION_COUNT; i++) {
+    for (int j = i + 1; j < RELAY_FUNCTION_COUNT; j++) {
+      if (pins[i] == pins[j]) {
+        Serial.print(F("[RELAY] Duplicate pin in mapping: "));
+        Serial.println(pins[i]);
+        return false;
+      }
+    }
+  }
+
+  // Capture timestamp and cooldown state BEFORE critical section
+  unsigned long now = millis();
+  bool preserveCooldown[RELAY_COUNT];
+  unsigned long preserveCooldownStart[RELAY_COUNT];
+  unsigned long preserveCooldownOffEpoch[RELAY_COUNT];
+  for (uint8_t i = 0; i < RELAY_COUNT; i++) {
+    preserveCooldown[i] = g_relays[i].cooldownLocked;
+    preserveCooldownStart[i] = g_relays[i].cooldownStart;
+    preserveCooldownOffEpoch[i] = g_relays[i].cooldownOffEpoch;
+  }
+
+  // --- Hardware transition under mutex ---
+  // CRITICAL: No Serial, no SD, no blocking calls inside this block.
+  portENTER_CRITICAL(&g_stateMux);
+
+  // 1. Force all old pins OFF and tristate
+  for (uint8_t i = 0; i < RELAY_COUNT; i++) {
+    if (g_relays[i].pin != 255) {
+      digitalWrite(g_relays[i].pin, HIGH);   // Active LOW = OFF
+      pinMode(g_relays[i].pin, INPUT);        // Tristate
+    }
+  }
+
+  // 2. Update mapping and dynamic array
+  memcpy(&g_relayMapping, newMapping, sizeof(RelayMapping));
+  g_relayPins[RELAY_HOH] = g_relayMapping.pinHOH;
+  g_relayPins[RELAY_AIR_ASSIST] = g_relayMapping.pinAirAssist;
+  g_relayPins[RELAY_EXHAUST] = g_relayMapping.pinExhaust;
+  g_relayPins[RELAY_COMPRESSOR] = g_relayMapping.pinCompressor;
+
+  // 3. Update RelayState structs and configure new pins
+  // Cooldown state is PRESERVED — it belongs to the compressor function,
+  // not the GPIO pin. Wiping it would allow short-cycling after remap.
+  for (uint8_t i = 0; i < RELAY_COUNT; i++) {
+    g_relays[i].pin = g_relayPins[i];
+    g_relays[i].isActive = false;
+    g_relays[i].lastOnTime = 0;
+    g_relays[i].lastOffTime = now;
+    g_relays[i].totalOnDuration = 0;
+    g_relays[i].cycleCount = 0;
+    g_relays[i].cycleWindowStart = now;
+    g_relays[i].rapidFireLockoutStart = 0;
+
+    // Restore cooldown state — compressor protection survives remap
+    g_relays[i].cooldownLocked = preserveCooldown[i];
+    g_relays[i].cooldownStart = preserveCooldownStart[i];
+    g_relays[i].cooldownOffEpoch = preserveCooldownOffEpoch[i];
+
+    // Pre-latch HIGH before OUTPUT to prevent nanosecond pulse glitch
+    digitalWrite(g_relays[i].pin, HIGH);
+    pinMode(g_relays[i].pin, OUTPUT);
+  }
+
+  portEXIT_CRITICAL(&g_stateMux);
+
+  // Safe logging outside critical section
+  for (uint8_t i = 0; i < RELAY_COUNT; i++) {
+    Serial.print(F("[RELAY] Remapped "));
+    Serial.print(relayNames[i]);
+    Serial.print(F(" -> GPIO "));
+    Serial.print(g_relays[i].pin);
+    Serial.println(F(" (OFF)"));
+  }
+
+  Serial.println(F("[RELAY] Mapping updated and hardware synchronized"));
+  return true;
+}
+
+void relayManager_resetMapping() {
+  relayManager_updateMapping(&g_defaultMapping);
+}
+
 // ============================================
 // Initialization
 // ============================================
 
-bool relayManager_init() {
+bool relayManager_init(const RelayMapping* useMapping) {
+  // Apply mapping: use provided mapping if valid, otherwise factory defaults
+  if (useMapping && useMapping->magic == RELAY_MAPPING_MAGIC &&
+      relayManager_isPinValid(useMapping->pinHOH) &&
+      relayManager_isPinValid(useMapping->pinAirAssist) &&
+      relayManager_isPinValid(useMapping->pinExhaust) &&
+      relayManager_isPinValid(useMapping->pinCompressor) &&
+      useMapping->pinHOH != useMapping->pinAirAssist &&
+      useMapping->pinHOH != useMapping->pinExhaust &&
+      useMapping->pinHOH != useMapping->pinCompressor &&
+      useMapping->pinAirAssist != useMapping->pinExhaust &&
+      useMapping->pinAirAssist != useMapping->pinCompressor &&
+      useMapping->pinExhaust != useMapping->pinCompressor) {
+    memcpy(&g_relayMapping, useMapping, sizeof(RelayMapping));
+    Serial.println(F("[RELAY] Using cached relay mapping"));
+  } else {
+    memcpy(&g_relayMapping, &g_defaultMapping, sizeof(RelayMapping));
+    Serial.println(F("[RELAY] Using factory default relay mapping"));
+  }
+
+  g_relayPins[RELAY_HOH] = g_relayMapping.pinHOH;
+  g_relayPins[RELAY_AIR_ASSIST] = g_relayMapping.pinAirAssist;
+  g_relayPins[RELAY_EXHAUST] = g_relayMapping.pinExhaust;
+  g_relayPins[RELAY_COMPRESSOR] = g_relayMapping.pinCompressor;
+
   // GH-SYS-003: CRITICAL - Set ALL relays HIGH (OFF) immediately
-  // This prevents floating pins from triggering relays during boot
+  unsigned long now = millis();
   for (uint8_t i = 0; i < RELAY_COUNT; i++) {
-    g_relays[i].pin = relayPins[i];
+    g_relays[i].pin = g_relayPins[i];
     g_relays[i].isActive = false;
     g_relays[i].lastOnTime = 0;
-    g_relays[i].lastOffTime = millis();
+    g_relays[i].lastOffTime = now;
     g_relays[i].totalOnDuration = 0;
     g_relays[i].cycleCount = 0;
-    g_relays[i].cycleWindowStart = millis();
+    g_relays[i].cycleWindowStart = now;
     g_relays[i].cooldownLocked = false;
     g_relays[i].cooldownStart = 0;
     g_relays[i].rapidFireLockoutStart = 0;
-    // Configure pin and force HIGH (OFF)
-    pinMode(g_relays[i].pin, OUTPUT);
-    digitalWrite(g_relays[i].pin, HIGH);
+
+    if (g_relays[i].pin != 255) {
+      // Pre-latch HIGH before OUTPUT to prevent nanosecond pulse glitch
+      digitalWrite(g_relays[i].pin, HIGH);  // Active LOW = OFF
+      pinMode(g_relays[i].pin, OUTPUT);
+    }
 
     Serial.print(F("[RELAY] Initialized "));
     Serial.print(relayNames[i]);
@@ -88,7 +274,6 @@ bool relayManager_init() {
     Serial.println(F(" -> OFF (HIGH, safe state)"));
   }
 
-  Serial.println(F("[RELAY] NOTE: GPIO 12 (Air Assist) requires external 10k pull-down to GND per SRS v1.1"));
   Serial.println(F("[RELAY] Compressor cooldown state will be loaded from SD cache if available."));
 
   return true;
@@ -105,21 +290,14 @@ bool relayManager_setRelay(uint8_t relayIndex, bool turnOn, bool force) {
 
   RelayState* relay = &g_relays[relayIndex];
 
-  // If no state change, do nothing
   if (relay->isActive == turnOn) {
-    return true;  // Already in desired state - not a failure
+    return true;
   }
 
-   unsigned long now = millis();
+  unsigned long now = millis();
 
-  // --- RAPID-FIRE GUARD (gated on turnOn only — OFF always allowed) ---
-  // Prevents relay damage from UI bugs or network floods.
-  // Allows RELAY_MAX_CYCLES_PER_MIN + RELAY_MANUAL_CYCLE_ALLOWANCE
-  // ON events per window. Exceeding that locks the relay for
-  // RAPID_FIRE_LOCKOUT_MS. OFF commands always proceed — relays
-  // must be able to de-energize unconditionally.
-  if (turnOn) {
-      // Check if currently in lockout
+  // --- RAPID-FIRE GUARD (bypassed when force=true) ---
+  if (turnOn && !force) {
       if (relay->rapidFireLockoutStart > 0) {
           if (now - relay->rapidFireLockoutStart < RAPID_FIRE_LOCKOUT_MS) {
               Serial.print(F("[SAFETY] Rapid-fire lockout active on "));
@@ -129,13 +307,11 @@ bool relayManager_setRelay(uint8_t relayIndex, bool turnOn, bool force) {
               Serial.println(F("s remaining)"));
               return false;
           }
-          // Lockout served — reset for a fresh window
           relay->cycleCount = 0;
           relay->cycleWindowStart = now;
           relay->rapidFireLockoutStart = 0;
       }
 
-      // Count ON events in sliding 60-second window
       unsigned long windowElapsed = now - relay->cycleWindowStart;
       if (windowElapsed >= RELAY_CYCLE_WINDOW_MS) {
           relay->cycleWindowStart = now;
@@ -182,15 +358,13 @@ bool relayManager_setRelay(uint8_t relayIndex, bool turnOn, bool force) {
       return false;
     }
   }
-   
+
   // --- EXECUTE STATE CHANGE ---
   if (turnOn) {
     digitalWrite(relay->pin, LOW);   // Active LOW = ON
     relay->isActive = true;
     relay->lastOnTime = now;
     relay->totalOnDuration = 0;
-
-    // Track cycle
     relayManager_logCycle(relayIndex);
 
     Serial.print(F("[RELAY] "));
@@ -202,7 +376,6 @@ bool relayManager_setRelay(uint8_t relayIndex, bool turnOn, bool force) {
     relay->lastOffTime = now;
     relay->totalOnDuration = 0;
 
-      // Cooldown on every OFF event for relays that require it
     if (relayManager_requiresCooldown(relayIndex)) {
       relay->cooldownLocked = true;
       relay->cooldownStart = now;
@@ -219,10 +392,6 @@ bool relayManager_setRelay(uint8_t relayIndex, bool turnOn, bool force) {
     Serial.println(F(" -> OFF"));
   }
 
-  // Update system state under mutex for cross-task consistency
-  // NOTE: g_relays[] fields are updated BEFORE this critical section.
-  // g_systemState is synchronized here for cross-task readers (ESP-NOW, WiFi callbacks).
-  // Do NOT read g_relays[] from ISR/callback context — see header threading note.
   portENTER_CRITICAL(&g_stateMux);
   switch (relayIndex) {
     case RELAY_HOH:         g_systemState.hoHActive = turnOn; break;
@@ -246,13 +415,11 @@ bool relayManager_canToggle(uint8_t relayIndex) {
   RelayState* relay = &g_relays[relayIndex];
   unsigned long now = millis();
 
-  // Reset cycle window every RELAY_CYCLE_WINDOW_MS
   if (now - relay->cycleWindowStart >= RELAY_CYCLE_WINDOW_MS) {
     relay->cycleWindowStart = now;
     relay->cycleCount = 0;
   }
 
-  // Allow if under limit
   if (relay->cycleCount < RELAY_MAX_CYCLES_PER_MIN) {
     return true;
   }
@@ -261,15 +428,11 @@ bool relayManager_canToggle(uint8_t relayIndex) {
 }
 
 unsigned long relayManager_getOnDuration(uint8_t relayIndex) {
-  // Pure getter — returns current continuous ON duration in milliseconds.
-  // Updates internal accounting fields (totalOnDuration, lastOnTime) but
-  // does NOT change relay state. Caller enforces GH-SAFE-002.
   if (relayIndex >= RELAY_COUNT) return 0;
 
   RelayState* relay = &g_relays[relayIndex];
 
   if (relay->isActive) {
-    // Capture now once to prevent drift between elapsed calculation and lastOnTime update
     unsigned long now = millis();
     unsigned long elapsed = now - relay->lastOnTime;
     relay->totalOnDuration += elapsed;
@@ -285,7 +448,6 @@ void relayManager_logCycle(uint8_t relayIndex) {
   RelayState* relay = &g_relays[relayIndex];
   unsigned long now = millis();
 
-  // Reset cycle window every RELAY_CYCLE_WINDOW_MS
   if (now - relay->cycleWindowStart >= RELAY_CYCLE_WINDOW_MS) {
     relay->cycleWindowStart = now;
     relay->cycleCount = 0;
@@ -309,7 +471,6 @@ bool relayManager_isCompressorCooldownActive() {
   unsigned long elapsed = now - relay->cooldownStart;
 
   if (elapsed >= COMPRESSOR_COOLDOWN_MS) {
-    // Cooldown expired
     relay->cooldownLocked = false;
     return false;
   }
@@ -340,15 +501,10 @@ unsigned long relayManager_getCompressorCooldownRemaining() {
 // ============================================
 
 void relayManager_saveCooldownState() {
-  // Called by SD logger to persist compressor state
-  // Actual SD write happens in sd_logger.cpp via RuntimeCache
   Serial.println(F("[RELAY] Cooldown state flagged for SD persistence"));
 }
 
 void relayManager_loadCooldownState(unsigned long lastOffTimestamp, bool wasInCooldown) {
-  // GH-SAFE-002 persistent: Restore cooldown state after power failure.
-  // Uses RTC timestamp via rtc_getEpochSeconds() to respect actual elapsed downtime.
-
   if (!wasInCooldown) {
     Serial.println(F("[RELAY] No cooldown was active before shutdown"));
     return;
@@ -357,20 +513,14 @@ void relayManager_loadCooldownState(unsigned long lastOffTimestamp, bool wasInCo
   RelayState* relay = &g_relays[RELAY_COMPRESSOR];
   unsigned long now = millis();
 
-  // If we have a valid RTC timestamp, check actual elapsed time
   if (lastOffTimestamp > 0) {
     unsigned long currentTimestamp = rtc_getGH2000Seconds();
 
-    // Sanity check: reject if RTC appears to have gone backwards (dead battery, reset).
-    // Also cap maximum believable downtime at 24h to prevent absurdly large deltas
-    // from corrupted SD cache or RTC epoch rollover.
     if (currentTimestamp > lastOffTimestamp &&
         (currentTimestamp - lastOffTimestamp) < 86400UL) {
       unsigned long elapsed = currentTimestamp - lastOffTimestamp;
 
-      // Use MS constant for comparison to avoid integer promotion issues
       if ((elapsed * 1000UL) >= COMPRESSOR_COOLDOWN_MS) {
-        // Cooldown already expired during downtime
         relay->cooldownLocked = false;
         Serial.print(F("[RELAY] Cooldown expired during downtime ("));
         Serial.print(elapsed);
@@ -378,8 +528,6 @@ void relayManager_loadCooldownState(unsigned long lastOffTimestamp, bool wasInCo
         return;
       }
 
-      // Partial cooldown elapsed — back-date cooldownStart so only remaining time is enforced.
-      // cooldownStart is a millis() reference point, not an epoch timestamp.
       unsigned long elapsedMs = elapsed * 1000UL;
       unsigned long remainingMs = COMPRESSOR_COOLDOWN_MS - elapsedMs;
       relay->cooldownLocked = true;
@@ -393,14 +541,13 @@ void relayManager_loadCooldownState(unsigned long lastOffTimestamp, bool wasInCo
     }
   }
 
-  // Fallback: No valid RTC data or sanity check failed.
-  // Apply FULL cooldown as fail-safe (GH-SAFE-002: err on the side of compressor protection).
   relay->cooldownLocked = true;
   relay->cooldownStart = now;
   Serial.print(F("[RELAY] Full cooldown applied (fail-safe) - "));
   Serial.print(COMPRESSOR_COOLDOWN_SEC / 60);
   Serial.println(F(" minutes"));
 }
+
 bool relayManager_isRelayLoud(uint8_t relayIndex) {
     if (relayIndex >= RELAY_COUNT) return false;
     return g_relayCaps[relayIndex].isLoud;
@@ -410,6 +557,7 @@ bool relayManager_requiresCooldown(uint8_t relayIndex) {
     if (relayIndex >= RELAY_COUNT) return false;
     return g_relayCaps[relayIndex].requiresCooldown;
 }
+
 bool relayManager_isBurstCycled(uint8_t relayIndex) {
     if (relayIndex >= RELAY_COUNT) return false;
     return g_relayCaps[relayIndex].isBurstCycled;
@@ -420,26 +568,32 @@ bool relayManager_isBurstCycled(uint8_t relayIndex) {
 // ============================================
 
 void relayManager_forceAllOff() {
-  Serial.println(F("[RELAY] EMERGENCY: Forcing ALL relays OFF"));
+  unsigned long now = millis();
 
+  // HARDWARE SAFETY FIRST: Cut power before ANY Serial I/O.
+  // In an emergency, milliseconds matter. Serial can block on full UART buffer.
+  portENTER_CRITICAL(&g_stateMux);
   for (uint8_t i = 0; i < RELAY_COUNT; i++) {
-    digitalWrite(g_relays[i].pin, HIGH);  // Active LOW = OFF
+    if (g_relays[i].pin != 255) {
+      digitalWrite(g_relays[i].pin, HIGH);  // Active LOW = OFF
+    }
     g_relays[i].isActive = false;
-    g_relays[i].lastOffTime = millis();
+    g_relays[i].lastOffTime = now;
     g_relays[i].totalOnDuration = 0;
 
-        // Relays requiring cooldown enter cooldown on emergency shutdown
     if (relayManager_requiresCooldown(i)) {
       g_relays[i].cooldownLocked = true;
-      g_relays[i].cooldownStart = millis();
+      g_relays[i].cooldownStart = now;
+      g_relays[i].cooldownOffEpoch = rtc_getGH2000Seconds();
     }
   }
 
-  // Update system state under mutex for cross-task consistency
-  portENTER_CRITICAL(&g_stateMux);
   g_systemState.hoHActive = false;
   g_systemState.airAssistActive = false;
   g_systemState.exhaustFanActive = false;
   g_systemState.compressorActive = false;
   portEXIT_CRITICAL(&g_stateMux);
+
+  // Safe to log now — hardware is already off
+  Serial.println(F("[RELAY] EMERGENCY: ALL relays forced OFF and system state cleared"));
 }

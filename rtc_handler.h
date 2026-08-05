@@ -56,6 +56,7 @@ bool rtc_readTime(RTCTime* time);
 bool rtc_setTime(uint8_t hours, uint8_t minutes, uint8_t seconds,
                  uint8_t date, uint8_t month, uint16_t year,
                  uint8_t dayOfWeek);
+bool rtc_setTimeFromString(const char* cmd);
 
 // Returns cached night-mode status. Cache is updated once per minute
 // to minimize I2C traffic while maintaining accurate state.

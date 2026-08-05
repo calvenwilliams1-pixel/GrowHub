@@ -26,16 +26,9 @@ static bool g_watchdogInitFailed = false;
 // ============================================
 
 void safety_initWatchdog() {
-  // Arduino-ESP32 core 2.x may have already initialized the TWDT
-  // with a shorter default timeout. Deinit first so we can apply our own.
   esp_task_wdt_deinit();
 
-  esp_task_wdt_config_t wdtConfig = {
-    .timeout_ms = WDT_TIMEOUT_SEC * 1000,
-    .idle_core_mask = 0,
-    .trigger_panic = true
-  };
-  esp_err_t initResult = esp_task_wdt_init(&wdtConfig);
+  esp_err_t initResult = esp_task_wdt_init(WDT_TIMEOUT_SEC, true);
   esp_err_t addResult  = esp_task_wdt_add(NULL);
 
   Serial.print(F("[SAFETY] Task watchdog init: "));
