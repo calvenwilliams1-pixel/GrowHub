@@ -26,6 +26,21 @@ extern AutomationThresholds* automation_getThresholds();
 
 RuntimeCache g_runtimeCache;
 
+// ============================================================
+// SD Card Mutex (v1.4 — graph dashboard)
+// ============================================================
+SemaphoreHandle_t g_sdMutex = NULL;
+
+bool sdLogger_initMutex() {
+  g_sdMutex = xSemaphoreCreateMutex();
+  if (g_sdMutex == NULL) {
+    Serial.println(F("[SD] FATAL: Failed to create SD mutex"));
+    return false;
+  }
+  Serial.println(F("[SD] SD mutex initialized"));
+  return true;
+}
+
 static bool g_sdAvailable = false;
 static SPIClass g_sdSPI(VSPI);
 static String g_currentLogFile = "";
@@ -591,4 +606,295 @@ void sdLogger_logSystemEvent(const char* event) {
   writeLine(eventFile, line);
   Serial.print(F("[SD] Event logged: "));
   Serial.println(event);
+}
+
+// ============================================================
+// Graph Dashboard Helpers (v1.4)
+// ============================================================
+
+// Convert a Unix day number (days since 1970-01-01) to a log filename.
+static void epochDayToFilename(uint32_t unixDay, char* out, size_t outLen) {
+  uint32_t days = unixDay;
+  int y = 1970;
+  while (true) {
+    bool leap = (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0));
+    uint32_t daysInYear = leap ? 366UL : 365UL;
+    if (days < daysInYear) break;
+    days -= daysInYear;
+    y++;
+  }
+  static const uint8_t monthDays[12] = {31,28,31,30,31,30,31,31,30,31,30,31};
+  int m = 1;
+  for (; m <= 12; m++) {
+    uint8_t md = monthDays[m-1];
+    if (m == 2 && (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0))) md = 29;
+    if (days < md) break;
+    days -= md;
+  }
+  uint8_t d = days + 1;
+  snprintf(out, outLen, "/logs/log_%04d-%02d-%02d.csv", y, m, d);
+}
+
+// Convert broken-out date/time to Unix epoch. Returns 0 if invalid.
+static unsigned long dateTimeToUnixEpoch(int y, int m, int d, int h, int min, int s) {
+  if (y < 1970 || y > 2099 || m < 1 || m > 12 || d < 1 || d > 31 ||
+      h < 0 || h > 23 || min < 0 || min > 59 || s < 0 || s > 59) return 0;
+
+  static const uint8_t monthDays[12] = {31,28,31,30,31,30,31,31,30,31,30,31};
+  uint8_t maxDay = monthDays[m-1];
+  if (m == 2 && (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0))) maxDay = 29;
+  if (d > maxDay) return 0;
+
+  unsigned long days = 0;
+  for (int yr = 1970; yr < y; yr++) {
+    days += (yr % 4 == 0 && (yr % 100 != 0 || yr % 400 == 0)) ? 366UL : 365UL;
+  }
+  for (int mo = 1; mo < m; mo++) {
+    uint8_t md = monthDays[mo-1];
+    if (mo == 2 && (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0))) md = 29;
+    days += md;
+  }
+  days += d - 1;
+  return days * 86400UL + h * 3600UL + min * 60UL + s;
+}
+
+// Parse one CSV line to extract epoch and sensor value.
+// targetCol: 0=temp, 1=hum, 2=CO2, 3=fridgeTemp
+// Returns true if valid point found.
+static bool parseGraphPoint(const char* line, size_t lineLen, int targetCol,
+                            unsigned long* outEpoch, float* outValue) {
+  if (lineLen < 19) return false;
+
+  int y, m, d, h, min, sec;
+  if (sscanf(line, "%4d-%2d-%2d %2d:%2d:%2d", &y, &m, &d, &h, &min, &sec) != 6) return false;
+
+  unsigned long epoch = dateTimeToUnixEpoch(y, m, d, h, min, sec);
+  if (epoch == 0) return false;
+  *outEpoch = epoch;
+
+  // Walk commas to target column (1 + targetCol = CSV field index after timestamp)
+  int csvCol = 1 + targetCol;
+  int currentCol = 0;
+  const char* p = line;
+  const char* lineEnd = line + lineLen;
+
+  while (p < lineEnd && *p != ',' && *p != '\0') p++;
+  if (p >= lineEnd || *p != ',') return false;
+  p++;
+  currentCol = 1;
+
+  while (currentCol < csvCol && p < lineEnd) {
+    while (p < lineEnd && *p != ',' && *p != '\0') p++;
+    if (p >= lineEnd) return false;
+    p++;
+    currentCol++;
+  }
+
+  if (currentCol != csvCol) return false;
+
+  const char* fieldStart = p;
+  while (p < lineEnd && *p != ',' && *p != '\r' && *p != '\n' && *p != '\0') p++;
+  size_t fieldLen = p - fieldStart;
+
+  if (fieldLen == 0) return false;
+
+  char fieldBuffer[32];
+  if (fieldLen >= sizeof(fieldBuffer)) fieldLen = sizeof(fieldBuffer) - 1;
+  memcpy(fieldBuffer, fieldStart, fieldLen);
+  fieldBuffer[fieldLen] = '\0';
+
+  char* endPtr;
+  *outValue = strtof(fieldBuffer, &endPtr);
+  if (endPtr == fieldBuffer) return false;
+  if (isnan(*outValue) || isinf(*outValue)) return false;
+
+  return true;
+}
+
+// ============================================================
+// Graph Dashboard — Historical Data Query (v1.4)
+// ============================================================
+// Two-pass algorithm:
+//   Pass 1: Count valid points to calculate downsampling stride.
+//   Pass 2: Read files newest-to-oldest, emit every Nth point.
+//   Mutex taken per-file with 200ms timeout.
+//   Time-based yield every GRAPH_YIELD_INTERVAL_MS.
+//   Returns 350 points max (proven safe for 8KB buffer).
+
+size_t sdLogger_getHistoricalData(const GraphDataRequest* request, char* output, size_t outputMax) {
+  if (!g_sdAvailable || !request || !output || outputMax < 256) return 0;
+  if (request->sensorType > 3) return 0;
+
+  uint32_t startEpoch = request->startEpoch;
+  uint32_t endEpoch = request->endEpoch;
+  uint16_t maxPoints = request->maxPoints;
+  uint32_t requestId = request->requestId;
+  uint8_t sensorType = request->sensorType;
+
+  if (maxPoints == 0 || maxPoints > GRAPH_MAX_RESPONSE_POINTS) {
+    maxPoints = GRAPH_MAX_RESPONSE_POINTS;
+  }
+
+  RTCTime now;
+  if (!rtc_readTime(&now)) {
+    return snprintf(output, outputMax,
+                    "{\"type\":100,\"s\":%d,\"rid\":%u,\"p\":[]}",
+                    sensorType, requestId);
+  }
+  unsigned long gh2000 = rtc_timeToGH2000Seconds(&now);
+  unsigned long unixNow = gh2000 + 946684800UL;
+
+  if (endEpoch == 0) endEpoch = unixNow;
+  if (startEpoch >= endEpoch) {
+    return snprintf(output, outputMax,
+                    "{\"type\":100,\"s\":%d,\"rid\":%u,\"p\":[]}",
+                    sensorType, requestId);
+  }
+  if (endEpoch > unixNow) endEpoch = unixNow;
+
+  uint32_t startDay = startEpoch / 86400UL;
+  uint32_t endDay = endEpoch / 86400UL;
+  uint32_t todayDay = unixNow / 86400UL;
+
+  // ================================================================
+  // PASS 1: Count valid points
+  // ================================================================
+  uint32_t totalPoints = 0;
+  char filename[40];
+  char lineBuffer[512];
+  unsigned long lastYield = millis();
+
+  for (uint32_t day = startDay; day <= endDay && day <= todayDay; day++) {
+    epochDayToFilename(day, filename, sizeof(filename));
+    if (!SD.exists(filename)) continue;
+
+    if (xSemaphoreTake(g_sdMutex, pdMS_TO_TICKS(200)) != pdTRUE) {
+      return snprintf(output, outputMax,
+                      "{\"type\":100,\"s\":%d,\"rid\":%u,\"p\":[]}",
+                      sensorType, requestId);
+    }
+
+    File f = SD.open(filename, FILE_READ);
+    if (f) {
+      char header[256];
+      f.readBytesUntil('\n', header, sizeof(header));
+
+      while (f.available()) {
+        size_t bytesRead = f.readBytesUntil('\n', lineBuffer, sizeof(lineBuffer) - 1);
+        lineBuffer[bytesRead] = '\0';
+
+        if (bytesRead == sizeof(lineBuffer) - 1 && lineBuffer[bytesRead-1] != '\n') {
+          while (f.available() && f.read() != '\n');
+          continue;
+        }
+        if (bytesRead < 19) continue;
+
+        unsigned long pointEpoch;
+        float pointValue;
+        if (parseGraphPoint(lineBuffer, bytesRead, sensorType, &pointEpoch, &pointValue)) {
+          if (pointEpoch >= startEpoch && pointEpoch <= endEpoch) {
+            totalPoints++;
+          }
+        }
+
+        if (millis() - lastYield >= GRAPH_YIELD_INTERVAL_MS) {
+          yield();
+          lastYield = millis();
+        }
+      }
+      f.close();
+    }
+    xSemaphoreGive(g_sdMutex);
+  }
+
+  // ================================================================
+  // Build response
+  // ================================================================
+  if (totalPoints == 0) {
+    return snprintf(output, outputMax,
+                    "{\"type\":100,\"s\":%d,\"rid\":%u,\"p\":[]}",
+                    sensorType, requestId);
+  }
+
+  uint32_t stride = 1;
+  if (totalPoints > maxPoints) {
+    stride = totalPoints / maxPoints;
+    if (stride == 0) stride = 1;
+  }
+
+  size_t pos = 0;
+  pos += snprintf(output + pos, outputMax - pos,
+                  "{\"type\":100,\"s\":%d,\"rid\":%u,\"p\":[",
+                  sensorType, requestId);
+
+  // ================================================================
+  // PASS 2: Emit uniformly-downsampled points (newest files first)
+  // ================================================================
+  uint32_t counted = 0;
+  uint32_t emitted = 0;
+  lastYield = millis();
+
+  for (uint32_t day = endDay; day >= startDay; day--) {
+    if (emitted >= maxPoints) break;
+
+    epochDayToFilename(day, filename, sizeof(filename));
+    if (!SD.exists(filename)) continue;
+
+    if (xSemaphoreTake(g_sdMutex, pdMS_TO_TICKS(200)) != pdTRUE) {
+      pos = snprintf(output, outputMax,
+                     "{\"type\":100,\"error\":\"SD_TIMEOUT\",\"rid\":%u}",
+                     requestId);
+      return pos;
+    }
+
+    File f = SD.open(filename, FILE_READ);
+    if (f) {
+      char header[256];
+      f.readBytesUntil('\n', header, sizeof(header));
+
+      while (f.available() && emitted < maxPoints) {
+        if (pos + 64 > outputMax) {
+          f.close();
+          xSemaphoreGive(g_sdMutex);
+          pos = snprintf(output, outputMax,
+                         "{\"type\":100,\"error\":\"BUFFER_FULL\",\"rid\":%u}",
+                         requestId);
+          return pos;
+        }
+
+        size_t bytesRead = f.readBytesUntil('\n', lineBuffer, sizeof(lineBuffer) - 1);
+        lineBuffer[bytesRead] = '\0';
+
+        if (bytesRead == sizeof(lineBuffer) - 1 && lineBuffer[bytesRead-1] != '\n') {
+          while (f.available() && f.read() != '\n');
+          continue;
+        }
+        if (bytesRead < 19) continue;
+
+        unsigned long pointEpoch;
+        float pointValue;
+        if (!parseGraphPoint(lineBuffer, bytesRead, sensorType, &pointEpoch, &pointValue)) continue;
+        if (pointEpoch < startEpoch || pointEpoch > endEpoch) continue;
+
+        if (counted % stride == 0) {
+          if (emitted > 0) {
+            pos += snprintf(output + pos, outputMax - pos, ",");
+          }
+          pos += snprintf(output + pos, outputMax - pos, "[%lu,%.2f]", pointEpoch, pointValue);
+          emitted++;
+        }
+        counted++;
+
+        if (millis() - lastYield >= GRAPH_YIELD_INTERVAL_MS) {
+          yield();
+          lastYield = millis();
+        }
+      }
+      f.close();
+    }
+    xSemaphoreGive(g_sdMutex);
+  }
+
+  pos += snprintf(output + pos, outputMax - pos, "]}");
+  return pos;
 }
