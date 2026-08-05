@@ -120,7 +120,7 @@ typedef struct {
     bool         apModeActive;         // Access Point fallback mode active
     unsigned long lastNTFYAlert;       // millis() of last push notification sent
 
-    // ================================================================
+     // ================================================================
     // Fridge Node Telemetry (ESP-NOW)
     // Updated by: network.cpp (onESPNOWReceive callback, under g_stateMux)
     // Read by: web_ui.cpp for dashboard display
@@ -128,7 +128,8 @@ typedef struct {
     bool     fridgeHeartbeatLost;      // True if >60s since last valid packet
     uint16_t fridgeLastSequence;       // Last received sequence number
     float    fridgeTemp;               // Last received fridge temperature (°C)
-
+    float    fridgeHumidity;            // Last received fridge humidity (%, NAN if unknown)
+    bool     fridgeDoorOpen;            // Last received fridge door state
     // ================================================================
     // v1.3: PID Controller State
     // Updated by: automation.cpp (executeHumidityControl)

@@ -1,7 +1,7 @@
 /*
    sd_logger.h
    GrowHub32 - MicroSD Data Logging & Configuration Storage
-   Version: 1.2.3
+   Version: 1.4.0
    Revision: Added compressor cooldown fields to RuntimeCache for persistence
              across reboots (GH-SAFE-002 persistent).
              Uses rtc_getEpochSeconds() for consistent timestamp handling.
@@ -14,6 +14,7 @@
 #include <SD.h>
 #include "config.h"
 #include "automation.h"
+#include "relay_manager.h"
 
 // Log entry structure for daily CSV
 struct LogEntry {
@@ -22,12 +23,36 @@ struct LogEntry {
   float humidity;
   uint16_t co2;
   float fridgeTemp;
+  float fridgeHumidity;
+  bool fridgeDoorOpen;
   bool hoHActive;
   bool airAssistActive;
   bool exhaustFanActive;
   bool compressorActive;
   bool nightMode;
 };
+
+// ============================================================
+// Graph Dashboard — Historical Data Query (v1.4)
+// ============================================================
+// Timestamps are Unix epoch (seconds since 1970-01-01) for JS compatibility.
+
+struct GraphDataRequest {
+  uint32_t startEpoch;      // Unix epoch — start of range
+  uint32_t endEpoch;        // Unix epoch — end of range (0 = now)
+  uint8_t  sensorType;      // 0=temp, 1=humidity, 2=CO2, 3=fridge
+  uint16_t maxPoints;       // Max points requested (server caps at GRAPH_MAX_RESPONSE_POINTS)
+  uint32_t requestId;       // Client sequence number for race-condition prevention
+};
+
+// SD card mutex — protects all file operations across tasks
+extern SemaphoreHandle_t g_sdMutex;
+bool sdLogger_initMutex();
+
+// Returns JSON string length written to output buffer.
+// Output: {"type":100,"s":<sensor>,"rid":<id>,"p":[[t1,v1],...]}
+// On error/no data: {"type":100,"s":<sensor>,"rid":<id>,"p":[]}
+size_t sdLogger_getHistoricalData(const GraphDataRequest* request, char* output, size_t outputMax);
 
 // Daily summary statistics for archive
 struct DailySummary {
@@ -51,9 +76,11 @@ struct RuntimeCache {
   uint8_t lastActiveBand;
 
   // GH-SAFE-002 persistent: Compressor cooldown state across reboots
-  // Prevents compressor restart when still thermally hot after power loss
-  unsigned long compressorLastOffTimestamp;  // RTC epoch seconds when compressor was last turned off
-  bool compressorCooldownActive;             // Whether cooldown was active at last save
+  unsigned long compressorLastOffTimestamp;
+  bool compressorCooldownActive;
+
+  // v1.4: Configurable relay mapping persistence
+  RelayMapping relayMapping;
 };
 
 extern RuntimeCache g_runtimeCache;

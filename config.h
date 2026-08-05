@@ -35,7 +35,7 @@
 // ============================================================
 // SYSTEM
 // ============================================================
-#define FIRMWARE_VERSION             "1.3.0"
+#define FIRMWARE_VERSION             "1.4.0"
 #define DEVICE_NAME                  "GrowHub32"
 
 // ============================================================
@@ -52,11 +52,23 @@
 // ============================================================
 // HARDWARE: Relay GPIO Pins
 // ============================================================
+// @deprecated — Use relay mapping via relayManager. Remove in v1.5.
 #define RELAY_HOH_PIN                   13
-#define RELAY_AIR_ASSIST_PIN            12
+#define RELAY_AIR_ASSIST_PIN            26    // v1.4: moved from GPIO 12 (bootstrap conflict)
 #define RELAY_EXHAUST_PIN               14
 #define RELAY_COMPRESSOR_PIN            27
 
+// ============================================================
+// HARDWARE: Configurable Relay Mapping (v1.4)
+// ============================================================
+#define RELAY_FUNCTION_COUNT             4
+#define RELAY_MAPPING_MAGIC              0x524D  // "RM" — cache validation
+
+// Default GPIO assignments (used on first boot or factory reset)
+#define DEFAULT_PIN_HOH                  13
+#define DEFAULT_PIN_AIR_ASSIST           26      // v1.4: was GPIO 12
+#define DEFAULT_PIN_EXHAUST              14
+#define DEFAULT_PIN_COMPRESSOR           27
 // ============================================================
 // HARDWARE: Compressor Protection
 // ============================================================
@@ -107,6 +119,8 @@
 #define SENSOR_FAULT_TIMEOUT_MS         10000UL // 10 seconds without valid data = fault
 #define SENSOR_LKG_MAX_AGE_MS           30000UL // Max age of last-known-good value before safe mode
 #define SCD40_TEMP_OFFSET               0.0f
+#define SCD40_HUM_OFFSET                0.0f    // Calibration offset for humidity (%)
+#define SCD40_CO2_OFFSET                0       // Calibration offset for CO2 (ppm)
 #define SCD40_ALTITUDE                  0
 
 // ============================================================
@@ -130,6 +144,9 @@
 #define TEMP_ALERT_HIGH_C               32.0f
 #define TEMP_ALERT_LOW_C                12.0f
 #define TEMP_ALERT_COOLDOWN_MS          300000UL  // Min time between repeat temperature alerts
+#define FRIDGE_TEMP_ALERT_HIGH_C        8.0f    // Alert if fridge temp exceeds this
+#define FRIDGE_TEMP_ALERT_LOW_C         0.0f    // Alert if fridge temp drops below this
+#define FRIDGE_TEMP_ALERT_COOLDOWN_MS   600000UL // 10 min between repeat fridge temp alerts
 
 // ============================================================
 // TEMPERATURE BANDS (Adaptive Learning)
@@ -255,9 +272,26 @@
 // Automation thresholds (above) can be adjusted at runtime; these cannot.
 // SAFETY_HUM_CEILING_HARD must be > DEFAULT_HUM_CEILING (88%).
 #define SAFETY_HUM_FLOOR_HARD           40.0f
-#define SAFETY_HUM_CEILING_HARD         90.0f   // Emergency cutoff, calibration abort
+#define SAFETY_HUM_CEILING_HARD         95.0f   // Emergency cutoff, calibration abort
 #define SAFETY_TEMP_FLOOR_HARD          15.0f
 #define SAFETY_TEMP_CEILING_HARD        35.0f
+#define DEFAULT_HUM_EXHAUST_ON          95.0f   // Exhaust fan ON above this (user-configurable)
+                                                // NOTE: Default equals SAFETY_HUM_CEILING_HARD (95%).
+                                                // Feature is dormant until user lowers this via Web UI.
+                                                // Recommended: 92% for early intervention before emergency cutoff.
+
+// ============================================================
+// GRAPH DASHBOARD (v1.4)
+// NOTE: 7-day (604800) not supported in v1.4. Two-pass counting over
+// 600k+ lines takes minutes. v1.5 will use file-size heuristics.
+// ============================================================
+#define GRAPH_LIVE_BUFFER_SIZE          3600
+#define GRAPH_MAX_RESPONSE_POINTS       350
+#define GRAPH_RESPONSE_BUFFER_SIZE      8192
+#define GRAPH_DEFAULT_RANGE_SEC         86400
+#define GRAPH_RATE_LIMIT_MS             5000
+#define GRAPH_YIELD_INTERVAL_MS         50
+#define MAX_WS_CLIENTS                  8
 
 // ============================================================
 // WEB UI & WEBSOCKET
@@ -290,6 +324,8 @@
 // NETWORK: Push Notifications (ntfy.sh)
 // ============================================================
 #define NTFY_MIN_INTERVAL_MS            60000UL   // Minimum time between push alerts (60s)
+#define NTFY_ENABLED                    false        // Set to true when ntfy.sh endpoint is configured
+#define NTFY_ALIVE_INTERVAL_MS          1800000UL    // 30 minutes between alive pings
 
 // ============================================================
 // OTA UPDATES

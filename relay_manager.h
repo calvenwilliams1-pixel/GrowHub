@@ -52,11 +52,32 @@ struct RelayCapability {
 };
 
 // ============================================================
+// Configurable Relay Mapping (v1.4)
+// ============================================================
+struct RelayMapping {
+  uint8_t magic;                       // RELAY_MAPPING_MAGIC for validation
+  uint8_t pinHOH;                      // GPIO pin for HOH humidifier
+  uint8_t pinAirAssist;                // GPIO pin for Air Assist valve
+  uint8_t pinExhaust;                  // GPIO pin for Exhaust fan
+  uint8_t pinCompressor;               // GPIO pin for Compressor
+  uint8_t reserved[3];                 // Future expansion
+};
+
+// ============================================================
 // Public API
 // ============================================================
 
+// Configurable relay mapping (v1.4)
+const RelayMapping* relayManager_getMapping();
+const RelayMapping* relayManager_getDefaultMapping();
+bool relayManager_updateMapping(const RelayMapping* newMapping);
+uint8_t relayManager_getPin(uint8_t relayIndex);
+bool relayManager_isPinValid(uint8_t pin);
+void relayManager_resetMapping();
+
 // Initialize all relays to safe OFF state (GH-SYS-003)
-bool relayManager_init();
+// If useMapping is valid, applies it; otherwise uses factory defaults.
+bool relayManager_init(const RelayMapping* useMapping = nullptr);
 
 // Set a relay ON or OFF. Returns true if state change was allowed and executed.
 // Set force=true to bypass cooldown and cycle limits (manual override only).

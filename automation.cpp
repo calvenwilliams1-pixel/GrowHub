@@ -631,6 +631,7 @@ void automation_loadDefaults() {
     g_thresholds.co2HighLimit = DEFAULT_CO2_HIGH_LIMIT;
     g_thresholds.co2LowTarget = DEFAULT_CO2_LOW_TARGET;
     g_thresholds.co2Emergency = DEFAULT_CO2_EMERGENCY;
+     g_thresholds.humExhaustOn = DEFAULT_HUM_EXHAUST_ON;
 
     Serial.println(F("[AUTO] Loaded default thresholds"));
 }
@@ -783,6 +784,27 @@ void automation_runHumidityLoop() {
         }
     }
 }
+void automation_runHighHumidityExhaust() {
+    if (g_systemState.calibrationActive) return;
+    if (automation_isHumidityOverrideActive()) return;
+
+    float currentHumidity = sensors_isHumidityValid() ?
+        g_systemState.currentHumidity : g_systemState.lastKnownGoodHumidity;
+
+    if (currentHumidity > g_thresholds.humExhaustOn) {
+        if (!relayManager_isRelayOn(RELAY_EXHAUST)) {
+            relayManager_setRelay(RELAY_EXHAUST, true);
+        }
+    } else if (currentHumidity <= g_thresholds.humCeiling) {
+        if (relayManager_isRelayOn(RELAY_EXHAUST)) {
+            uint16_t currentCO2 = sensors_isCO2Valid() ?
+                g_systemState.currentCO2 : g_systemState.lastKnownGoodCO2;
+            if (currentCO2 <= g_thresholds.co2LowTarget) {
+                relayManager_setRelay(RELAY_EXHAUST, false);
+            }
+        }
+    }
+}
 
 // ============================================================
 // Public API: CO2 Control
@@ -914,6 +936,50 @@ void automation_checkTemperatureAlerts() {
     }
 }
 
+
+// ============================================================
+// Public API: Fridge Temperature Alarms
+// ============================================================
+
+void automation_checkFridgeAlarms() {
+    float fridgeTemp = network_getFridgeTemp();
+    bool heartbeatLost = network_isFridgeHeartbeatLost();
+
+    // Don't alert on temperature if we've lost the fridge entirely —
+    // the heartbeat system already handles disconnect alerts.
+    if (heartbeatLost) return;
+
+    static bool highAlertSent = false;
+    static bool lowAlertSent = false;
+    static unsigned long lastHighAlertTime = 0;
+    static unsigned long lastLowAlertTime = 0;
+
+    // High temperature alert
+    if (fridgeTemp >= FRIDGE_TEMP_ALERT_HIGH_C) {
+        if (!highAlertSent && (lastHighAlertTime == 0 || millis() - lastHighAlertTime >= FRIDGE_TEMP_ALERT_COOLDOWN_MS)) {
+            highAlertSent = true;
+            lastHighAlertTime = millis();
+            char msg[64];
+            snprintf(msg, sizeof(msg), "Fridge temperature: %.1f C. Check cooling system!", fridgeTemp);
+            network_sendAlert("Fridge High Temperature", msg);
+        }
+    } else if (fridgeTemp < FRIDGE_TEMP_ALERT_HIGH_C - 0.5f) {
+        highAlertSent = false;
+    }
+
+    // Low temperature alert (freeze risk)
+    if (fridgeTemp <= FRIDGE_TEMP_ALERT_LOW_C) {
+        if (!lowAlertSent && (lastLowAlertTime == 0 || millis() - lastLowAlertTime >= FRIDGE_TEMP_ALERT_COOLDOWN_MS)) {
+            lowAlertSent = true;
+            lastLowAlertTime = millis();
+            char msg[64];
+            snprintf(msg, sizeof(msg), "Fridge temperature: %.1f C. Risk of freezing!", fridgeTemp);
+            network_sendAlert("Fridge Low Temperature", msg);
+        }
+    } else if (fridgeTemp > FRIDGE_TEMP_ALERT_LOW_C + 0.5f) {
+        lowAlertSent = false;
+    }
+}
 // ============================================================
 // Public API: Threshold Management
 // ============================================================
@@ -933,6 +999,8 @@ void automation_updateThresholds(const AutomationThresholds* newThresholds) {
     if (newThresholds->co2Emergency < 400 || newThresholds->co2Emergency > 5000) return;
     if (newThresholds->humAssistFloor > newThresholds->humHoHFloor) return;
     if (newThresholds->humHoHFloor >= newThresholds->humCeiling) return;
+    if (newThresholds->humExhaustOn < 0 || newThresholds->humExhaustOn > 100) return;
+    if (newThresholds->humExhaustOn <= newThresholds->humCeiling) return;
     // Validate ordering before hysteresis check
     if (newThresholds->co2LowTarget >= newThresholds->co2HighLimit) return;
     // CO2 hysteresis: require at least 100ppm gap between high and low thresholds

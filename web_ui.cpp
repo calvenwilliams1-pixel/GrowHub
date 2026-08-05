@@ -1,7 +1,7 @@
 /*
    web_ui.cpp
    GrowHub32 - Local Web Application Interface Implementation
-   Version: 1.3.0
+   Version: 1.4.0
    Revision: Updated CALIBRATION_DURATION_SEC to CALIBRATION_TOTAL_SEC.
              Removed adaptive_updateCalibration() double-call from pushUpdates().
              Added #include "system_state.h" for centralized state access.
@@ -9,9 +9,8 @@
              Updated UI text for manual override description.
              Updated default values for 88% ceiling and 20-min calibration.
 
-   This serves a single-page application directly from program memory
-   to avoid SPIFFS/LittleFS dependency. The HTML, CSS, and JavaScript
-   are embedded as raw string literals for maximum reliability.
+   This serves a single-page application from program memory.
+   Chart.js is served from LittleFS for cache efficiency (v1.4).
 
    The UI connects via WebSocket on port 81 for real-time updates.
    HTTP server runs on port 80.
@@ -26,13 +25,21 @@
 #include "safety.h"
 #include "network.h"
 #include "system_state.h"
+#include "sd_logger.h"
 #include <ArduinoJson.h>
+#include <LittleFS.h>
+
+// ============================================================
+// UPDATE VERSION HERE WHEN BUMPING FIRMWARE
+// ============================================================
+#define WEB_UI_VERSION "1.4.0"
 
 static WebServer g_server(WEB_SERVER_PORT);
 static WebSocketsServer g_webSocket(WEBSOCKET_PORT);
 static unsigned long g_lastWSUpdate = 0;
 
 extern portMUX_TYPE g_stateMux;
+extern RuntimeCache g_runtimeCache;
 
 // Forward declarations
 static void handleRoot();
@@ -51,63 +58,77 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-<title>GrowHub32 v1.3</title>
+<title>GrowHub32 v1.4</title>  <!-- bump WEB_UI_VERSION above -->
 <style>
   *{margin:0;padding:0;box-sizing:border-box;}
-  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0d1117;color:#c9d1d9;min-height:100vh;}
-  .header{background:#161b22;padding:12px 16px;border-bottom:1px solid #30363d;position:sticky;top:0;z-index:100;}
-  .header h1{font-size:1.2em;color:#58a6ff;}
-  .header .status{font-size:0.75em;color:#8b949e;margin-top:2px;}
-  .warning-banner{background:#da3633;color:#fff;text-align:center;padding:8px;font-weight:bold;display:none;animation:flash 1s infinite;}
-  .warning-banner.active{display:block;}
-  @keyframes flash{0%,100%{opacity:1;}50%{opacity:0.5;}}
-  .tabs{display:flex;background:#161b22;border-bottom:1px solid #30363d;overflow-x:auto;}
-  .tab{padding:10px 16px;font-size:0.85em;color:#8b949e;border:none;background:none;cursor:pointer;white-space:nowrap;border-bottom:2px solid transparent;transition:all 0.2s;}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:linear-gradient(180deg,#0d1117 0%,#111827 100%);color:#c9d1d9;min-height:100vh;}
+  .sticky-header-wrapper{position:sticky;top:0;z-index:100;background:#161b22;}
+  .header{padding:14px 18px;border-bottom:1px solid #30363d;}
+  .header h1{font-size:1.3em;color:#58a6ff;}
+  .header .status{font-size:0.75em;color:#8b949e;margin-top:3px;}
+  .warning-banner{color:#fff;text-align:center;padding:10px 16px;font-weight:600;display:none;border-bottom:1px solid #f85149;}
+  .warning-banner.active{display:flex;align-items:center;justify-content:center;gap:8px;animation:pulse-danger 2s infinite;}
+  @keyframes pulse-danger{0%{background-color:#da3633;}50%{background-color:#8e1519;}100%{background-color:#da3633;}}
+  .tabs{display:flex;background:rgba(22,27,34,0.95);backdrop-filter:blur(5px);border-bottom:1px solid #30363d;overflow-x:auto;}
+  .tab{padding:14px 20px;font-size:0.9em;color:#8b949e;border:none;background:none;cursor:pointer;white-space:nowrap;border-bottom:2px solid transparent;transition:all 0.2s;}
   .tab.active{color:#58a6ff;border-bottom-color:#58a6ff;}
   .tab-content{display:none;padding:16px;}
   .tab-content.active{display:block;}
-  .sensor-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:16px;}
-  .sensor-card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:14px;text-align:center;}
+  .sensor-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin-bottom:18px;}
+  .sensor-card{background:#161b22;border:1px solid #3d444d;border-radius:12px;padding:18px;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,0.5);transition:box-shadow 0.2s ease;}
   .sensor-card .label{font-size:0.7em;color:#8b949e;text-transform:uppercase;letter-spacing:0.5px;}
-  .sensor-card .value{font-size:1.8em;font-weight:bold;margin:4px 0;color:#e6edf3;}
-  .sensor-card .unit{font-size:0.7em;color:#8b949e;}
-  .sensor-card .status-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;}
-  .sensor-card .status-dot.ok{background:#3fb950;}
-  .sensor-card .status-dot.fault{background:#da3633;}
-  .relay-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-bottom:16px;}
-  .relay-card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:10px;text-align:center;}
-  .relay-card .name{font-size:0.7em;color:#8b949e;text-transform:uppercase;}
-  .relay-card .state{font-size:1em;font-weight:bold;margin:4px 0;}
+  .sensor-card .value{font-size:2.2em;font-weight:700;margin:8px 0;color:#ffffff;line-height:1;font-variant-numeric:tabular-nums;min-height:1.2em;}
+  .sensor-card .unit{font-size:0.6em;color:#8b949e;font-weight:500;text-transform:uppercase;letter-spacing:0.5px;}
+  .sensor-card .status-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;}
+  .sensor-card .status-dot.ok{background:#3fb950;box-shadow:0 0 6px rgba(63,185,80,0.4);}
+  .sensor-card .status-dot.fault{background:#da3633;box-shadow:0 0 6px rgba(218,54,51,0.4);}
+  .relay-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:18px;}
+  .relay-card{background:#161b22;border:1px solid #3d444d;border-radius:12px;padding:14px;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,0.5);}
+  .relay-card:has(.state.on){border-color:#3fb950;box-shadow:0 0 16px rgba(63,185,80,0.25);}
+  .relay-card .name{font-size:0.7em;color:#8b949e;text-transform:uppercase;letter-spacing:0.5px;}
+  .relay-card .state{font-size:1.1em;font-weight:bold;margin:6px 0;}
   .relay-card .state.on{color:#3fb950;}
   .relay-card .state.off{color:#8b949e;}
-  .relay-card .locked{color:#da3633;font-size:0.65em;}
-  .btn{padding:8px 16px;border:none;border-radius:6px;font-size:0.85em;cursor:pointer;margin:4px;transition:background 0.2s;}
+  .relay-card .locked{color:#d29922;font-size:0.7em;margin-top:4px;}
+  .btn{padding:12px 20px;border:none;border-radius:8px;font-size:0.95em;cursor:pointer;margin:4px;transition:all 0.15s ease-in-out;font-weight:500;}
+  .btn:active{transform:scale(0.96);filter:brightness(0.9);}
+  .btn:focus{outline:2px solid #58a6ff;outline-offset:2px;}
   .btn-on{background:#238636;color:#fff;}
   .btn-on:hover{background:#2ea043;}
-  .btn-off{background:#da3633;color:#fff;}
-  .btn-off:hover{background:#f85149;}
+  .btn-off{background:#21262d;border:1px solid #30363d;color:#c9d1d9;}
+  .btn-off:hover{background:#30363d;}
   .btn-neutral{background:#30363d;color:#c9d1d9;}
   .btn-neutral:hover{background:#484f58;}
-  .config-group{margin-bottom:16px;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:14px;}
-  .config-group h3{font-size:0.9em;color:#58a6ff;margin-bottom:10px;}
-  .config-row{display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #21262d;}
+  .config-group{margin-bottom:18px;background:#161b22;border:1px solid #3d444d;border-radius:12px;padding:16px;}
+  .config-group h3{font-size:0.95em;color:#58a6ff;margin-bottom:12px;border-left:4px solid #58a6ff;padding-left:10px;}
+  .config-row{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid #21262d;}
   .config-row:last-child{border-bottom:none;}
-  .config-row label{font-size:0.8em;}
-  .config-row input{width:70px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;padding:4px 8px;font-size:0.85em;text-align:center;}
-  .log-area{background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:12px;max-height:300px;overflow-y:auto;font-family:monospace;font-size:0.75em;line-height:1.6;}
-  .log-entry{padding:2px 0;}
+  .config-row label{font-size:0.85em;color:#c9d1d9;font-weight:500;}
+  .config-row input{width:90px;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#e6edf3;padding:8px 12px;font-size:0.95em;text-align:right;font-variant-numeric:tabular-nums;}
+  .config-row input:focus{outline:2px solid #58a6ff;outline-offset:2px;}
+  .config-row input:invalid{border-color:#da3633;color:#da3633;box-shadow:0 0 8px rgba(218,54,51,0.4);}
+  .log-area{background:#0d1117;border:1px solid #3d444d;border-radius:12px;padding:14px;max-height:300px;overflow-y:auto;font-family:monospace;font-size:0.75em;line-height:1.6;}
+  .log-entry{padding:3px 0;}
   .log-entry.warn{color:#d29922;}
   .log-entry.error{color:#da3633;}
-  .calibration-panel{text-align:center;padding:20px;}
+  .calibration-panel{text-align:center;padding:24px;}
   .countdown{font-size:3em;font-weight:bold;color:#58a6ff;}
-  .sim-result{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:14px;margin-top:10px;text-align:center;}
+  .sim-result{background:#161b22;border:1px solid #3d444d;border-radius:12px;padding:16px;margin-top:12px;text-align:center;}
   .sim-result .time{font-size:1.5em;color:#3fb950;}
-  .footer{text-align:center;padding:16px;font-size:0.7em;color:#484f58;}
-  .override-panel{display:none;background:#d29922;color:#000;padding:8px;border-radius:6px;margin-bottom:12px;text-align:center;font-weight:bold;}
+  .footer{text-align:center;padding:18px;font-size:0.7em;color:#484f58;}
+  .override-panel{display:none;background:#3a2a1a;color:#d29922;padding:10px;border-radius:8px;margin-bottom:14px;text-align:center;font-weight:bold;border:1px solid #d29922;}
+  .status-pill{display:inline-block;padding:4px 10px;border-radius:999px;font-size:0.7em;font-weight:500;margin:2px 4px;}
+  .status-pill.good{background:#1a3a1a;color:#3fb950;border:1px solid #3fb950;}
+  .status-pill.warn{background:#3a2a1a;color:#d29922;border:1px solid #d29922;}
+  .sticky-save-container{position:sticky;bottom:16px;background:rgba(13,17,23,0.95);padding:12px;border-radius:8px;border:1px solid #30363d;text-align:center;margin-top:16px;box-shadow:0 -4px 12px rgba(0,0,0,0.4);}
+  ::-webkit-scrollbar{width:6px;height:6px;}
+  ::-webkit-scrollbar-track{background:transparent;}
+  ::-webkit-scrollbar-thumb{background:#3d444d;border-radius:10px;}
+  ::-webkit-scrollbar-thumb:hover{background:#58a6ff;}
 </style>
+<script src="/chart-4.4.0.min.js"></script>
 </head>
 <body>
-
 <div class="header">
   <h1>GrowHub32</h1>
   <div class="status" id="connectionStatus">Connecting...</div>
@@ -121,6 +142,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   <button class="tab" onclick="switchTab(this, 'config')">Config</button>
   <button class="tab" onclick="switchTab(this, 'calibration')">Calibrate</button>
   <button class="tab" onclick="switchTab(this, 'simulation')">Simulate</button>
+  <button class="tab" onclick="switchTab(this, 'graphs')">Graphs</button>
   <button class="tab" onclick="switchTab(this, 'logs')">Logs</button>
 </div>
 
@@ -144,7 +166,12 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
     <div class="sensor-card">
       <div class="label">Fridge</div>
       <div class="value" id="fridgeValue">--</div>
-      <div class="unit">C</div>
+      <div class="unit">C / <span id="fridgeHumValue">--</span>%</div>
+    </div>
+    <div class="sensor-card">
+      <div class="label">Fridge Door</div>
+      <div class="value" id="fridgeDoorValue">--</div>
+      <div class="unit"></div>
     </div>
   </div>
   <div class="relay-grid">
@@ -183,6 +210,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
     <h3>Humidity Thresholds</h3>
     <div class="config-row"><label>HOH Floor (%)</label><input type="number" id="humHoHFloor" value="80" step="1"></div>
     <div class="config-row"><label>Assist Floor (%)</label><input type="number" id="humAssistFloor" value="70" step="1"></div>
+    <div class="config-row"><label>Exhaust ON (%)</label><input type="number" id="humExhaustOn" value="92" step="1"></div>
     <div class="config-row"><label>Ceiling (%)</label><input type="number" id="humCeiling" value="88" step="1"></div>
     <div class="config-row"><label>Assist ON (sec)</label><input type="number" id="assistOn" value="3" step="1"></div>
     <div class="config-row"><label>Assist OFF (sec)</label><input type="number" id="assistOff" value="10" step="1"></div>
@@ -194,8 +222,22 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
     <div class="config-row"><label>Emergency (ppm)</label><input type="number" id="co2Emergency" value="1200" step="10"></div>
   </div>
   <div class="config-group">
+    <h3>Real-Time Clock</h3>
+    <div class="config-row"><label>Set Date/Time</label><input type="datetime-local" id="rtcDateTime"></div>
+    <button class="btn btn-on" onclick="setRTCTime()">Set RTC Time</button>
+  </div>
+  <div class="config-group">
     <h3>Adaptive Learning</h3>
     <div class="config-row"><label>EMA Weight (0.10-0.50)</label><input type="number" id="emaWeight" value="0.30" step="0.05" min="0.10" max="0.50"></div>
+  </div>
+  <div class="config-group">
+    <h3>Relay Mapping</h3>
+    <p style="font-size:0.7em;color:#8b949e;margin-bottom:8px;">Changes take effect immediately. GPIO 0-3,5,12,15,18-23 are blocked.</p>
+    <div class="config-row"><label>HOH Humidifier Pin</label><input type="number" id="pinHOH" value="13" min="0" max="39"></div>
+    <div class="config-row"><label>Air Assist Pin</label><input type="number" id="pinAirAssist" value="26" min="0" max="39"></div>
+    <div class="config-row"><label>Exhaust Fan Pin</label><input type="number" id="pinExhaust" value="14" min="0" max="39"></div>
+    <div class="config-row"><label>Compressor Pin</label><input type="number" id="pinCompressor" value="27" min="0" max="39"></div>
+    <button class="btn btn-on" onclick="saveRelayMapping()">Apply Relay Mapping</button>
   </div>
   <button class="btn btn-on" onclick="saveThresholds()">Save All Settings</button>
 </div>
@@ -225,6 +267,22 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   </div>
 </div>
 
+<div id="graphs" class="tab-content">
+  <div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap;">
+    <button class="btn btn-neutral graph-tab active" onclick="switchGraphTab(this,0)">Temp</button>
+    <button class="btn btn-neutral graph-tab" onclick="switchGraphTab(this,1)">Humidity</button>
+    <button class="btn btn-neutral graph-tab" onclick="switchGraphTab(this,2)">CO2</button>
+    <button class="btn btn-neutral graph-tab" onclick="switchGraphTab(this,3)">Fridge</button>
+    <span style="flex:1;"></span>
+    <button class="btn btn-neutral graph-range-btn" onclick="setGraphRange(3600,this)">1h</button>
+    <button class="btn btn-neutral graph-range-btn" onclick="setGraphRange(21600,this)">6h</button>
+    <button class="btn btn-neutral graph-range-btn active" onclick="setGraphRange(86400,this)">24h</button>
+  </div>
+  <div style="position:relative;width:100%;height:350px;">
+    <canvas id="graphCanvas"></canvas>
+  </div>
+</div>
+
 <div id="logs" class="tab-content">
   <h3>System Log</h3>
   <div class="log-area" id="logArea">
@@ -232,7 +290,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   </div>
 </div>
 
-<div class="footer">GrowHub32 v1.3 | Calvin</div>
+<div class="footer">GrowHub32 v1.4 | Calvin</div>
 
 <script>
 var ws;
@@ -250,6 +308,8 @@ function connectWS(){
   ws.onopen = function(){
     document.getElementById('connectionStatus').textContent = 'Connected | ' + location.hostname;
     reconnectDelay = 3000;
+    initGraph();
+    requestHistorical();
   };
   ws.onmessage = function(e){
     try{
@@ -265,7 +325,7 @@ function connectWS(){
     reconnectDelay = Math.min(reconnectDelay * 2, 30000);
   };
   ws.onerror = function(){
-    ws.close();
+    if (ws && ws.readyState !== WebSocket.CLOSED) ws.close();
   };
 }
 
@@ -273,7 +333,7 @@ function handleMessage(msg){
   switch(msg.type){
     case 0: updateSensors(msg); break;
     case 1: updateRelays(msg); updateOverrideStatus(msg); break;
-       case 2:
+    case 2:
       if(msg.message === "CONFIRM_LOUD_NIGHT"){
         var relayNames = ["Humidifier","Air Assist","Exhaust Fan","Compressor"];
         var relayName = relayNames[msg.relay] || "This device";
@@ -292,6 +352,7 @@ function handleMessage(msg){
         document.getElementById('simResult').textContent = msg.simResult;
       }
       break;
+    case 100: handleGraphResponse(msg); break;
   }
 }
 
@@ -300,6 +361,21 @@ function updateSensors(msg){
   document.getElementById('humValue').textContent = (typeof msg.hum === 'number') ? msg.hum.toFixed(1) : '--';
   document.getElementById('co2Value').textContent = (msg.co2 != null) ? msg.co2 : '--';
   document.getElementById('fridgeValue').textContent = (typeof msg.fridge === 'number') ? msg.fridge.toFixed(1) : '--';
+  document.getElementById('fridgeHumValue').textContent = (typeof msg.fridgeHum === 'number') ? msg.fridgeHum.toFixed(1) : '--';
+  var doorEl = document.getElementById('fridgeDoorValue');
+  if (msg.fridgeLost) {
+    doorEl.textContent = 'OFFLINE';
+    doorEl.style.color = '#d29922';
+  } else if (msg.fridgeDoor === true) {
+    doorEl.textContent = 'OPEN';
+    doorEl.style.color = '#da3633';
+  } else if (msg.fridgeDoor === false) {
+    doorEl.textContent = 'CLOSED';
+    doorEl.style.color = '#3fb950';
+  } else {
+    doorEl.textContent = '--';
+    doorEl.style.color = '#8b949e';
+  }
 
   document.getElementById('tempDot').className = 'status-dot ' + (msg.tempFault ? 'fault' : 'ok');
   document.getElementById('humDot').className = 'status-dot ' + (msg.humFault ? 'fault' : 'ok');
@@ -319,8 +395,13 @@ function updateSensors(msg){
   document.getElementById('fridgeStatus').textContent = msg.fridgeLost ? 'OFFLINE' : 'Online';
   document.getElementById('simCurrentRH').textContent = (typeof msg.hum === 'number') ? msg.hum.toFixed(1) : '--';
   document.getElementById('simBand').textContent = (msg.activeBand != null) ? 'Band ' + msg.activeBand : '--';
-document.getElementById('simConfidence').textContent = (typeof msg.confidence === 'number') ? (msg.confidence * 100).toFixed(1) + '%' : '--';
+  document.getElementById('simConfidence').textContent = (typeof msg.confidence === 'number') ? (msg.confidence * 100).toFixed(1) + '%' : '--';
   document.getElementById('controlMode').textContent = msg.controlMode || '--';
+
+  if (typeof msg.temp === 'number') feedLiveGraph(0, msg.temp);
+  if (typeof msg.hum === 'number') feedLiveGraph(1, msg.hum);
+  if (typeof msg.co2 === 'number') feedLiveGraph(2, msg.co2);
+  if (typeof msg.fridge === 'number') feedLiveGraph(3, msg.fridge);
 }
 
 function updateRelays(msg){
@@ -347,12 +428,17 @@ function updateConfig(msg){
   document.getElementById('humHoHFloor').value = msg.humHoHFloor;
   document.getElementById('humAssistFloor').value = msg.humAssistFloor;
   document.getElementById('humCeiling').value = msg.humCeiling;
+  document.getElementById('humExhaustOn').value = msg.humExhaustOn;
   document.getElementById('assistOn').value = msg.assistOnSec;
   document.getElementById('assistOff').value = msg.assistOffSec;
   document.getElementById('co2High').value = msg.co2HighLimit;
   document.getElementById('co2Low').value = msg.co2LowTarget;
   document.getElementById('co2Emergency').value = msg.co2Emergency;
   document.getElementById('emaWeight').value = msg.emaWeight;
+  document.getElementById('pinHOH').value = msg.pinHOH;
+  document.getElementById('pinAirAssist').value = msg.pinAirAssist;
+  document.getElementById('pinExhaust').value = msg.pinExhaust;
+  document.getElementById('pinCompressor').value = msg.pinCompressor;
 }
 
 function updateOverrideStatus(msg){
@@ -406,6 +492,7 @@ function addLog(message, level){
     logArea.removeChild(logArea.lastChild);
   }
 }
+
 function switchTab(element, tabId){
   document.querySelectorAll('.tab').forEach(function(t){ t.classList.remove('active'); });
   document.querySelectorAll('.tab-content').forEach(function(c){ c.classList.remove('active'); });
@@ -421,7 +508,6 @@ function relayCmd(index, state){
   }
 }
 
-```javascript
 function saveThresholds(){
   var hohFloor = parseFloat(document.getElementById('humHoHFloor').value);
   var assistFloor = parseFloat(document.getElementById('humAssistFloor').value);
@@ -431,8 +517,9 @@ function saveThresholds(){
   var co2High = parseInt(document.getElementById('co2High').value, 10);
   var co2Low = parseInt(document.getElementById('co2Low').value, 10);
   var co2Emer = parseInt(document.getElementById('co2Emergency').value, 10);
+  var exhaustOn = parseFloat(document.getElementById('humExhaustOn').value);
 
-  if (isNaN(hohFloor) || isNaN(assistFloor) || isNaN(ceiling)) {
+  if (isNaN(hohFloor) || isNaN(assistFloor) || isNaN(ceiling) || isNaN(exhaustOn)) {
     addLog('Invalid humidity threshold value', 'warn');
     return;
   }
@@ -449,6 +536,7 @@ function saveThresholds(){
     humHoHFloor: hohFloor,
     humAssistFloor: assistFloor,
     humCeiling: ceiling,
+    humExhaustOn: exhaustOn,
     assistOnSec: assistOn,
     assistOffSec: assistOff,
     co2HighLimit: co2High,
@@ -462,7 +550,6 @@ function saveThresholds(){
 
   addLog('Settings saved!', 'info');
 }
-```
 
 function startCalibration(){
   sendWS({type: 6, cmd: 'calibrate_start'});
@@ -488,9 +575,159 @@ function runSimulation(){
   sendWS({type: 6, cmd: 'simulate', current: current, target: target});
 }
 
+function setRTCTime(){
+  var dt = document.getElementById('rtcDateTime').value;
+  if(!dt){
+    addLog('Please select a date and time', 'warn');
+    return;
+  }
+  sendWS({type: 6, cmd: 'rtc', datetime: dt});
+  addLog('RTC time update sent', 'info');
+}
+
+function saveRelayMapping(){
+  var pins = {
+    pinHOH: parseInt(document.getElementById('pinHOH').value, 10),
+    pinAirAssist: parseInt(document.getElementById('pinAirAssist').value, 10),
+    pinExhaust: parseInt(document.getElementById('pinExhaust').value, 10),
+    pinCompressor: parseInt(document.getElementById('pinCompressor').value, 10)
+  };
+  sendWS({type: 6, cmd: 'relay_mapping', data: pins});
+  addLog('Relay mapping update sent', 'info');
+}
+
 function resumeAutomation(){
   sendWS({type: 6, cmd: 'resume_automation'});
   addLog('Automation resumed', 'info');
+}
+
+// ============================================================
+// Graph Engine (v1.4)
+// ============================================================
+var graphChart = null;
+var graphSensor = 0;
+var graphRange = 86400;
+var graphRequestId = 0;
+var graphLastRequestTime = 0;
+var liveBuffers = [[],[],[],[]];
+var GRAPH_MAX_LIVE = 3600;
+var liveUpdatePending = false;
+
+function initGraph() {
+  var canvas = document.getElementById('graphCanvas');
+  if (!canvas) return;
+  if (typeof Chart === 'undefined') {
+    canvas.parentNode.innerHTML = '<p style="color:#d29922;text-align:center;padding:40px;">Chart library not loaded</p>';
+    return;
+  }
+  if (graphChart) { graphChart.destroy(); graphChart = null; }
+  liveBuffers = [[],[],[],[]];
+
+  var ctx = canvas.getContext('2d');
+  graphChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      datasets: [
+        { label: 'Live', data: [], borderColor: '#58a6ff', borderWidth: 1.5, tension: 0.2, pointRadius: 0 },
+        { label: 'History', data: [], borderColor: '#3fb950', borderWidth: 1, tension: 0.2, pointRadius: 0 }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      scales: {
+        x: {
+          type: 'linear',
+          title: { display: true, text: 'Time', color: '#8b949e' },
+          ticks: {
+            color: '#8b949e',
+            callback: function(v) {
+              var d = new Date(v * 1000);
+              if (graphRange >= 86400) {
+                return (d.getMonth()+1) + '/' + d.getDate() + ' ' +
+                       d.getHours() + ':' + String(d.getMinutes()).padStart(2,'0');
+              }
+              return d.getHours() + ':' + String(d.getMinutes()).padStart(2,'0');
+            }
+          },
+          grid: { color: '#21262d' }
+        },
+        y: {
+          title: { display: true, text: '', color: '#8b949e' },
+          ticks: { color: '#8b949e' },
+          grid: { color: '#21262d' }
+        }
+      },
+      plugins: {
+        legend: { labels: { color: '#8b949e' } }
+      }
+    }
+  });
+  graphChart.data.datasets[0].data = liveBuffers[graphSensor];
+  updateGraphLabels();
+  graphChart.update('none');
+}
+
+function updateGraphLabels() {
+  var labels = ['Temperature (°C)', 'Humidity (%)', 'CO2 (ppm)', 'Fridge Temp (°C)'];
+  if (graphChart && graphChart.options.scales.y) {
+    graphChart.options.scales.y.title.text = labels[graphSensor] || '';
+  }
+}
+
+function switchGraphTab(btn, sensor) {
+  graphSensor = sensor;
+  document.querySelectorAll('.graph-tab').forEach(function(b){ b.classList.remove('active'); });
+  btn.classList.add('active');
+  if (graphChart) {
+    graphChart.data.datasets[0].data = liveBuffers[sensor];
+  }
+  updateGraphLabels();
+  requestHistorical();
+}
+
+function setGraphRange(seconds, btn) {
+  graphRange = seconds;
+  document.querySelectorAll('.graph-range-btn').forEach(function(b){ b.classList.remove('active'); });
+  btn.classList.add('active');
+  if (graphChart) { graphChart.update('none'); }
+  requestHistorical();
+}
+
+function requestHistorical() {
+  var now = Date.now();
+  if (now - graphLastRequestTime < 5000) return;
+  graphLastRequestTime = now;
+  graphRequestId = (graphRequestId + 1) & 0xFFFF;
+  var start = Math.floor(now / 1000) - graphRange;
+  sendWS({type: 100, sensor: graphSensor, start: start, end: Math.floor(now / 1000), max: 350, rid: graphRequestId});
+}
+
+function feedLiveGraph(sensor, value) {
+  var now = Math.floor(Date.now() / 1000);
+  liveBuffers[sensor].push({x: now, y: value});
+  if (liveBuffers[sensor].length > GRAPH_MAX_LIVE) {
+    liveBuffers[sensor] = liveBuffers[sensor].slice(-GRAPH_MAX_LIVE);
+  }
+  if (graphChart && sensor === graphSensor && !liveUpdatePending) {
+    liveUpdatePending = true;
+    requestAnimationFrame(function() {
+      liveUpdatePending = false;
+      if (!graphChart) return;
+      graphChart.data.datasets[0].data = liveBuffers[sensor];
+      graphChart.update('none');
+    });
+  }
+}
+
+function handleGraphResponse(msg) {
+  if (msg.rid !== graphRequestId || msg.s !== graphSensor) return;
+  if (!graphChart) return;
+  if (msg.error) { console.warn('Graph error:', msg.error); return; }
+  var points = (msg.p || []).map(function(p){ return {x: p[0], y: p[1]}; });
+  graphChart.data.datasets[1].data = points;
+  graphChart.update('none');
 }
 
 connectWS();
@@ -509,6 +746,7 @@ static void handleRoot() {
 }
 
 static void handleNotFound() {
+  g_server.sendHeader("Cache-Control", "no-store");
   g_server.send(404, "text/plain", "404 Not Found");
 }
 
@@ -545,7 +783,51 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
       uint8_t msgType = doc["type"] | 0;
       const char* cmd = doc["cmd"] | "";
 
-            if (msgType == WS_COMMAND && strcmp(cmd, "relay") == 0) {
+      if (msgType == WS_GRAPH_DATA) {
+        static unsigned long g_lastGraphRequest[MAX_WS_CLIENTS] = {0};
+        unsigned long now = millis();
+        if (num >= MAX_WS_CLIENTS) return;
+        if (now - g_lastGraphRequest[num] < GRAPH_RATE_LIMIT_MS) return;
+        g_lastGraphRequest[num] = now;
+
+        GraphDataRequest req;
+        req.sensorType = doc["sensor"] | 0;
+        req.startEpoch = doc["start"] | 0;
+        req.endEpoch = doc["end"] | 0;
+        req.maxPoints = doc["max"] | GRAPH_MAX_RESPONSE_POINTS;
+        req.requestId = doc["rid"] | 0;
+
+        if (req.sensorType > 3) return;
+        // Sanity: reject epochs before 2020 to prevent 1970 DoS loop
+        if (req.startEpoch < 1577836800) req.startEpoch = 1577836800;
+        if (req.endEpoch > 0 && req.startEpoch >= req.endEpoch) return;
+        if (req.maxPoints == 0 || req.maxPoints > GRAPH_MAX_RESPONSE_POINTS) req.maxPoints = GRAPH_MAX_RESPONSE_POINTS;
+
+        char* graphOutput = (char*)heap_caps_malloc(GRAPH_RESPONSE_BUFFER_SIZE, MALLOC_CAP_8BIT);
+        if (!graphOutput) {
+          char errOutput[64];
+          snprintf(errOutput, sizeof(errOutput),
+                   "{\"type\":100,\"s\":%d,\"rid\":%u,\"p\":[]}",
+                   req.sensorType, req.requestId);
+          g_webSocket.sendTXT(num, (const uint8_t*)errOutput, strlen(errOutput));
+          break;
+        }
+
+        size_t len = sdLogger_getHistoricalData(&req, graphOutput, GRAPH_RESPONSE_BUFFER_SIZE);
+        if (len > 0) {
+          g_webSocket.sendTXT(num, (const uint8_t*)graphOutput, len);
+        } else {
+          char errOutput[64];
+          snprintf(errOutput, sizeof(errOutput),
+                   "{\"type\":100,\"s\":%d,\"rid\":%u,\"p\":[]}",
+                   req.sensorType, req.requestId);
+          g_webSocket.sendTXT(num, (const uint8_t*)errOutput, strlen(errOutput));
+        }
+        heap_caps_free(graphOutput);
+        break;
+      }
+
+      if (msgType == WS_COMMAND && strcmp(cmd, "relay") == 0) {
         uint8_t index = doc["index"] | 0;
         bool state = (doc["state"].as<int>() != 0);
         bool force = (doc["force"].as<int>() != 0);
@@ -557,9 +839,6 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
           return;
         }
 
-        // Night mode confirmation for loud relays.
-        // If night mode is active, user is trying to turn ON a loud relay,
-        // and hasn't confirmed yet, send a confirmation request back.
         if (state && !confirmed && relayManager_isRelayLoud(index)) {
           bool nightMode;
           portENTER_CRITICAL(&g_stateMux);
@@ -573,14 +852,12 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
             confirmDoc["level"] = "warn";
             confirmDoc["relay"] = index;
             char confirmOutput[128];
-            serializeJson(confirmDoc, confirmOutput, sizeof(confirmOutput));
-            g_webSocket.sendTXT(num, (const uint8_t*)confirmOutput, strlen(confirmOutput));
+            size_t confirmLen = serializeJson(confirmDoc, confirmOutput, sizeof(confirmOutput));
+            g_webSocket.sendTXT(num, (const uint8_t*)confirmOutput, confirmLen);
             return;
           }
         }
 
-        // If compressor is being turned ON and confirmed during night mode,
-        // activate the compressor override so continuous enforcement respects it.
         if (state && confirmed && index == RELAY_COMPRESSOR) {
           bool nightMode;
           portENTER_CRITICAL(&g_stateMux);
@@ -620,6 +897,7 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
         newThresholds.humHoHFloor = doc["data"]["humHoHFloor"] | thresholds->humHoHFloor;
         newThresholds.humAssistFloor = doc["data"]["humAssistFloor"] | thresholds->humAssistFloor;
         newThresholds.humCeiling = doc["data"]["humCeiling"] | thresholds->humCeiling;
+        newThresholds.humExhaustOn = doc["data"]["humExhaustOn"] | thresholds->humExhaustOn;
         newThresholds.assistOnSec = doc["data"]["assistOnSec"] | thresholds->assistOnSec;
         newThresholds.assistOffSec = doc["data"]["assistOffSec"] | thresholds->assistOffSec;
         newThresholds.co2HighLimit = doc["data"]["co2HighLimit"] | thresholds->co2HighLimit;
@@ -634,6 +912,45 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
         if (weight > EMA_WEIGHT_MAX) weight = EMA_WEIGHT_MAX;
         adaptive_setEMAWeight(weight);
       }
+      else if (msgType == WS_COMMAND && strcmp(cmd, "rtc") == 0) {
+        const char* datetime = doc["datetime"] | "";
+        if (strlen(datetime) == 0) {
+          Serial.println(F("[WS] RTC command received with empty datetime"));
+          return;
+        }
+        int year, month, day, hour, minute;
+        if (sscanf(datetime, "%d-%d-%dT%d:%d", &year, &month, &day, &hour, &minute) != 5) {
+          Serial.print(F("[WS] Failed to parse datetime: "));
+          Serial.println(datetime);
+          return;
+        }
+        if (year < 2000 || year > 2099 || month < 1 || month > 12 ||
+            day < 1 || day > 31 || hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+          Serial.print(F("[WS] RTC datetime out of range: "));
+          Serial.println(datetime);
+          return;
+        }
+        if (rtc_setTime((uint8_t)hour, (uint8_t)minute, 0,
+                        (uint8_t)day, (uint8_t)month, (uint16_t)year, 1)) {
+          Serial.println(F("[WS] RTC time set successfully from Web UI"));
+          StaticJsonDocument<128> responseDoc;
+          responseDoc["type"] = 2;
+          responseDoc["message"] = "RTC time updated successfully";
+          responseDoc["level"] = "info";
+          char response[128];
+          size_t responseLen = serializeJson(responseDoc, response, sizeof(response));
+          g_webSocket.sendTXT(num, (const uint8_t*)response, responseLen);
+        } else {
+          Serial.println(F("[WS] RTC time set FAILED"));
+          StaticJsonDocument<128> responseDoc;
+          responseDoc["type"] = 2;
+          responseDoc["message"] = "Failed to set RTC time - check date values";
+          responseDoc["level"] = "warn";
+          char response[128];
+          size_t responseLen = serializeJson(responseDoc, response, sizeof(response));
+          g_webSocket.sendTXT(num, (const uint8_t*)response, responseLen);
+        }
+      }
       else if (msgType == WS_COMMAND && strcmp(cmd, "calibrate_start") == 0) {
         adaptive_startCalibration();
       }
@@ -642,6 +959,37 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
       }
       else if (msgType == WS_COMMAND && strcmp(cmd, "resume_automation") == 0) {
         automation_deactivateAllOverrides();
+      }
+      else if (msgType == WS_COMMAND && strcmp(cmd, "relay_mapping") == 0) {
+        const RelayMapping* current = relayManager_getMapping();
+        RelayMapping newMapping;
+        newMapping.magic = RELAY_MAPPING_MAGIC;
+        newMapping.pinHOH = doc["data"]["pinHOH"] | current->pinHOH;
+        newMapping.pinAirAssist = doc["data"]["pinAirAssist"] | current->pinAirAssist;
+        newMapping.pinExhaust = doc["data"]["pinExhaust"] | current->pinExhaust;
+        newMapping.pinCompressor = doc["data"]["pinCompressor"] | current->pinCompressor;
+        memset(newMapping.reserved, 0, sizeof(newMapping.reserved));
+
+        if (relayManager_updateMapping(&newMapping)) {
+          memcpy(&g_runtimeCache.relayMapping, relayManager_getMapping(), sizeof(RelayMapping));
+          sdLogger_saveCache();
+
+          StaticJsonDocument<128> responseDoc;
+          responseDoc["type"] = 2;
+          responseDoc["message"] = "Relay mapping applied and saved";
+          responseDoc["level"] = "info";
+          char response[128];
+          size_t responseLen = serializeJson(responseDoc, response, sizeof(response));
+          g_webSocket.sendTXT(num, (const uint8_t*)response, responseLen);
+        } else {
+          StaticJsonDocument<128> responseDoc;
+          responseDoc["type"] = 2;
+          responseDoc["message"] = "Invalid relay mapping — check pins";
+          responseDoc["level"] = "warn";
+          char response[128];
+          size_t responseLen = serializeJson(responseDoc, response, sizeof(response));
+          g_webSocket.sendTXT(num, (const uint8_t*)response, responseLen);
+        }
       }
       else if (msgType == WS_COMMAND && strcmp(cmd, "simulate") == 0) {
         float current = doc["current"] | 0.0f;
@@ -661,11 +1009,11 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
         }
 
         char response[128];
-        size_t len = serializeJson(responseDoc, response, sizeof(response));
-        if (len >= sizeof(response)) {
+        size_t responseLen = serializeJson(responseDoc, response, sizeof(response));
+        if (responseLen >= sizeof(response)) {
           Serial.println(F("[WS] WARNING: Simulation response JSON truncated"));
         }
-        g_webSocket.sendTXT(num, (const uint8_t*)response, strlen(response));
+        g_webSocket.sendTXT(num, (const uint8_t*)response, responseLen);
       }
       break;
     }
@@ -722,6 +1070,8 @@ static void sendSensorUpdate() {
   doc["hum"] = hum;
   doc["co2"] = co2;
   doc["fridge"] = fridgeTemp;
+  doc["fridgeHum"] = network_getFridgeHumidity();
+  doc["fridgeDoor"] = network_isFridgeDoorOpen();
   doc["tempFault"] = tempFault;
   doc["humFault"] = humFault;
   doc["co2Fault"] = co2Fault;
@@ -738,9 +1088,9 @@ static void sendSensorUpdate() {
   size_t len = serializeJson(doc, output, sizeof(output));
   if (len >= sizeof(output)) {
     Serial.println(F("[WS] WARNING: Sensor update JSON truncated — increase buffer size"));
-     return;
+    return;
   }
-  g_webSocket.broadcastTXT((const uint8_t*)output, strlen(output));
+  g_webSocket.broadcastTXT((const uint8_t*)output, len);
 }
 
 static void sendSystemStatus() {
@@ -769,9 +1119,9 @@ static void sendSystemStatus() {
   size_t len = serializeJson(doc, output, sizeof(output));
   if (len >= sizeof(output)) {
     Serial.println(F("[WS] WARNING: System status JSON truncated — increase buffer size"));
-    return; 
+    return;
   }
-  g_webSocket.broadcastTXT((const uint8_t*)output, strlen(output));
+  g_webSocket.broadcastTXT((const uint8_t*)output, len);
 }
 
 static void sendConfigUpdate(uint8_t clientNum) {
@@ -782,20 +1132,25 @@ static void sendConfigUpdate(uint8_t clientNum) {
   doc["humHoHFloor"] = t->humHoHFloor;
   doc["humAssistFloor"] = t->humAssistFloor;
   doc["humCeiling"] = t->humCeiling;
+  doc["humExhaustOn"] = t->humExhaustOn;
   doc["assistOnSec"] = t->assistOnSec;
   doc["assistOffSec"] = t->assistOffSec;
   doc["co2HighLimit"] = t->co2HighLimit;
   doc["co2LowTarget"] = t->co2LowTarget;
   doc["co2Emergency"] = t->co2Emergency;
   doc["emaWeight"] = adaptive_getEMAWeight();
-
+  const RelayMapping* mapping = relayManager_getMapping();
+  doc["pinHOH"] = mapping->pinHOH;
+  doc["pinAirAssist"] = mapping->pinAirAssist;
+  doc["pinExhaust"] = mapping->pinExhaust;
+  doc["pinCompressor"] = mapping->pinCompressor;
   char output[256];
   size_t len = serializeJson(doc, output, sizeof(output));
   if (len >= sizeof(output)) {
     Serial.println(F("[WS] WARNING: Config update JSON truncated — increase buffer size"));
-     return;
+    return;
   }
-  g_webSocket.sendTXT(clientNum, (const uint8_t*)output, strlen(output));
+  g_webSocket.sendTXT(clientNum, (const uint8_t*)output, len);
 }
 
 static void sendCalibrationUpdate() {
@@ -824,9 +1179,9 @@ static void sendCalibrationUpdate() {
   size_t len = serializeJson(calibDoc, output, sizeof(output));
   if (len >= sizeof(output)) {
     Serial.println(F("[WS] WARNING: Calibration update JSON truncated — increase buffer size"));
-     return;
+    return;
   }
-  g_webSocket.broadcastTXT((const uint8_t*)output, strlen(output));
+  g_webSocket.broadcastTXT((const uint8_t*)output, len);
 }
 
 // ============================================================
@@ -835,6 +1190,17 @@ static void sendCalibrationUpdate() {
 
 bool webUI_init() {
   Serial.println(F("[WEB] Initializing web server..."));
+
+  g_server.on("/chart-4.4.0.min.js", []() {
+    if (LittleFS.exists("/chart-4.4.0.min.js")) {
+      g_server.sendHeader("Cache-Control", "max-age=31536000, immutable");
+      File f = LittleFS.open("/chart-4.4.0.min.js", "r");
+      g_server.streamFile(f, "application/javascript");
+      f.close();
+    } else {
+      g_server.send(404, "text/plain", "Not Found");
+    }
+  });
 
   g_server.on("/", handleRoot);
   g_server.onNotFound(handleNotFound);
@@ -887,9 +1253,9 @@ void webUI_pushUpdates() {
       size_t len = serializeJson(calibDoc, outputActive, sizeof(outputActive));
       if (len >= sizeof(outputActive)) {
         Serial.println(F("[WS] WARNING: Calibration active JSON truncated"));
-        return; 
+        return;
       }
-      g_webSocket.broadcastTXT((const uint8_t*)outputActive, strlen(outputActive));
+      g_webSocket.broadcastTXT((const uint8_t*)outputActive, len);
     }
 
     if (!isActive && wasActive) {
@@ -902,9 +1268,9 @@ void webUI_pushUpdates() {
       size_t len = serializeJson(calibDoc, outputInactive, sizeof(outputInactive));
       if (len >= sizeof(outputInactive)) {
         Serial.println(F("[WS] WARNING: Calibration inactive JSON truncated"));
-         return;
+        return;
       }
-      g_webSocket.broadcastTXT((const uint8_t*)outputInactive, strlen(outputInactive));
+      g_webSocket.broadcastTXT((const uint8_t*)outputInactive, len);
     }
 
     wasActive = isActive;

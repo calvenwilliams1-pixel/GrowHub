@@ -26,6 +26,7 @@ struct AutomationThresholds {
   float humHoHFloor;
   float humAssistFloor;
   float humCeiling;
+  float humExhaustOn;  // High humidity exhaust trigger (user-configurable)
   uint16_t assistOnSec;
   uint16_t assistOffSec;
   uint16_t co2HighLimit;
@@ -40,6 +41,8 @@ void automation_runHumidityLoop();
 void automation_runCO2Loop();
 void automation_checkNightMode();
 void automation_checkTemperatureAlerts();
+void automation_checkFridgeAlarms();
+void automation_runHighHumidityExhaust();
 
 // Threshold access (for Web UI)
 AutomationThresholds* automation_getThresholds();

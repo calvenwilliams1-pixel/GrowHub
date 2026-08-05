@@ -1,8 +1,8 @@
 /*
    GrowHub32_MainNode.ino
    Main Automation Node - ESP32 30-Pin Dev Board
-   Version: 1.3.0
-   Author: Calvin
+   Version: 1.4.0
+   Author: Calven
 
    Hardware:
    - ESP32 30-Pin Dev Board (CP2102 Type-C)
@@ -38,7 +38,8 @@
 #include "web_ui.h"
 #include "adaptive.h"
 #include "safety.h"
-
+#include <LittleFS.h>
+#include <math.h>
 // ============================================================
 // External Declarations
 // ============================================================
@@ -72,6 +73,8 @@ SystemState g_systemState = {
   .fridgeHeartbeatLost = false,
   .fridgeLastSequence = 0,
   .fridgeTemp = 4.0f,
+  .fridgeHumidity = NAN,
+  .fridgeDoorOpen = false,
   .currentDutyCycle = 0.0f,
   .pidOutput = 0.0f,
   .setpointHumidity = 87.5f,
@@ -104,7 +107,7 @@ void setup() {
 
   Serial.println(F(""));
   Serial.println(F("============================================"));
-  Serial.println(F("       GrowHub32 Main Node v1.3.0"));
+  Serial.println(F("       GrowHub32 Main Node v" FIRMWARE_VERSION));
   Serial.println(F("  Environmental Automation Controller"));
   Serial.println(F("============================================"));
   Serial.println(F(""));
@@ -146,10 +149,25 @@ void setup() {
   // Step 6: SD Card & Logging
   Serial.println(F("[BOOT] Step 6: SD card init..."));
   safety_feedWatchdog();
-  if (!sdLogger_init()) {
+     if (!sdLogger_init()) {
     Serial.println(F("[BOOT] WARNING: SD card init FAILED - logging and profiles disabled"));
   }
   safety_feedWatchdog();
+
+  // Initialize SD mutex for graph dashboard (v1.4)
+  if (!sdLogger_initMutex()) {
+    Serial.println(F("[BOOT] WARNING: SD mutex init FAILED — graph dashboard disabled"));
+  }
+
+  // Initialize LittleFS for static web assets (v1.4)
+  if (!LittleFS.begin()) {
+    Serial.println(F("[BOOT] WARNING: LittleFS mount FAILED — graph dashboard disabled"));
+  }
+
+  // Apply cached relay mapping if available (v1.4)
+  if (g_runtimeCache.relayMapping.magic == RELAY_MAPPING_MAGIC) {
+    relayManager_updateMapping(&g_runtimeCache.relayMapping);
+  }
 
   // Step 7: Network & Alerts
   Serial.println(F("[BOOT] Step 7: Network init..."));
@@ -232,8 +250,8 @@ void setup() {
   Serial.println(OTA_PORT);
   Serial.println(F("============================================"));
   Serial.println(F(""));
-  network_sendAlert("GrowHub32 Online", "Main Node v1.3.0 booted successfully.");
-  sdLogger_logSystemEvent("System boot complete - v1.3.0");
+ network_sendAlert("GrowHub32 Online", "Main Node v" FIRMWARE_VERSION " booted successfully.");
+  sdLogger_logSystemEvent("System boot complete - v" FIRMWARE_VERSION);
 
   g_lastSensorPoll = millis();
   g_lastLogWrite = millis();
@@ -267,10 +285,11 @@ void loop() {
 
   // Temperature alerts every loop
   automation_checkTemperatureAlerts();
-
+  automation_checkFridgeAlarms();
   // Automation logic every loop
   automation_runHumidityLoop();
   automation_runCO2Loop();
+  automation_runHighHumidityExhaust();
 
   // Safety checks every loop
   safety_checkDryRun(now);
@@ -298,6 +317,7 @@ void loop() {
   if (now - g_lastESPNOWCheck >= 5000) {
     g_lastESPNOWCheck = now;
     network_checkFridgeHeartbeat();
+    network_sendAlivePing();
   }
 
   // SD card logging every 60 seconds
@@ -309,12 +329,12 @@ void loop() {
   // Runtime cache save every 10 minutes
   if (now - g_lastSDCacheSave >= 600000UL) {
     g_lastSDCacheSave = now;
-
     g_runtimeCache.totalRuntimeHours += (10.0f / 60.0f);
     g_runtimeCache.lastActiveBand = adaptive_getCurrentBand();
     AutomationThresholds* thresholds = automation_getThresholds();
     memcpy(&g_runtimeCache.thresholds, thresholds, sizeof(AutomationThresholds));
     g_runtimeCache.emaWeight = adaptive_getEMAWeight();
+    memcpy(&g_runtimeCache.relayMapping, relayManager_getMapping(), sizeof(RelayMapping));
 
     sdLogger_saveCache();
   }

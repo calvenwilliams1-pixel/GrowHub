@@ -441,6 +441,47 @@ int rtc_minutesUntilNightMode() {
   return nightStartMinutes - currentMinutes;
 }
 
+// ============================================================
+// v1.3: Shared SETTIME Parser
+// ============================================================
+
+bool rtc_setTimeFromString(const char* cmd) {
+    if (!cmd) return false;
+
+    const char* p = cmd;
+    while (*p == ' ' || *p == '\t') p++;
+
+    if (strncmp(p, "SETTIME", 7) != 0) return false;
+    p += 7;
+    while (*p == ' ' || *p == '\t') p++;
+
+    char* end;
+    bool parseOk = true;
+    long y  = strtol(p, &end, 10); if (end == p) parseOk = false; p = end;
+    while (*p == ' ' || *p == '\t') p++;
+    long mo = strtol(p, &end, 10); if (end == p) parseOk = false; p = end;
+    while (*p == ' ' || *p == '\t') p++;
+    long d  = strtol(p, &end, 10); if (end == p) parseOk = false; p = end;
+    while (*p == ' ' || *p == '\t') p++;
+    long h  = strtol(p, &end, 10); if (end == p) parseOk = false; p = end;
+    while (*p == ' ' || *p == '\t') p++;
+    long m  = strtol(p, &end, 10); if (end == p) parseOk = false; p = end;
+    while (*p == ' ' || *p == '\t') p++;
+    long s  = strtol(p, &end, 10); if (end == p) parseOk = false;
+
+    if (!parseOk) return false;
+    if (y < 2000 || y > 2099 || mo < 1 || mo > 12 || d < 1 || d > 31 ||
+        h < 0 || h > 23 || m < 0 || m > 59 || s < 0 || s > 59) return false;
+
+    // Validate against actual month length
+    uint8_t maxDay = daysInMonth((uint8_t)mo, (uint16_t)y);
+    if (d > maxDay) return false;
+
+    uint8_t dow = computeDayOfWeek((uint16_t)y, (uint8_t)mo, (uint8_t)d);
+    return rtc_setTime((uint8_t)h, (uint8_t)m, (uint8_t)s,
+                       (uint8_t)d, (uint8_t)mo, (uint16_t)y, dow);
+}
+
 void rtc_checkSerialCommand() {
   // Non-blocking character-by-character serial parser.
   // Zero heap allocation — uses strtol() instead of sscanf().
@@ -465,53 +506,15 @@ void rtc_checkSerialCommand() {
       if (cmdLen > 0) {
         cmd[cmdLen] = '\0';
 
-        // Zero-allocation parser using strtol
-        char* p = cmd;
-        while (*p == ' ' || *p == '\t') p++;
-
-        if (strncmp(p, "SETTIME", 7) != 0 || (p[7] != ' ' && p[7] != '\t' && p[7] != '\0')) {
-          Serial.println(F("[RTC] ERROR: Unknown command. Format: SETTIME YYYY MM DD HH MM SS"));
-          cmdLen = 0;
-          continue;
-        }
-        p += 7;
-        while (*p == ' ' || *p == '\t') p++;
-
-        char* end;
-        bool parseOk = true;
-        long y  = strtol(p, &end, 10); if (end == p) parseOk = false; p = end; while (*p == ' ' || *p == '\t') p++;
-        long mo = strtol(p, &end, 10); if (end == p) parseOk = false; p = end; while (*p == ' ' || *p == '\t') p++;
-        long d  = strtol(p, &end, 10); if (end == p) parseOk = false; p = end; while (*p == ' ' || *p == '\t') p++;
-        long h  = strtol(p, &end, 10); if (end == p) parseOk = false; p = end; while (*p == ' ' || *p == '\t') p++;
-        long m  = strtol(p, &end, 10); if (end == p) parseOk = false; p = end; while (*p == ' ' || *p == '\t') p++;
-        long s  = strtol(p, &end, 10); if (end == p) parseOk = false;
-
-        if (!parseOk) {
-          Serial.println(F("[RTC] ERROR: Format is: SETTIME YYYY MM DD HH MM SS"));
-          Serial.println(F("[RTC] Example: SETTIME 2026 7 19 20 30 0"));
-          cmdLen = 0;
-          continue;
-        }
-
-        // Validate ranges
-        if (y < 2000 || y > 2099 || mo < 1 || mo > 12 || d < 1 || d > 31 ||
-            h < 0 || h > 23 || m < 0 || m > 59 || s < 0 || s > 59) {
-          Serial.println(F("[RTC] ERROR: Values out of range"));
-          cmdLen = 0;
-          continue;
-        }
-
-        uint8_t dow = computeDayOfWeek((uint16_t)y, (uint8_t)mo, (uint8_t)d);
-
-        if (rtc_setTime((uint8_t)h, (uint8_t)m, (uint8_t)s,
-                        (uint8_t)d, (uint8_t)mo, (uint16_t)y, dow)) {
-          Serial.println(F("[RTC] Time set successfully!"));
+              if (rtc_setTimeFromString(cmd)) {
+          Serial.println(F("[RTC] Time set successfully via Serial!"));
           char timeStr[24];
           rtc_getTimeString(timeStr, sizeof(timeStr));
           Serial.print(F("[RTC] Now: "));
           Serial.println(timeStr);
         } else {
-          Serial.println(F("[RTC] ERROR: Invalid date/time values. Check ranges."));
+          Serial.println(F("[RTC] ERROR: Invalid format or out-of-bounds date."));
+          Serial.println(F("[RTC] Expected: SETTIME YYYY MM DD HH MM SS"));
         }
         cmdLen = 0;
       }
