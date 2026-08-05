@@ -25,6 +25,8 @@
 | `feat/relay-mapping` | Configurable relay mapping (full stack) | ✅ Done |
 | `feat/relay-mapping` | GPIO12 boot fix (Air Assist default → GPIO 26) | ✅ Done |
 | `feat/relay-mapping` | Duck review: cooldown preservation, force bypass, emergency shutdown order, 255 guard, millis() placement | ✅ Done |
+| `feat/graph-dashboard` | Design (4 revisions, 4 ducks), config, sd_logger, web_ui, mutex, CSV reader | ✅ Done |
+| `feat/graph-dashboard` | Duck review: markdown fix, HTML nesting fix, strlen→len, error responses, epoch clamp, reconnect guard | ✅ Done |
 | — | Version bump system: `WEB_UI_VERSION` define + `VERSION_BUMP` comments | ✅ Done |
 
 ---
@@ -33,6 +35,7 @@
 
 | Priority | Item | Effort | Status |
 |----------|------|--------|--------|
+| 🟡 P1 | Upload `chart-4.4.0.min.js` to LittleFS partition | One-time setup | ⬜ TODO (at computer) |
 | 🟢 P3 | Update `CHANGELOG.md` with v1.4 entries | Small | ⬜ TODO |
 
 ---
@@ -42,7 +45,6 @@
 | Priority | Branch | Item | Effort |
 |----------|--------|------|--------|
 | 🟢 P3 | `feat/satellite-display` | Satellite display node (WiFi WebSocket + OLED) | Medium |
-| 🟢 P3 | `feat/graph-dashboard` | Dynamic graph dashboard (pinch/zoom, multi-tab, historical) | Large |
 
 ---
 
@@ -56,4 +58,5 @@
 - Fridge alarms: 8°C high, 0°C low, 10-min cooldown, suppressed when heartbeat lost
 - Fridge bridge: backward-compatible 8/13-byte packets, NAN for unknown humidity, door tri-state UI
 - Relay mapping: function-to-GPIO, persisted to SD, cooldown preserved across remap, GPIO12 blacklisted, force bypasses all safeties
+- Graph dashboard: 350 points max, 8KB heap buffer, two-pass downsampling, newest-to-oldest Pass 2, Unix epoch, per-file mutex, 1h/6h/24h views, Chart.js from LittleFS
 - Version bump: change `FIRMWARE_VERSION` in `config.h`, `WEB_UI_VERSION` in `web_ui.cpp`, then Ctrl+F `VERSION_BUMP` for 2 HTML lines
