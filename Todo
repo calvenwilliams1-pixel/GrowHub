@@ -14,12 +14,14 @@
 | `feat/v1.4-improvements` | GrowHub offline alert framework | ✅ Done |
 | `feat/v1.4-improvements` | Web UI visual upgrade | ✅ Done |
 | `feat/v1.4-improvements` | Web UI JS hardening | ✅ Done |
-| `feat/v1.4-improvements` | Duck review: `network.cpp` hardening (HTTP timeout, heap-free URL, MAC in ping, no duplicate boot alert) | ✅ Done |
+| `feat/v1.4-improvements` | Duck review: `network.cpp` hardening (HTTP timeout, heap-free URL, MAC in ping) | ✅ Done |
 | `feat/v1.4-improvements` | RTC Web UI bridge — `setRTCTime()` JS + `"rtc"` WebSocket handler | ✅ Done |
-| `feat/v1.4-improvements` | Fix `network.cpp` — removed duplicate content, restored missing `if` in `onESPNOWReceive` | ✅ Done |
+| `feat/v1.4-improvements` | Fix `network.cpp` — duplicate content, missing `if` in `onESPNOWReceive` | ✅ Done |
 | `feat/v1.4-improvements` | Document `DEFAULT_HUM_EXHAUST_ON` dormancy | ✅ Done |
 | `feat/fridge-alarms` | Fridge temperature alarm + disconnect → phone alert | ✅ Done |
 | `feat/fridge-alarms` | Kimi review: removed dead `-40.0f` sentinel check | ✅ Done |
+| `feat/fridge-bridge` | Fridge module data integration — full stack (struct, state, receive, UI, logging) | ✅ Done |
+| `feat/fridge-bridge` | Duck review: CRC out-of-bounds fix, Serial outside critical section, sequence gap fix | ✅ Done |
 
 ---
 
@@ -27,7 +29,6 @@
 
 | Priority | Item | Effort | Files | Status |
 |----------|------|--------|-------|--------|
-| 🔴 P0 | Add `automation_checkFridgeAlarms()` declaration to `automation.h` | Tiny | `automation.h` | ⬜ TODO |
 | 🟡 P1 | Bump firmware version to 1.4.0 (config + boot banner + boot alert + web UI title/footer) | Tiny | `config.h`, `.ino`, `web_ui.cpp` | ⬜ TODO |
 | 🟢 P3 | Update `CHANGELOG.md` with v1.4 entries | Small | `CHANGELOG.md` | ⬜ TODO |
 
@@ -38,39 +39,22 @@
 | Priority | Branch | Item | Effort |
 |----------|--------|------|--------|
 | 🟡 P2 | `feat/relay-mapping` | Configurable relay mapping | Large |
-| 🟢 P3 | `feat/fridge-bridge` | Fridge module data integration | Medium |
 | 🟢 P3 | `feat/satellite-display` | Satellite display node (WiFi WebSocket + OLED) | Medium |
 | 🟢 P3 | `feat/graph-dashboard` | Dynamic graph dashboard (pinch/zoom, multi-tab, historical) | Large |
 | 🟢 P4 | Move off GPIO12 | Bootstrapping issue fix | Small |
 
 ---
 
-## Design Decision: No Hardcoded Equipment Limits
+## Design Decisions (unchanged)
 
-All thresholds that control equipment are user-configurable via Web UI. The only non-configurable values are physical safety limits (`SAFETY_HUM_CEILING_HARD` at 95%) that act as emergency brakes — they don't control normal operation, they prevent disaster.
-
----
-
-## Design Decision: Alert Rate Limiting
-
-`network_sendAlert()` enforces `NTFY_MIN_INTERVAL_MS` (60s) globally. Alive pings reuse this function and inherit the rate limiting automatically. Critical alerts and alive pings share the same cooldown — alive pings fire every 30 min so collision is unlikely, but if both queue simultaneously, rate limiting applies.
-
----
-
-## Design Decision: Dormant-by-Default Features
-
-Two v1.4 features ship dormant to prevent unintended behavior on existing installs:
-- **`NTFY_ENABLED`** defaults to `false` — alive pings won't fire until the user sets this to `true` and configures their ntfy.sh endpoint
-- **`DEFAULT_HUM_EXHAUST_ON`** defaults to `95.0f` (equal to `SAFETY_HUM_CEILING_HARD`) — the high-humidity exhaust won't trigger independently until the user lowers it via Web UI (recommended: 92%)
+- No hardcoded equipment limits — all thresholds user-configurable via Web UI
+- `SAFETY_HUM_CEILING_HARD` at 95% is emergency brake only
+- `NTFY_ENABLED` defaults to `false` (dormant until configured)
+- `DEFAULT_HUM_EXHAUST_ON` defaults to 95% (dormant until lowered via Web UI)
+- Alive pings fire 30 min after boot, include MAC address, 2000ms HTTP timeout
+- Fridge alarms: 8°C high, 0°C low, 10-min cooldown, suppressed when heartbeat lost
+- Fridge bridge: backward-compatible 8/13-byte packets, NAN for unknown humidity, door tri-state UI
 
 ---
 
-## Design Decision: Alive Ping Behavior
-
-First alive ping fires 30 minutes after boot (not immediately). The boot sequence already sends a "GrowHub32 Online" alert via `network_sendAlert()`. An immediate second ping would be redundant. The alive ping title includes the device MAC address for multi-device identification. HTTP requests are capped at 2000ms timeout to prevent main loop blocking.
-
----
-
-## Design Decision: Fridge Alarm Thresholds
-
-Fridge temperature alarms fire at 8.0°C (high) and 0.0°C (low/freeze risk) with 10-minute cooldown between repeat alerts. Temperature alerts are suppressed when the fridge heartbeat is lost — disconnect is handled separately by `network_checkFridgeHeartbeat()`. The `-40.0f` sentinel was removed after Kimi review confirmed it's unreachable (ESP-NOW drops packets below -40°C before they reach `g_systemState.fridgeTemp`).
+Ready for the next feature branch when you are — `feat/relay-mapping` (Large), `feat/satellite-display` (Medium), or `feat/graph-dashboard` (Large).
