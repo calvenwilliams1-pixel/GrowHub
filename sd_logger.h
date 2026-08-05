@@ -14,6 +14,7 @@
 #include <SD.h>
 #include "config.h"
 #include "automation.h"
+#include "relay_manager.h"
 
 // Log entry structure for daily CSV
 struct LogEntry {
@@ -53,9 +54,11 @@ struct RuntimeCache {
   uint8_t lastActiveBand;
 
   // GH-SAFE-002 persistent: Compressor cooldown state across reboots
-  // Prevents compressor restart when still thermally hot after power loss
-  unsigned long compressorLastOffTimestamp;  // RTC epoch seconds when compressor was last turned off
-  bool compressorCooldownActive;             // Whether cooldown was active at last save
+  unsigned long compressorLastOffTimestamp;
+  bool compressorCooldownActive;
+
+  // v1.4: Configurable relay mapping persistence
+  RelayMapping relayMapping;
 };
 
 extern RuntimeCache g_runtimeCache;
