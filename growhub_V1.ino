@@ -38,8 +38,8 @@
 #include "web_ui.h"
 #include "adaptive.h"
 #include "safety.h"
+#include <LittleFS.h>
 #include <math.h>
-
 // ============================================================
 // External Declarations
 // ============================================================
@@ -149,10 +149,20 @@ void setup() {
   // Step 6: SD Card & Logging
   Serial.println(F("[BOOT] Step 6: SD card init..."));
   safety_feedWatchdog();
-   if (!sdLogger_init()) {
+     if (!sdLogger_init()) {
     Serial.println(F("[BOOT] WARNING: SD card init FAILED - logging and profiles disabled"));
   }
   safety_feedWatchdog();
+
+  // Initialize SD mutex for graph dashboard (v1.4)
+  if (!sdLogger_initMutex()) {
+    Serial.println(F("[BOOT] WARNING: SD mutex init FAILED — graph dashboard disabled"));
+  }
+
+  // Initialize LittleFS for static web assets (v1.4)
+  if (!LittleFS.begin()) {
+    Serial.println(F("[BOOT] WARNING: LittleFS mount FAILED — graph dashboard disabled"));
+  }
 
   // Apply cached relay mapping if available (v1.4)
   if (g_runtimeCache.relayMapping.magic == RELAY_MAPPING_MAGIC) {
