@@ -149,10 +149,15 @@ void setup() {
   // Step 6: SD Card & Logging
   Serial.println(F("[BOOT] Step 6: SD card init..."));
   safety_feedWatchdog();
-  if (!sdLogger_init()) {
+   if (!sdLogger_init()) {
     Serial.println(F("[BOOT] WARNING: SD card init FAILED - logging and profiles disabled"));
   }
   safety_feedWatchdog();
+
+  // Apply cached relay mapping if available (v1.4)
+  if (g_runtimeCache.relayMapping.magic == RELAY_MAPPING_MAGIC) {
+    relayManager_updateMapping(&g_runtimeCache.relayMapping);
+  }
 
   // Step 7: Network & Alerts
   Serial.println(F("[BOOT] Step 7: Network init..."));
@@ -314,12 +319,12 @@ void loop() {
   // Runtime cache save every 10 minutes
   if (now - g_lastSDCacheSave >= 600000UL) {
     g_lastSDCacheSave = now;
-
     g_runtimeCache.totalRuntimeHours += (10.0f / 60.0f);
     g_runtimeCache.lastActiveBand = adaptive_getCurrentBand();
     AutomationThresholds* thresholds = automation_getThresholds();
     memcpy(&g_runtimeCache.thresholds, thresholds, sizeof(AutomationThresholds));
     g_runtimeCache.emaWeight = adaptive_getEMAWeight();
+    memcpy(&g_runtimeCache.relayMapping, relayManager_getMapping(), sizeof(RelayMapping));
 
     sdLogger_saveCache();
   }
