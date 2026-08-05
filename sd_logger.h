@@ -1,7 +1,7 @@
 /*
    sd_logger.h
    GrowHub32 - MicroSD Data Logging & Configuration Storage
-   Version: 1.2.3
+   Version: 1.4.0
    Revision: Added compressor cooldown fields to RuntimeCache for persistence
              across reboots (GH-SAFE-002 persistent).
              Uses rtc_getEpochSeconds() for consistent timestamp handling.
@@ -22,6 +22,8 @@ struct LogEntry {
   float humidity;
   uint16_t co2;
   float fridgeTemp;
+  float fridgeHumidity;
+  bool fridgeDoorOpen;
   bool hoHActive;
   bool airAssistActive;
   bool exhaustFanActive;
