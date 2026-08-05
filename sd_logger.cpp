@@ -336,6 +336,14 @@ bool sdLogger_loadCache() {
       Serial.println(g_runtimeCache.lastActiveBand);
       Serial.print(F("[SD]   Cooldown was active: "));
       Serial.println(g_runtimeCache.compressorCooldownActive ? "YES" : "no");
+              // Restore relay mapping from cache (v1.4)
+      if (g_runtimeCache.relayMapping.magic == RELAY_MAPPING_MAGIC) {
+        Serial.print(F("[SD]   Relay mapping: valid"));
+        Serial.println();
+      } else {
+        Serial.print(F("[SD]   Relay mapping: not set (using defaults)"));
+        Serial.println();
+      }
       return true;
     } else {
       sdLogger_saveCache();
@@ -352,7 +360,11 @@ bool sdLogger_loadCache() {
     g_runtimeCache.lastActiveBand = 0;
     g_runtimeCache.emaWeight = DEFAULT_EMA_WEIGHT;
     g_runtimeCache.compressorLastOffTimestamp = 0;
-    g_runtimeCache.compressorCooldownActive = false;
+     g_runtimeCache.compressorCooldownActive = false;
+
+    // Initialize relay mapping to defaults
+    const RelayMapping* defMap = relayManager_getDefaultMapping();
+    memcpy(&g_runtimeCache.relayMapping, defMap, sizeof(RelayMapping));
 
     sdLogger_saveCache();
     return false;
