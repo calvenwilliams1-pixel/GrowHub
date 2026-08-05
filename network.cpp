@@ -212,6 +212,14 @@ void onESPNOWReceive(const uint8_t* mac, const uint8_t* incomingData, int len) {
 // FreeRTOS-Safe Data Accessors
 // ============================================================
 
+float network_getFridgeTemp() {
+  float temp;
+  portENTER_CRITICAL(&g_stateMux);
+  temp = g_systemState.fridgeTemp;
+  portEXIT_CRITICAL(&g_stateMux);
+  return temp;
+}
+
 float network_getFridgeHumidity() {
   float hum;
   portENTER_CRITICAL(&g_stateMux);

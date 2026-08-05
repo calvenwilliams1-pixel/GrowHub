@@ -25,6 +25,7 @@
 #include "safety.h"
 #include "network.h"
 #include "system_state.h"
+#include "sd_logger.h"
 #include <ArduinoJson.h>
 #include <LittleFS.h>
 
@@ -38,6 +39,7 @@ static WebSocketsServer g_webSocket(WEBSOCKET_PORT);
 static unsigned long g_lastWSUpdate = 0;
 
 extern portMUX_TYPE g_stateMux;
+extern RuntimeCache g_runtimeCache;
 
 // Forward declarations
 static void handleRoot();
