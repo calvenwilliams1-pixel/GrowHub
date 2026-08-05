@@ -1,7 +1,7 @@
 /*
    web_ui.cpp
    GrowHub32 - Local Web Application Interface Implementation
-   Version: 1.3.0
+   Version: 1.4.0
    Revision: Updated CALIBRATION_DURATION_SEC to CALIBRATION_TOTAL_SEC.
              Removed adaptive_updateCalibration() double-call from pushUpdates().
              Added #include "system_state.h" for centralized state access.
