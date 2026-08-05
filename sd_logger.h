@@ -32,6 +32,28 @@ struct LogEntry {
   bool nightMode;
 };
 
+// ============================================================
+// Graph Dashboard — Historical Data Query (v1.4)
+// ============================================================
+// Timestamps are Unix epoch (seconds since 1970-01-01) for JS compatibility.
+
+struct GraphDataRequest {
+  uint32_t startEpoch;      // Unix epoch — start of range
+  uint32_t endEpoch;        // Unix epoch — end of range (0 = now)
+  uint8_t  sensorType;      // 0=temp, 1=humidity, 2=CO2, 3=fridge
+  uint16_t maxPoints;       // Max points requested (server caps at GRAPH_MAX_RESPONSE_POINTS)
+  uint32_t requestId;       // Client sequence number for race-condition prevention
+};
+
+// SD card mutex — protects all file operations across tasks
+extern SemaphoreHandle_t g_sdMutex;
+bool sdLogger_initMutex();
+
+// Returns JSON string length written to output buffer.
+// Output: {"type":100,"s":<sensor>,"rid":<id>,"p":[[t1,v1],...]}
+// On error/no data: {"type":100,"s":<sensor>,"rid":<id>,"p":[]}
+size_t sdLogger_getHistoricalData(const GraphDataRequest* request, char* output, size_t outputMax);
+
 // Daily summary statistics for archive
 struct DailySummary {
   char date[11];        // YYYY-MM-DD
