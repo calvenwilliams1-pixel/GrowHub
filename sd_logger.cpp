@@ -164,7 +164,7 @@ String sdLogger_getCurrentLogFilename() {
 }
 
 bool sdLogger_writeHeader(const char* filename) {
-  const char* header = "Timestamp,Temperature(C),Humidity(%),CO2(ppm),FridgeTemp(C),"
+    const char* header = "Timestamp,Temperature(C),Humidity(%),CO2(ppm),FridgeTemp(C),FridgeHum(%),FridgeDoor,"
                        "HOH,AirAssist,ExhaustFan,Compressor,NightMode";
 
   File f = SD.open(filename, FILE_WRITE);
@@ -223,6 +223,8 @@ bool sdLogger_writeData() {
   }
 
   entry.fridgeTemp = network_getFridgeTemp();
+  entry.fridgeHumidity = network_getFridgeHumidity();
+  entry.fridgeDoorOpen = network_isFridgeDoorOpen();
   entry.hoHActive = g_systemState.hoHActive;
   entry.airAssistActive = g_systemState.airAssistActive;
   entry.exhaustFanActive = g_systemState.exhaustFanActive;
@@ -230,12 +232,14 @@ bool sdLogger_writeData() {
   entry.nightMode = g_systemState.nightModeActive;
 
   char line[128];
-  int len = snprintf(line, sizeof(line), "%s,%.2f,%.2f,%d,%.2f,%d,%d,%d,%d,%d",
+    int len = snprintf(line, sizeof(line), "%s,%.2f,%.2f,%d,%.2f,%.2f,%d,%d,%d,%d,%d,%d",
                      entry.timestamp,
                      entry.temperature,
                      entry.humidity,
                      entry.co2,
                      entry.fridgeTemp,
+                     entry.fridgeHumidity,
+                     entry.fridgeDoorOpen ? 1 : 0,
                      entry.hoHActive ? 1 : 0,
                      entry.airAssistActive ? 1 : 0,
                      entry.exhaustFanActive ? 1 : 0,
