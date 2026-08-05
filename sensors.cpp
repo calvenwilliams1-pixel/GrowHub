@@ -247,9 +247,9 @@ void sensors_poll() {
   }
 
   // --- Parse data ---
-  uint16_t co2 = rawData[0];
-  float temp = -45.0f + 175.0f * ((float)rawData[1] / 65536.0f);
-  float hum = 100.0f * ((float)rawData[2] / 65536.0f);
+    uint16_t co2 = rawData[0] + SCD40_CO2_OFFSET;
+  float temp = -45.0f + 175.0f * ((float)rawData[1] / 65536.0f) + SCD40_TEMP_OFFSET;
+  float hum = 100.0f * ((float)rawData[2] / 65536.0f) + SCD40_HUM_OFFSET;
 
   // --- Range validation ---
   // co2 is uint16_t so >= 0 is always true — no check needed.

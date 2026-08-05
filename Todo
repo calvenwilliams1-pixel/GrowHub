@@ -1,0 +1,62 @@
+# GrowHub32 — Master Task List (Updated)
+
+---
+
+## COMPLETED
+
+| Branch | Item | Status |
+|--------|------|--------|
+| `v1.3` | Unified architecture merge (19 files) | ✅ Done |
+| `fix/nightmode-manual-override` | Night mode Air Assist bug + compressor override + manual control exemptions | ✅ Done |
+| `feat/v1.4-improvements` | Sensor calibration offsets | ✅ Done |
+| `feat/v1.4-improvements` | High humidity exhaust mode | ✅ Done |
+| `feat/v1.4-improvements` | RTC time setting from Web UI | ✅ Done |
+| `feat/v1.4-improvements` | GrowHub offline alert framework | ✅ Done |
+| `feat/v1.4-improvements` | Web UI visual upgrade | ✅ Done |
+| `feat/v1.4-improvements` | Web UI JS hardening | ✅ Done |
+| `feat/v1.4-improvements` | Duck review: `network.cpp` hardening (HTTP timeout, heap-free URL, MAC in ping) | ✅ Done |
+| `feat/v1.4-improvements` | RTC Web UI bridge | ✅ Done |
+| `feat/v1.4-improvements` | Fix `network.cpp` duplication + missing `if` | ✅ Done |
+| `feat/v1.4-improvements` | Document `DEFAULT_HUM_EXHAUST_ON` dormancy | ✅ Done |
+| `feat/fridge-alarms` | Fridge temperature alarm + disconnect → phone alert | ✅ Done |
+| `feat/fridge-alarms` | Kimi review: removed dead `-40.0f` sentinel | ✅ Done |
+| `feat/fridge-bridge` | Fridge module data integration (struct, state, receive, UI, logging) | ✅ Done |
+| `feat/fridge-bridge` | Duck review: CRC out-of-bounds fix, Serial outside critical section, sequence gap fix | ✅ Done |
+| `feat/relay-mapping` | Configurable relay mapping (full stack) | ✅ Done |
+| `feat/relay-mapping` | GPIO12 boot fix (Air Assist default → GPIO 26) | ✅ Done |
+| `feat/relay-mapping` | Duck review: cooldown preservation, force bypass, emergency shutdown order, 255 guard, millis() placement | ✅ Done |
+| `feat/graph-dashboard` | Design (4 revisions, 4 ducks), config, sd_logger, web_ui, mutex, CSV reader | ✅ Done |
+| `feat/graph-dashboard` | Duck review: markdown fix, HTML nesting fix, strlen→len, error responses, epoch clamp, reconnect guard | ✅ Done |
+| — | Version bump system: `WEB_UI_VERSION` define + `VERSION_BUMP` comments | ✅ Done |
+
+---
+
+## NOW: v1.4 Release Readiness
+
+| Priority | Item | Effort | Status |
+|----------|------|--------|--------|
+| 🟡 P1 | Upload `chart-4.4.0.min.js` to LittleFS partition | One-time setup | ⬜ TODO (at computer) |
+| 🟢 P3 | Update `CHANGELOG.md` with v1.4 entries | Small | ⬜ TODO |
+
+---
+
+## NEXT: Feature Branches
+
+| Priority | Branch | Item | Effort |
+|----------|--------|------|--------|
+| 🟢 P3 | `feat/satellite-display` | Satellite display node (WiFi WebSocket + OLED) | Medium |
+
+---
+
+## Design Decisions
+
+- No hardcoded equipment limits — all thresholds user-configurable via Web UI
+- `SAFETY_HUM_CEILING_HARD` at 95% is emergency brake only
+- `NTFY_ENABLED` defaults to `false` (dormant until configured)
+- `DEFAULT_HUM_EXHAUST_ON` defaults to 95% (dormant until lowered via Web UI)
+- Alive pings fire 30 min after boot, include MAC address, 2000ms HTTP timeout
+- Fridge alarms: 8°C high, 0°C low, 10-min cooldown, suppressed when heartbeat lost
+- Fridge bridge: backward-compatible 8/13-byte packets, NAN for unknown humidity, door tri-state UI
+- Relay mapping: function-to-GPIO, persisted to SD, cooldown preserved across remap, GPIO12 blacklisted, force bypasses all safeties
+- Graph dashboard: 350 points max, 8KB heap buffer, two-pass downsampling, newest-to-oldest Pass 2, Unix epoch, per-file mutex, 1h/6h/24h views, Chart.js from LittleFS
+- Version bump: change `FIRMWARE_VERSION` in `config.h`, `WEB_UI_VERSION` in `web_ui.cpp`, then Ctrl+F `VERSION_BUMP` for 2 HTML lines
