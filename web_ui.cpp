@@ -28,6 +28,11 @@
 #include "system_state.h"
 #include <ArduinoJson.h>
 
+// ============================================================
+// UPDATE VERSION HERE WHEN BUMPING FIRMWARE
+// ============================================================
+#define WEB_UI_VERSION "1.4.0"
+
 static WebServer g_server(WEB_SERVER_PORT);
 static WebSocketsServer g_webSocket(WEBSOCKET_PORT);
 static unsigned long g_lastWSUpdate = 0;
@@ -51,7 +56,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-<title>GrowHub32 v1.4</title>
+<title>GrowHub32 v1.4</title>  <!-- bump WEB_UI_VERSION above -->
 <style>
   *{margin:0;padding:0;box-sizing:border-box;}
   body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:linear-gradient(180deg,#0d1117 0%,#111827 100%);color:#c9d1d9;min-height:100vh;}
