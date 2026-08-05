@@ -15,37 +15,38 @@
 | `feat/v1.4-improvements` | Web UI visual upgrade | ✅ Done |
 | `feat/v1.4-improvements` | Web UI JS hardening | ✅ Done |
 | `feat/v1.4-improvements` | Duck review: `network.cpp` hardening (HTTP timeout, heap-free URL, MAC in ping) | ✅ Done |
-| `feat/v1.4-improvements` | RTC Web UI bridge — `setRTCTime()` JS + `"rtc"` WebSocket handler | ✅ Done |
-| `feat/v1.4-improvements` | Fix `network.cpp` — duplicate content, missing `if` in `onESPNOWReceive` | ✅ Done |
+| `feat/v1.4-improvements` | RTC Web UI bridge | ✅ Done |
+| `feat/v1.4-improvements` | Fix `network.cpp` duplication + missing `if` | ✅ Done |
 | `feat/v1.4-improvements` | Document `DEFAULT_HUM_EXHAUST_ON` dormancy | ✅ Done |
 | `feat/fridge-alarms` | Fridge temperature alarm + disconnect → phone alert | ✅ Done |
-| `feat/fridge-alarms` | Kimi review: removed dead `-40.0f` sentinel check | ✅ Done |
-| `feat/fridge-bridge` | Fridge module data integration — full stack (struct, state, receive, UI, logging) | ✅ Done |
+| `feat/fridge-alarms` | Kimi review: removed dead `-40.0f` sentinel | ✅ Done |
+| `feat/fridge-bridge` | Fridge module data integration (struct, state, receive, UI, logging) | ✅ Done |
 | `feat/fridge-bridge` | Duck review: CRC out-of-bounds fix, Serial outside critical section, sequence gap fix | ✅ Done |
+| `feat/relay-mapping` | Configurable relay mapping (full stack) | ✅ Done |
+| `feat/relay-mapping` | GPIO12 boot fix (Air Assist default → GPIO 26) | ✅ Done |
+| `feat/relay-mapping` | Duck review: cooldown preservation, force bypass, emergency shutdown order, 255 guard, millis() placement | ✅ Done |
+| — | Version bump system: `WEB_UI_VERSION` define + `VERSION_BUMP` comments | ✅ Done |
 
 ---
 
-## NOW: v1.4 Release Readiness (Before Merge)
+## NOW: v1.4 Release Readiness
 
-| Priority | Item | Effort | Files | Status |
-|----------|------|--------|-------|--------|
-| 🟡 P1 | Bump firmware version to 1.4.0 (config + boot banner + boot alert + web UI title/footer) | Tiny | `config.h`, `.ino`, `web_ui.cpp` | ⬜ TODO |
-| 🟢 P3 | Update `CHANGELOG.md` with v1.4 entries | Small | `CHANGELOG.md` | ⬜ TODO |
+| Priority | Item | Effort | Status |
+|----------|------|--------|--------|
+| 🟢 P3 | Update `CHANGELOG.md` with v1.4 entries | Small | ⬜ TODO |
 
 ---
 
-## NEXT: Feature Branches (After v1.4 Merge)
+## NEXT: Feature Branches
 
 | Priority | Branch | Item | Effort |
 |----------|--------|------|--------|
-| 🟡 P2 | `feat/relay-mapping` | Configurable relay mapping | Large |
 | 🟢 P3 | `feat/satellite-display` | Satellite display node (WiFi WebSocket + OLED) | Medium |
 | 🟢 P3 | `feat/graph-dashboard` | Dynamic graph dashboard (pinch/zoom, multi-tab, historical) | Large |
-| 🟢 P4 | Move off GPIO12 | Bootstrapping issue fix | Small |
 
 ---
 
-## Design Decisions (unchanged)
+## Design Decisions
 
 - No hardcoded equipment limits — all thresholds user-configurable via Web UI
 - `SAFETY_HUM_CEILING_HARD` at 95% is emergency brake only
@@ -54,7 +55,5 @@
 - Alive pings fire 30 min after boot, include MAC address, 2000ms HTTP timeout
 - Fridge alarms: 8°C high, 0°C low, 10-min cooldown, suppressed when heartbeat lost
 - Fridge bridge: backward-compatible 8/13-byte packets, NAN for unknown humidity, door tri-state UI
-
----
-
-Ready for the next feature branch when you are — `feat/relay-mapping` (Large), `feat/satellite-display` (Medium), or `feat/graph-dashboard` (Large).
+- Relay mapping: function-to-GPIO, persisted to SD, cooldown preserved across remap, GPIO12 blacklisted, force bypasses all safeties
+- Version bump: change `FIRMWARE_VERSION` in `config.h`, `WEB_UI_VERSION` in `web_ui.cpp`, then Ctrl+F `VERSION_BUMP` for 2 HTML lines
