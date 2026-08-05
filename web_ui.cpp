@@ -9,9 +9,8 @@
              Updated UI text for manual override description.
              Updated default values for 88% ceiling and 20-min calibration.
 
-   This serves a single-page application directly from program memory
-   to avoid SPIFFS/LittleFS dependency. The HTML, CSS, and JavaScript
-   are embedded as raw string literals for maximum reliability.
+   This serves a single-page application from program memory.
+   Chart.js is served from LittleFS for cache efficiency (v1.4).
 
    The UI connects via WebSocket on port 81 for real-time updates.
    HTTP server runs on port 80.
@@ -141,7 +140,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   <button class="tab" onclick="switchTab(this, 'config')">Config</button>
   <button class="tab" onclick="switchTab(this, 'calibration')">Calibrate</button>
   <button class="tab" onclick="switchTab(this, 'simulation')">Simulate</button>
-   <button class="tab" onclick="switchTab(this, 'graphs')">Graphs</button>
+  <button class="tab" onclick="switchTab(this, 'graphs')">Graphs</button>
   <button class="tab" onclick="switchTab(this, 'logs')">Logs</button>
 </div>
 
@@ -162,7 +161,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
       <div class="value" id="co2Value">--</div>
       <div class="unit">ppm</div>
     </div>
-        <div class="sensor-card">
+    <div class="sensor-card">
       <div class="label">Fridge</div>
       <div class="value" id="fridgeValue">--</div>
       <div class="unit">C / <span id="fridgeHumValue">--</span>%</div>
@@ -209,7 +208,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
     <h3>Humidity Thresholds</h3>
     <div class="config-row"><label>HOH Floor (%)</label><input type="number" id="humHoHFloor" value="80" step="1"></div>
     <div class="config-row"><label>Assist Floor (%)</label><input type="number" id="humAssistFloor" value="70" step="1"></div>
-   <div class="config-row"><label>Exhaust ON (%)</label><input type="number" id="humExhaustOn" value="92" step="1"></div>
+    <div class="config-row"><label>Exhaust ON (%)</label><input type="number" id="humExhaustOn" value="92" step="1"></div>
     <div class="config-row"><label>Ceiling (%)</label><input type="number" id="humCeiling" value="88" step="1"></div>
     <div class="config-row"><label>Assist ON (sec)</label><input type="number" id="assistOn" value="3" step="1"></div>
     <div class="config-row"><label>Assist OFF (sec)</label><input type="number" id="assistOff" value="10" step="1"></div>
@@ -225,7 +224,8 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
     <div class="config-row"><label>Set Date/Time</label><input type="datetime-local" id="rtcDateTime"></div>
     <button class="btn btn-on" onclick="setRTCTime()">Set RTC Time</button>
   </div>
-        <h3>Adaptive Learning</h3>
+  <div class="config-group">
+    <h3>Adaptive Learning</h3>
     <div class="config-row"><label>EMA Weight (0.10-0.50)</label><input type="number" id="emaWeight" value="0.30" step="0.05" min="0.10" max="0.50"></div>
   </div>
   <div class="config-group">
@@ -305,7 +305,7 @@ function connectWS(){
   ws = new WebSocket('ws://' + location.hostname + ':81/');
   ws.onopen = function(){
     document.getElementById('connectionStatus').textContent = 'Connected | ' + location.hostname;
-      reconnectDelay = 3000;
+    reconnectDelay = 3000;
     initGraph();
     requestHistorical();
   };
@@ -323,7 +323,7 @@ function connectWS(){
     reconnectDelay = Math.min(reconnectDelay * 2, 30000);
   };
   ws.onerror = function(){
-    ws.close();
+    if (ws && ws.readyState !== WebSocket.CLOSED) ws.close();
   };
 }
 
@@ -331,7 +331,7 @@ function handleMessage(msg){
   switch(msg.type){
     case 0: updateSensors(msg); break;
     case 1: updateRelays(msg); updateOverrideStatus(msg); break;
-       case 2:
+    case 2:
       if(msg.message === "CONFIRM_LOUD_NIGHT"){
         var relayNames = ["Humidifier","Air Assist","Exhaust Fan","Compressor"];
         var relayName = relayNames[msg.relay] || "This device";
@@ -345,7 +345,7 @@ function handleMessage(msg){
     case 3: updateConfig(msg); break;
     case 4: updateCalibration(msg); break;
     case 5: addLog(msg.message, msg.level || 'info'); break;
-      case 99:
+    case 99:
       if(msg.simResult){
         document.getElementById('simResult').textContent = msg.simResult;
       }
@@ -359,7 +359,7 @@ function updateSensors(msg){
   document.getElementById('humValue').textContent = (typeof msg.hum === 'number') ? msg.hum.toFixed(1) : '--';
   document.getElementById('co2Value').textContent = (msg.co2 != null) ? msg.co2 : '--';
   document.getElementById('fridgeValue').textContent = (typeof msg.fridge === 'number') ? msg.fridge.toFixed(1) : '--';
-    document.getElementById('fridgeHumValue').textContent = (typeof msg.fridgeHum === 'number') ? msg.fridgeHum.toFixed(1) : '--';
+  document.getElementById('fridgeHumValue').textContent = (typeof msg.fridgeHum === 'number') ? msg.fridgeHum.toFixed(1) : '--';
   var doorEl = document.getElementById('fridgeDoorValue');
   if (msg.fridgeLost) {
     doorEl.textContent = 'OFFLINE';
@@ -393,7 +393,7 @@ function updateSensors(msg){
   document.getElementById('fridgeStatus').textContent = msg.fridgeLost ? 'OFFLINE' : 'Online';
   document.getElementById('simCurrentRH').textContent = (typeof msg.hum === 'number') ? msg.hum.toFixed(1) : '--';
   document.getElementById('simBand').textContent = (msg.activeBand != null) ? 'Band ' + msg.activeBand : '--';
-document.getElementById('simConfidence').textContent = (typeof msg.confidence === 'number') ? (msg.confidence * 100).toFixed(1) + '%' : '--';
+  document.getElementById('simConfidence').textContent = (typeof msg.confidence === 'number') ? (msg.confidence * 100).toFixed(1) + '%' : '--';
   document.getElementById('controlMode').textContent = msg.controlMode || '--';
 
   if (typeof msg.temp === 'number') feedLiveGraph(0, msg.temp);
@@ -490,6 +490,7 @@ function addLog(message, level){
     logArea.removeChild(logArea.lastChild);
   }
 }
+
 function switchTab(element, tabId){
   document.querySelectorAll('.tab').forEach(function(t){ t.classList.remove('active'); });
   document.querySelectorAll('.tab-content').forEach(function(c){ c.classList.remove('active'); });
@@ -505,7 +506,6 @@ function relayCmd(index, state){
   }
 }
 
-```javascript
 function saveThresholds(){
   var hohFloor = parseFloat(document.getElementById('humHoHFloor').value);
   var assistFloor = parseFloat(document.getElementById('humAssistFloor').value);
@@ -517,7 +517,7 @@ function saveThresholds(){
   var co2Emer = parseInt(document.getElementById('co2Emergency').value, 10);
   var exhaustOn = parseFloat(document.getElementById('humExhaustOn').value);
 
-    if (isNaN(hohFloor) || isNaN(assistFloor) || isNaN(ceiling) || isNaN(exhaustOn)) {
+  if (isNaN(hohFloor) || isNaN(assistFloor) || isNaN(ceiling) || isNaN(exhaustOn)) {
     addLog('Invalid humidity threshold value', 'warn');
     return;
   }
@@ -548,7 +548,6 @@ function saveThresholds(){
 
   addLog('Settings saved!', 'info');
 }
-```
 
 function startCalibration(){
   sendWS({type: 6, cmd: 'calibrate_start'});
@@ -663,7 +662,9 @@ function initGraph() {
       }
     }
   });
+  graphChart.data.datasets[0].data = liveBuffers[graphSensor];
   updateGraphLabels();
+  graphChart.update('none');
 }
 
 function updateGraphLabels() {
@@ -693,12 +694,12 @@ function setGraphRange(seconds, btn) {
 }
 
 function requestHistorical() {
-  var now = Math.floor(Date.now() / 1000);
-  if (now - graphLastRequestTime < 5) return;
+  var now = Date.now();
+  if (now - graphLastRequestTime < 5000) return;
   graphLastRequestTime = now;
   graphRequestId = (graphRequestId + 1) & 0xFFFF;
-  var start = now - graphRange;
-  sendWS({type: 100, sensor: graphSensor, start: start, end: now, max: 350, rid: graphRequestId});
+  var start = Math.floor(now / 1000) - graphRange;
+  sendWS({type: 100, sensor: graphSensor, start: start, end: Math.floor(now / 1000), max: 350, rid: graphRequestId});
 }
 
 function feedLiveGraph(sensor, value) {
@@ -721,7 +722,7 @@ function feedLiveGraph(sensor, value) {
 function handleGraphResponse(msg) {
   if (msg.rid !== graphRequestId || msg.s !== graphSensor) return;
   if (!graphChart) return;
-  if (msg.error) return;
+  if (msg.error) { console.warn('Graph error:', msg.error); return; }
   var points = (msg.p || []).map(function(p){ return {x: p[0], y: p[1]}; });
   graphChart.data.datasets[1].data = points;
   graphChart.update('none');
@@ -743,6 +744,7 @@ static void handleRoot() {
 }
 
 static void handleNotFound() {
+  g_server.sendHeader("Cache-Control", "no-store");
   g_server.send(404, "text/plain", "404 Not Found");
 }
 
@@ -779,7 +781,7 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
       uint8_t msgType = doc["type"] | 0;
       const char* cmd = doc["cmd"] | "";
 
-                 if (msgType == WS_GRAPH_DATA) {
+      if (msgType == WS_GRAPH_DATA) {
         static unsigned long g_lastGraphRequest[MAX_WS_CLIENTS] = {0};
         unsigned long now = millis();
         if (num >= MAX_WS_CLIENTS) return;
@@ -794,15 +796,17 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
         req.requestId = doc["rid"] | 0;
 
         if (req.sensorType > 3) return;
+        // Sanity: reject epochs before 2020 to prevent 1970 DoS loop
+        if (req.startEpoch < 1577836800) req.startEpoch = 1577836800;
+        if (req.endEpoch > 0 && req.startEpoch >= req.endEpoch) return;
+        if (req.maxPoints == 0 || req.maxPoints > GRAPH_MAX_RESPONSE_POINTS) req.maxPoints = GRAPH_MAX_RESPONSE_POINTS;
 
         char* graphOutput = (char*)heap_caps_malloc(GRAPH_RESPONSE_BUFFER_SIZE, MALLOC_CAP_8BIT);
         if (!graphOutput) {
-          StaticJsonDocument<128> errDoc;
-          errDoc["type"] = WS_GRAPH_DATA;
-          errDoc["error"] = "NO_MEMORY";
-          errDoc["rid"] = req.requestId;
-          char errOutput[128];
-          serializeJson(errDoc, errOutput, sizeof(errOutput));
+          char errOutput[64];
+          snprintf(errOutput, sizeof(errOutput),
+                   "{\"type\":100,\"s\":%d,\"rid\":%u,\"p\":[]}",
+                   req.sensorType, req.requestId);
           g_webSocket.sendTXT(num, (const uint8_t*)errOutput, strlen(errOutput));
           break;
         }
@@ -810,6 +814,12 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
         size_t len = sdLogger_getHistoricalData(&req, graphOutput, GRAPH_RESPONSE_BUFFER_SIZE);
         if (len > 0) {
           g_webSocket.sendTXT(num, (const uint8_t*)graphOutput, len);
+        } else {
+          char errOutput[64];
+          snprintf(errOutput, sizeof(errOutput),
+                   "{\"type\":100,\"s\":%d,\"rid\":%u,\"p\":[]}",
+                   req.sensorType, req.requestId);
+          g_webSocket.sendTXT(num, (const uint8_t*)errOutput, strlen(errOutput));
         }
         heap_caps_free(graphOutput);
         break;
@@ -827,9 +837,6 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
           return;
         }
 
-        // Night mode confirmation for loud relays.
-        // If night mode is active, user is trying to turn ON a loud relay,
-        // and hasn't confirmed yet, send a confirmation request back.
         if (state && !confirmed && relayManager_isRelayLoud(index)) {
           bool nightMode;
           portENTER_CRITICAL(&g_stateMux);
@@ -843,14 +850,12 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
             confirmDoc["level"] = "warn";
             confirmDoc["relay"] = index;
             char confirmOutput[128];
-            serializeJson(confirmDoc, confirmOutput, sizeof(confirmOutput));
-            g_webSocket.sendTXT(num, (const uint8_t*)confirmOutput, strlen(confirmOutput));
+            size_t confirmLen = serializeJson(confirmDoc, confirmOutput, sizeof(confirmOutput));
+            g_webSocket.sendTXT(num, (const uint8_t*)confirmOutput, confirmLen);
             return;
           }
         }
 
-        // If compressor is being turned ON and confirmed during night mode,
-        // activate the compressor override so continuous enforcement respects it.
         if (state && confirmed && index == RELAY_COMPRESSOR) {
           bool nightMode;
           portENTER_CRITICAL(&g_stateMux);
@@ -931,8 +936,8 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
           responseDoc["message"] = "RTC time updated successfully";
           responseDoc["level"] = "info";
           char response[128];
-          serializeJson(responseDoc, response, sizeof(response));
-          g_webSocket.sendTXT(num, (const uint8_t*)response, strlen(response));
+          size_t responseLen = serializeJson(responseDoc, response, sizeof(response));
+          g_webSocket.sendTXT(num, (const uint8_t*)response, responseLen);
         } else {
           Serial.println(F("[WS] RTC time set FAILED"));
           StaticJsonDocument<128> responseDoc;
@@ -940,11 +945,10 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
           responseDoc["message"] = "Failed to set RTC time - check date values";
           responseDoc["level"] = "warn";
           char response[128];
-          serializeJson(responseDoc, response, sizeof(response));
-          g_webSocket.sendTXT(num, (const uint8_t*)response, strlen(response));
+          size_t responseLen = serializeJson(responseDoc, response, sizeof(response));
+          g_webSocket.sendTXT(num, (const uint8_t*)response, responseLen);
         }
       }
-         
       else if (msgType == WS_COMMAND && strcmp(cmd, "calibrate_start") == 0) {
         adaptive_startCalibration();
       }
@@ -954,7 +958,7 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
       else if (msgType == WS_COMMAND && strcmp(cmd, "resume_automation") == 0) {
         automation_deactivateAllOverrides();
       }
-               else if (msgType == WS_COMMAND && strcmp(cmd, "relay_mapping") == 0) {
+      else if (msgType == WS_COMMAND && strcmp(cmd, "relay_mapping") == 0) {
         const RelayMapping* current = relayManager_getMapping();
         RelayMapping newMapping;
         newMapping.magic = RELAY_MAPPING_MAGIC;
@@ -973,16 +977,16 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
           responseDoc["message"] = "Relay mapping applied and saved";
           responseDoc["level"] = "info";
           char response[128];
-          serializeJson(responseDoc, response, sizeof(response));
-          g_webSocket.sendTXT(num, (const uint8_t*)response, strlen(response));
+          size_t responseLen = serializeJson(responseDoc, response, sizeof(response));
+          g_webSocket.sendTXT(num, (const uint8_t*)response, responseLen);
         } else {
           StaticJsonDocument<128> responseDoc;
           responseDoc["type"] = 2;
           responseDoc["message"] = "Invalid relay mapping — check pins";
           responseDoc["level"] = "warn";
           char response[128];
-          serializeJson(responseDoc, response, sizeof(response));
-          g_webSocket.sendTXT(num, (const uint8_t*)response, strlen(response));
+          size_t responseLen = serializeJson(responseDoc, response, sizeof(response));
+          g_webSocket.sendTXT(num, (const uint8_t*)response, responseLen);
         }
       }
       else if (msgType == WS_COMMAND && strcmp(cmd, "simulate") == 0) {
@@ -1003,11 +1007,11 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
         }
 
         char response[128];
-        size_t len = serializeJson(responseDoc, response, sizeof(response));
-        if (len >= sizeof(response)) {
+        size_t responseLen = serializeJson(responseDoc, response, sizeof(response));
+        if (responseLen >= sizeof(response)) {
           Serial.println(F("[WS] WARNING: Simulation response JSON truncated"));
         }
-        g_webSocket.sendTXT(num, (const uint8_t*)response, strlen(response));
+        g_webSocket.sendTXT(num, (const uint8_t*)response, responseLen);
       }
       break;
     }
@@ -1082,9 +1086,9 @@ static void sendSensorUpdate() {
   size_t len = serializeJson(doc, output, sizeof(output));
   if (len >= sizeof(output)) {
     Serial.println(F("[WS] WARNING: Sensor update JSON truncated — increase buffer size"));
-     return;
+    return;
   }
-  g_webSocket.broadcastTXT((const uint8_t*)output, strlen(output));
+  g_webSocket.broadcastTXT((const uint8_t*)output, len);
 }
 
 static void sendSystemStatus() {
@@ -1113,9 +1117,9 @@ static void sendSystemStatus() {
   size_t len = serializeJson(doc, output, sizeof(output));
   if (len >= sizeof(output)) {
     Serial.println(F("[WS] WARNING: System status JSON truncated — increase buffer size"));
-    return; 
+    return;
   }
-  g_webSocket.broadcastTXT((const uint8_t*)output, strlen(output));
+  g_webSocket.broadcastTXT((const uint8_t*)output, len);
 }
 
 static void sendConfigUpdate(uint8_t clientNum) {
@@ -1142,9 +1146,9 @@ static void sendConfigUpdate(uint8_t clientNum) {
   size_t len = serializeJson(doc, output, sizeof(output));
   if (len >= sizeof(output)) {
     Serial.println(F("[WS] WARNING: Config update JSON truncated — increase buffer size"));
-     return;
+    return;
   }
-  g_webSocket.sendTXT(clientNum, (const uint8_t*)output, strlen(output));
+  g_webSocket.sendTXT(clientNum, (const uint8_t*)output, len);
 }
 
 static void sendCalibrationUpdate() {
@@ -1173,9 +1177,9 @@ static void sendCalibrationUpdate() {
   size_t len = serializeJson(calibDoc, output, sizeof(output));
   if (len >= sizeof(output)) {
     Serial.println(F("[WS] WARNING: Calibration update JSON truncated — increase buffer size"));
-     return;
+    return;
   }
-  g_webSocket.broadcastTXT((const uint8_t*)output, strlen(output));
+  g_webSocket.broadcastTXT((const uint8_t*)output, len);
 }
 
 // ============================================================
@@ -1185,7 +1189,7 @@ static void sendCalibrationUpdate() {
 bool webUI_init() {
   Serial.println(F("[WEB] Initializing web server..."));
 
-   g_server.on("/chart-4.4.0.min.js", []() {
+  g_server.on("/chart-4.4.0.min.js", []() {
     if (LittleFS.exists("/chart-4.4.0.min.js")) {
       g_server.sendHeader("Cache-Control", "max-age=31536000, immutable");
       File f = LittleFS.open("/chart-4.4.0.min.js", "r");
@@ -1198,6 +1202,7 @@ bool webUI_init() {
 
   g_server.on("/", handleRoot);
   g_server.onNotFound(handleNotFound);
+
   g_server.begin();
   Serial.print(F("[WEB] HTTP server started on port "));
   Serial.println(WEB_SERVER_PORT);
@@ -1246,9 +1251,9 @@ void webUI_pushUpdates() {
       size_t len = serializeJson(calibDoc, outputActive, sizeof(outputActive));
       if (len >= sizeof(outputActive)) {
         Serial.println(F("[WS] WARNING: Calibration active JSON truncated"));
-        return; 
+        return;
       }
-      g_webSocket.broadcastTXT((const uint8_t*)outputActive, strlen(outputActive));
+      g_webSocket.broadcastTXT((const uint8_t*)outputActive, len);
     }
 
     if (!isActive && wasActive) {
@@ -1261,9 +1266,9 @@ void webUI_pushUpdates() {
       size_t len = serializeJson(calibDoc, outputInactive, sizeof(outputInactive));
       if (len >= sizeof(outputInactive)) {
         Serial.println(F("[WS] WARNING: Calibration inactive JSON truncated"));
-         return;
+        return;
       }
-      g_webSocket.broadcastTXT((const uint8_t*)outputInactive, strlen(outputInactive));
+      g_webSocket.broadcastTXT((const uint8_t*)outputInactive, len);
     }
 
     wasActive = isActive;
