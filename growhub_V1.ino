@@ -107,7 +107,7 @@ void setup() {
 
   Serial.println(F(""));
   Serial.println(F("============================================"));
-  Serial.println(F("       GrowHub32 Main Node v1.4.0"));
+  Serial.println(F("       GrowHub32 Main Node v" FIRMWARE_VERSION));
   Serial.println(F("  Environmental Automation Controller"));
   Serial.println(F("============================================"));
   Serial.println(F(""));
@@ -240,8 +240,8 @@ void setup() {
   Serial.println(OTA_PORT);
   Serial.println(F("============================================"));
   Serial.println(F(""));
-  network_sendAlert("GrowHub32 Online", "Main Node v1.4.0 booted successfully.");
-  sdLogger_logSystemEvent("System boot complete - v1.4.0");
+ network_sendAlert("GrowHub32 Online", "Main Node v" FIRMWARE_VERSION " booted successfully.");
+  sdLogger_logSystemEvent("System boot complete - v" FIRMWARE_VERSION);
 
   g_lastSensorPoll = millis();
   g_lastLogWrite = millis();
