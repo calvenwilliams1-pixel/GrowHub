@@ -51,6 +51,7 @@ String network_getIPAddress();
 float network_getFridgeTemp();
 float network_getFridgeHumidity();
 bool network_isFridgeDoorOpen();
+uint8_t network_getActiveAlerts();
 bool network_isFridgeHeartbeatLost();
 uint16_t network_getFridgeLastSequence();
 // ESP-NOW callback (runs in WiFi task context)
