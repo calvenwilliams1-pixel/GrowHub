@@ -38,7 +38,7 @@
 #include "web_ui.h"
 #include "adaptive.h"
 #include "safety.h"
-#include <LittleFS.h>
+#include <SPIFFS.h>
 #include <math.h>
 // ============================================================
 // External Declarations
