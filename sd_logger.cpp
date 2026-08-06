@@ -397,67 +397,6 @@ bool sdLogger_saveCache() {
 }
 
 // ============================================
-// Compressor Cooldown Persistence (GH-SAFE-002 persistent)
-// ============================================
-
-bool sdLogger_saveCooldownState() {
-  if (!g_sdAvailable) return false;
-
-  g_runtimeCache.compressorCooldownActive = relayManager_isCompressorCooldownActive();
-  unsigned long offEpoch = g_relays[RELAY_COMPRESSOR].cooldownOffEpoch;
-
-  if (offEpoch > 0) {
-    g_runtimeCache.compressorLastOffTimestamp = offEpoch;
-  } else if (g_runtimeCache.compressorLastOffTimestamp == 0) {
-    Serial.println(F("[SD] WARNING: RTC unavailable at compressor OFF - no timestamp to persist"));
-  }
-
-  bool saved = sdLogger_saveCache();
-
-  if (saved) {
-    Serial.print(F("[SD] Cooldown state persisted: "));
-    Serial.print(g_runtimeCache.compressorCooldownActive ? "ACTIVE" : "inactive");
-    if (g_runtimeCache.compressorLastOffTimestamp > 0) {
-      Serial.print(F(", offEpoch: "));
-      Serial.print(g_runtimeCache.compressorLastOffTimestamp);
-    }
-    Serial.println();
-  }
-
-  return saved;
-}
-
-bool sdLogger_loadCooldownState() {
-  if (!g_sdAvailable) {
-    Serial.println(F("[SD] No SD - cooldown state not restored"));
-    return false;
-  }
-
-  if (!g_runtimeCache.compressorCooldownActive) {
-    Serial.println(F("[SD] No active cooldown to restore"));
-    return false;
-  }
-
-  Serial.println(F("[SD] Restoring compressor cooldown state from cache..."));
-  Serial.print(F("[SD]   Cached offEpoch: "));
-  Serial.println(g_runtimeCache.compressorLastOffTimestamp);
-
-  relayManager_loadCooldownState(
-    g_runtimeCache.compressorLastOffTimestamp,
-    g_runtimeCache.compressorCooldownActive
-  );
-
-  bool stillActive = relayManager_isCompressorCooldownActive();
-  if (!stillActive && g_runtimeCache.compressorCooldownActive) {
-    g_runtimeCache.compressorCooldownActive = false;
-    sdLogger_saveCache();
-    Serial.println(F("[SD] Cooldown expired during downtime - cache updated"));
-  }
-
-  return true;
-}
-
-// ============================================
 // Log Management
 // ============================================
 
