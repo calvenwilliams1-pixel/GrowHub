@@ -70,6 +70,7 @@ struct DailySummary {
 
 // Configuration cache structure (persisted to SD for reboot recovery)
 struct RuntimeCache {
+  uint8_t version;           // Cache format version (2 = v1.5+)
   AutomationThresholds thresholds;
   float emaWeight;
   unsigned long totalRuntimeHours;
