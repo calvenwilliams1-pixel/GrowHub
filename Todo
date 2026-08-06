@@ -1,62 +1,38 @@
-# GrowHub32 — v1.5 Task List
+That was the last P1 item. Here's the updated todo:
 
 ---
 
-## Testing in Progress
+# GrowHub32 — v1.5 Task List (Updated)
+
+## ✅ Done This Session
 
 | Priority | Item | Status |
 |----------|------|--------|
-| 🔴 P0 | Calibration test — verify STABILIZE → RISE phase transition | 🔄 Running |
+| 🔴 P0 | Compressor cooldown removed — shop compressor with own pressure switch | ✅ Done |
+| 🔴 P0 | Air Assist exempt from relay cycle limits | ✅ Done |
+| 🔴 P0 | Compressor ON at boot, OFF at night, ON at morning | ✅ Done |
+| 🔴 P0 | `COMPRESSOR_MAX_ON_MS` enforcement removed from `.ino` | ✅ Done |
+| 🔴 P0 | Manual override no longer kills other relay | ✅ Done |
+| 🟠 P1 | Relay Identify button — toggles at 2Hz for 5 seconds | ✅ Done |
+| 🟢 P3 | Graph live feed changed to 5-second intervals | ✅ Done |
+| 🟢 P3 | Chart.js served from SPIFFS (was LittleFS) | ✅ Done |
 
 ---
 
-## Bugs Found During Testing
-
-| Priority | Item | Status |
-|----------|------|--------|
-| 🔴 P0 | Manual override kills other humidity relay when one is toggled | ⬜ TODO |
-| 🔴 P0 | Air Assist blocked by relay cycle limit (2/min) — exempt burst-cycled relays | ⬜ TODO |
-| 🔴 P0 | Compressor never turns on at boot — needs ON at boot, OFF at night, ON at morning | ⬜ TODO |
-| 🔴 P0 | Compressor shouldn't have cooldown — it's a shop compressor with its own pressure switch | ⬜ TODO |
-| 🔴 P0 | `COMPRESSOR_MAX_ON_MS` check in `.ino` loop shouldn't force compressor off — let its own switch handle it | ⬜ TODO |
-
----
-
-## Relay Mapping UX Improvements
+## Remaining
 
 | Priority | Item | Effort |
 |----------|------|--------|
-| 🟠 P1 | Add "Identify" button per relay — toggles every 500ms for 5 seconds | Small |
-| 🟠 P1 | Rename mapping from GPIO-based to position-based (Relay 1-4) with function assignment | Medium |
+| 🟠 P1 | Rename relay mapping from GPIO-based to position-based (Relay 1-4) | Medium |
 | 🟡 P2 | Visual indicator showing which relay position maps to which function | Small |
-
----
-
-## Features
-
-| Priority | Item | Effort |
-|----------|------|--------|
-| 🟡 P2 | Automated cooling: compressor ON when temp exceeds user-configurable threshold | Medium |
-| 🟢 P3 | `feat/satellite-display` — Separate ESP32 with OLED, WiFi WebSocket display | Medium |
-| 🟢 P3 | Upload `chart-4.4.0.min.js` to LittleFS (pending from v1.4) | Setup |
-
----
-
-## Technical Debt
-
-| Priority | Item | Effort |
-|----------|------|--------|
-| 🟢 P3 | Add cache versioning to `RuntimeCache` (prevent full reset on format change) | Small |
-| 🟢 P3 | Update `CHANGELOG.md` with v1.4/v1.5 entries | Small |
-| 🟢 P3 | Compile-time assert for `sizeof(FridgePacket) == 13` | Tiny |
+| 🟡 P2 | Automated cooling trigger based on temperature threshold | Medium |
+| 🟢 P3 | `feat/satellite-display` — Separate ESP32 OLED WebSocket display | Medium |
+| 🟢 P3 | Add cache versioning to `RuntimeCache` | Small |
+| 🟢 P3 | Update `CHANGELOG.md` | Small |
+| 🟢 P3 | `sizeof(FridgePacket) == 13` compile-time assert | Tiny |
 | 🟢 P3 | Fix double `<div class="config-group">` in Config tab | Tiny |
-| 🟢 P3 | Remove `COMPRESSOR_MAX_ON_MS` enforcement from `.ino` loop | Tiny |
+| 🟢 P3 | Graph performance — reduce max points, optimize rendering | Small |
 
 ---
 
-## Design Decisions
-
-- **Compressor:** ON at boot, OFF during night mode, ON at morning. No cooldown. No max runtime enforcement. Shop compressor with own pressure switch handles all regulation.
-- **Burst-cycled relays:** Exempt from relay cycle limits. Only the compressor (if it were a fridge-type) would need rate limiting.
-- **Manual override:** Activate override on first toggle only. Subsequent toggles within 10-min window must not re-trigger `stopHumidityOutputs()`.
-- **Relay identify:** Simple JS button that toggles at 2Hz for 5 seconds via WebSocket commands. No backend changes.
+Want to tackle the relay mapping rename (P1) or something else?
