@@ -1,59 +1,50 @@
-# GrowHub32 — v1.6 Task List
+# GrowHub32 — Master Task List (Updated)
 
 ---
 
-## DONE (v1.5)
+## COMPLETED
 
-| Priority | Item | Status |
+| Branch | Item | Status |
+|--------|------|--------|
+| `v1.3` | Unified architecture merge (19 files) | ✅ Done |
+| `fix/nightmode-manual-override` | Night mode Air Assist bug + compressor override + manual control exemptions | ✅ Done |
+| `feat/v1.4-improvements` | Sensor calibration offsets | ✅ Done |
+| `feat/v1.4-improvements` | High humidity exhaust mode | ✅ Done |
+| `feat/v1.4-improvements` | RTC time setting from Web UI | ✅ Done |
+| `feat/v1.4-improvements` | GrowHub offline alert framework | ✅ Done |
+| `feat/v1.4-improvements` | Web UI visual upgrade | ✅ Done |
+| `feat/v1.4-improvements` | Web UI JS hardening | ✅ Done |
+| `feat/v1.4-improvements` | Duck review: `network.cpp` hardening | ✅ Done |
+| `feat/v1.4-improvements` | RTC Web UI bridge | ✅ Done |
+| `feat/v1.4-improvements` | Fix `network.cpp` duplication | ✅ Done |
+| `feat/v1.4-improvements` | Document `DEFAULT_HUM_EXHAUST_ON` dormancy | ✅ Done |
+| `feat/fridge-alarms` | Fridge temperature alarm + disconnect → phone alert | ✅ Done |
+| `feat/fridge-alarms` | Kimi review: removed dead `-40.0f` sentinel | ✅ Done |
+| `feat/fridge-bridge` | Fridge module data integration | ✅ Done |
+| `feat/fridge-bridge` | Duck review: CRC fix, Serial fix, sequence fix | ✅ Done |
+| `feat/relay-mapping` | Configurable relay mapping (full stack) | ✅ Done |
+| `feat/relay-mapping` | GPIO12 boot fix (Air Assist default → GPIO 26) | ✅ Done |
+| `feat/relay-mapping` | Duck review: cooldown preservation, force bypass, emergency shutdown, 255 guard | ✅ Done |
+| `feat/graph-dashboard` | Design + implementation (4 revisions, 4 ducks) | ✅ Done |
+| — | Version bump system: `WEB_UI_VERSION` + `VERSION_BUMP` | ✅ Done |
+| — | Compressor rework (no cooldown, ON at boot, OFF at night) | ✅ Done |
+| — | Air Assist exempt from cycle limits | ✅ Done |
+| — | Manual override fix | ✅ Done |
+| — | Cache versioning | ✅ Done |
+| — | CHANGELOG updated | ✅ Done |
+| `feat/v1.6-dashboard-refresh` | CSS gradients, pill tabs, relay card tap-to-override, toast panel | ✅ Done |
+| `feat/v1.6-dashboard-refresh` | Duck review: listener fix, touch-action, data-relay-state, DOM names, pointer-events | ✅ Done |
+| `feat/v1.6-alerts-panel` | Bitmask alerts card — sensor fault, dry-run, fan stall, fridge offline | ✅ Done |
+| `feat/v1.6-alerts-panel` | Duck review: accessor functions, night mode removed, bitmask change detection | ✅ Done |
+| `feat/v1.6-weather-card` | Open-Meteo API, configurable lat/lon, emoji conditions, stale detection | ✅ Done |
+| `feat/v1.6-weather-card` | Duck review: HTTP not HTTPS, 3s timeout, boot fetch, snprintf URL, explicit emoji ranges, validation | ✅ Done |
+
+---
+
+## Remaining
+
+| Priority | Item | Effort |
 |----------|------|--------|
-| 🔴 P0 | Compressor rework (no cooldown, ON at boot, OFF at night) | ✅ |
-| 🔴 P0 | Air Assist exempt from cycle limits | ✅ |
-| 🔴 P0 | Manual override fix | ✅ |
-| 🟠 P1 | Position-based relay mapping | ✅ |
-| 🟠 P1 | Relay Identify button | ✅ |
-| 🟡 P2 | Safe hardware remap, EMA bounds, UI fixes | ✅ |
-| 🟢 P3 | Cache versioning, CHANGELOG, Graph 5s feed | ✅ |
-
----
-
-## v1.6 — Dashboard Refresh (Pure Frontend)
-
-| Priority | Item | Details | Effort |
-|----------|------|---------|--------|
-| 🟡 P2 | Visual refresh | Gradient cards, box-shadows, colored tab pills, relay card glow on active | Medium |
-| 🟡 P2 | Mascot | CSS-animated mushroom emoji, GPU-accelerated, reduced-motion fallback | Small |
-| 🟡 P2 | Tap-to-override | Double-tap relay cards to toggle ON/OFF. 5-min confirmation cooldown. `data-relay-index` attributes. | Medium |
-
----
-
-## v1.6 — Alerts Panel (Backend + Frontend)
-
-| Priority | Item | Details | Effort |
-|----------|------|---------|--------|
-| 🟡 P2 | Alerts panel on dashboard | Shows dry-run, fan stall, sensor fault, fridge offline. Sent on state change + on WS connect. Severity color-coded. | Medium |
-
----
-
-## v1.6 — Weather Card (Backend + Frontend)
-
-| Priority | Item | Details | Effort |
-|----------|------|---------|--------|
-| 🟡 P2 | Weather card | Open-Meteo API via HTTPS, configurable lat/lon in Config tab, stale-data detection, weather emoji mapping | Medium |
-
----
-
-## v1.6 — Override Timeout (Backend + Frontend)
-
-| Priority | Item | Details | Effort |
-|----------|------|---------|--------|
-| 🟡 P2 | Configurable override timeout | Number input + quick-select (10min/1h/6h/24h), server-validated, persisted to RuntimeCache | Medium |
-
----
-
-## Design Decisions
-
-- **Dashboard refresh ships alone** — zero backend changes, pure `web_ui.cpp`
-- **Tap-to-override uses double-tap** — no native `confirm()` dialogs, glove-friendly
-- **Alerts panel is its own item** — needs backend to read safety flags and push on WS connect
-- **Weather uses configurable lat/lon** — no GPS module, user sets coordinates in Config tab
-- **Override timeout persisted** — survives reboots via RuntimeCache
+| 🟡 P2 | Configurable override timeout (10min/1h/6h/24h) | Medium |
+| 🟢 P3 | `feat/satellite-display` — Separate ESP32 OLED WebSocket display | Medium |
+| 🟢 P3 | Mascot — CSS animated mushroom | Small |
