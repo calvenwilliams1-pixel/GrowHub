@@ -1,8 +1,6 @@
-That was the last P1 item. Here's the updated todo:
+# GrowHub32 — v1.5 Task List (Updated)
 
 ---
-
-# GrowHub32 — v1.5 Task List (Updated)
 
 ## ✅ Done This Session
 
@@ -14,8 +12,27 @@ That was the last P1 item. Here's the updated todo:
 | 🔴 P0 | `COMPRESSOR_MAX_ON_MS` enforcement removed from `.ino` | ✅ Done |
 | 🔴 P0 | Manual override no longer kills other relay | ✅ Done |
 | 🟠 P1 | Relay Identify button — toggles at 2Hz for 5 seconds | ✅ Done |
+| 🟠 P1 | Relay mapping renamed to position-based (Position 1-4 + function dropdowns) | ✅ Done |
+| 🟠 P1 | Duplicate function validation — C++ backend + JS client-side | ✅ Done |
+| 🟠 P1 | Magic number bumped to `0x524E` for cache migration | ✅ Done |
+| 🟠 P1 | `__attribute__((packed))` + `static_assert` on `RelayMapping` | ✅ Done |
+| 🟠 P1 | `relayManager_validateMapping()` extracted — shared by init + update | ✅ Done |
+| 🟡 P2 | Safe hardware transition on remap (all OFF, tristate old, init new) | ✅ Done |
+| 🟡 P2 | EMA weight bounds check in JS | ✅ Done |
+| 🟡 P2 | `saveThresholds()` button restored | ✅ Done |
+| 🟡 P2 | GPIO pin validation in JS before sending | ✅ Done |
+| 🟡 P2 | Config tab HTML structure fixed (closing div, Adaptive Learning wrapper) | ✅ Done |
+| 🟡 P2 | `<select>` styling added to match dark theme | ✅ Done |
+| 🟡 P2 | Dropdown defaults set correctly (HOH/AirAssist/Exhaust/Compressor) | ✅ Done |
+| 🟡 P2 | `identifyRelay` timeout leak fixed | ✅ Done |
+| 🟡 P2 | `:has()` replaced with `.active` class for browser compatibility | ✅ Done |
+| 🟡 P2 | `connectWS()` guard against double-connect | ✅ Done |
+| 🟡 P2 | Graph live feed comment fixed (5 seconds, not 1 minute) | ✅ Done |
+| 🟡 P2 | Footer name corrected to Calven | ✅ Done |
 | 🟢 P3 | Graph live feed changed to 5-second intervals | ✅ Done |
-| 🟢 P3 | Chart.js served from SPIFFS (was LittleFS) | ✅ Done |
+| 🟢 P3 | Chart.js served from SPIFFS | ✅ Done |
+| 🟢 P3 | `static_assert(sizeof(FridgePacket) == 13)` added to `network.h` | ✅ Done |
+| 🟢 P3 | `COMPRESSOR_COOLDOWN` constants removed from `config.h` | ✅ Done |
 
 ---
 
@@ -23,16 +40,17 @@ That was the last P1 item. Here's the updated todo:
 
 | Priority | Item | Effort |
 |----------|------|--------|
-| 🟠 P1 | Rename relay mapping from GPIO-based to position-based (Relay 1-4) | Medium |
-| 🟡 P2 | Visual indicator showing which relay position maps to which function | Small |
-| 🟡 P2 | Automated cooling trigger based on temperature threshold | Medium |
 | 🟢 P3 | `feat/satellite-display` — Separate ESP32 OLED WebSocket display | Medium |
 | 🟢 P3 | Add cache versioning to `RuntimeCache` | Small |
 | 🟢 P3 | Update `CHANGELOG.md` | Small |
-| 🟢 P3 | `sizeof(FridgePacket) == 13` compile-time assert | Tiny |
-| 🟢 P3 | Fix double `<div class="config-group">` in Config tab | Tiny |
-| 🟢 P3 | Graph performance — reduce max points, optimize rendering | Small |
 
 ---
 
-Want to tackle the relay mapping rename (P1) or something else?
+## Design Decisions (v1.5)
+
+- **Compressor:** ON at boot, OFF during night mode, ON at morning. No cooldown. No max runtime. Shop compressor with own pressure switch.
+- **Burst-cycled relays:** Exempt from relay cycle limits.
+- **Manual override:** Activate on first toggle only. Subsequent toggles within 10-min window don't re-trigger shutdown.
+- **Relay mapping:** Position-based (1-4). Each position has a GPIO pin and a function assignment. Functions must be unique — validated both client and server side.
+- **Identify button:** Toggles the selected function's relay at 2Hz for 5 seconds for physical identification.
+- **Graph dashboard:** 350 points max, 8KB heap buffer, 5-second live feed, Chart.js from SPIFFS.
