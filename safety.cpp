@@ -185,3 +185,18 @@ bool safety_isDryRunAlertActive() {
 bool safety_isFanStallAlertActive() {
   return g_fanStallState.alertSent;
 }
+
+
+uint8_t safety_getActiveAlerts() {
+  uint8_t alerts = 0;
+  if (g_systemState.tempSensorFault || g_systemState.humiditySensorFault || g_systemState.co2SensorFault) {
+    alerts |= 0x01;  // Bit 0: Sensor fault
+  }
+  if (safety_isDryRunAlertActive()) {
+    alerts |= 0x02;  // Bit 1: HOH dry-run
+  }
+  if (safety_isFanStallAlertActive()) {
+    alerts |= 0x04;  // Bit 2: Fan stall
+  }
+  return alerts;
+}
