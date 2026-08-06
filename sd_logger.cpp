@@ -46,7 +46,6 @@ static SPIClass g_sdSPI(VSPI);
 static String g_currentLogFile = "";
 
 // Track compressor state changes to trigger cooldown saves
-static bool g_lastCompressorState = false;
 
 // --- Private Helpers ---
 
@@ -160,9 +159,6 @@ bool sdLogger_init() {
   // GH-SYS-001: Load cached runtime parameters
   sdLogger_loadCache();
 
-  // GH-SAFE-002 persistent: Restore compressor cooldown state
-  sdLogger_loadCooldownState();
-
   // Purge logs older than 30 days
   sdLogger_purgeOldLogs();
 
@@ -267,26 +263,6 @@ bool sdLogger_writeData() {
   }
 
   bool writeSuccess = writeLine(g_currentLogFile.c_str(), line);
-
-  // GH-SAFE-002 persistent: Track state switches cleanly
-  bool compressorCurrentlyOn = g_systemState.compressorActive;
-  if (compressorCurrentlyOn != g_lastCompressorState) {
-    g_lastCompressorState = compressorCurrentlyOn;
-
-    if (!compressorCurrentlyOn && relayManager_isCompressorCooldownActive()) {
-      sdLogger_saveCooldownState();
-      Serial.println(F("[SD] Compressor OFF - cooldown state persisted"));
-    }
-  }
-
-  // Periodic cooldown persistence balance window
-  static unsigned long lastCooldownSave = 0;
-  if (millis() - lastCooldownSave >= 300000UL) {  // Every 5 minutes
-    lastCooldownSave = millis();
-    if (relayManager_isCompressorCooldownActive()) {
-      sdLogger_saveCooldownState();
-    }
-  }
 
   return writeSuccess;
 }
