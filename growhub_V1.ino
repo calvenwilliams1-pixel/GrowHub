@@ -38,7 +38,7 @@
 #include "web_ui.h"
 #include "adaptive.h"
 #include "safety.h"
-#include <LittleFS.h>
+#include <SPIFFS.h>
 #include <math.h>
 // ============================================================
 // External Declarations
@@ -160,8 +160,8 @@ void setup() {
   }
 
   // Initialize LittleFS for static web assets (v1.4)
-  if (!LittleFS.begin()) {
-    Serial.println(F("[BOOT] WARNING: LittleFS mount FAILED — graph dashboard disabled"));
+  if (!SPIFFS.begin()) {
+    Serial.println(F("[BOOT] WARNING: SPIFFS mount FAILED — graph dashboard disabled"));
   }
 
   // Apply cached relay mapping if available (v1.4)
@@ -294,15 +294,6 @@ void loop() {
   // Safety checks every loop
   safety_checkDryRun(now);
   safety_checkFanStall(now);
-
-  // Enforce compressor max ON time (GH-SAFE-002)
-  {
-    unsigned long compressorOnDuration = relayManager_getOnDuration(RELAY_COMPRESSOR);
-    if (compressorOnDuration >= COMPRESSOR_MAX_ON_MS) {
-      Serial.println(F("[SAFETY] Compressor max ON time reached - forcing OFF"));
-      relayManager_setRelay(RELAY_COMPRESSOR, false);
-    }
-  }
 
   // Adaptive learning update (calibration state machine)
   adaptive_updateCalibration();

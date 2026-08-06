@@ -52,7 +52,7 @@ static const RelayCapability g_relayCaps[RELAY_COUNT] = {
     { false, false, false },  // HOH — silent, no cooldown, continuous
     { true,  false, true  },  // Air Assist — loud, no cooldown, burst cycled
     { false, false, false },  // Exhaust — moderate, no cooldown, continuous
-    { true,  true,  false }   // Compressor — loud, cooldown, continuous
+    { true,  false, false }   // Compressor — loud, no cooldown, self-regulated
 };
 
 // Current relay mapping (file-scope — access via getter/setter)
@@ -411,6 +411,9 @@ bool relayManager_isRelayOn(uint8_t relayIndex) {
 
 bool relayManager_canToggle(uint8_t relayIndex) {
   if (relayIndex >= RELAY_COUNT) return false;
+
+  // Burst-cycled relays (Air Assist) toggle rapidly by design — exempt
+  if (relayManager_isBurstCycled(relayIndex)) return true;
 
   RelayState* relay = &g_relays[relayIndex];
   unsigned long now = millis();

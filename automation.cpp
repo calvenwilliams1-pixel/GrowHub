@@ -619,9 +619,10 @@ void automation_init() {
     g_boostActive = false;
     g_lastTunedConfidence = 0.0f;
 
+      // Compressor runs whenever system is active — pressure switch handles cutoff
+    relayManager_setRelay(RELAY_COMPRESSOR, true);
     Serial.println(F("[AUTO] Automation engine initialized"));
 }
-
 void automation_loadDefaults() {
     g_thresholds.humHoHFloor = DEFAULT_HUM_HOH_FLOOR;
     g_thresholds.humAssistFloor = DEFAULT_HUM_ASSIST_FLOOR;
@@ -874,8 +875,11 @@ void automation_checkNightMode() {
                 adaptive_cancelCalibration();
                 Serial.println(F("[AUTO] Calibration aborted — night mode active"));
             }
-        } else {
+               } else {
             Serial.println(F("[AUTO] Night Mode DEACTIVATED"));
+            if (!automation_isCompressorOverrideActive()) {
+                relayManager_setRelay(RELAY_COMPRESSOR, true);
+            }
         }
     }
 

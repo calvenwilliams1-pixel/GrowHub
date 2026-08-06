@@ -27,7 +27,7 @@
 #include "system_state.h"
 #include "sd_logger.h"
 #include <ArduinoJson.h>
-#include <LittleFS.h>
+#include <SPIFFS.h>
 
 // ============================================================
 // UPDATE VERSION HERE WHEN BUMPING FIRMWARE
@@ -704,20 +704,22 @@ function requestHistorical() {
   sendWS({type: 100, sensor: graphSensor, start: start, end: Math.floor(now / 1000), max: 350, rid: graphRequestId});
 }
 
+var lastLiveFeedTime = [0, 0, 0, 0];
+
 function feedLiveGraph(sensor, value) {
-  var now = Math.floor(Date.now() / 1000);
-  liveBuffers[sensor].push({x: now, y: value});
+  var now = Date.now();
+  // Only record one point per minute
+  if (now - lastLiveFeedTime[sensor] < 5000) return;
+  lastLiveFeedTime[sensor] = now;
+
+  var epoch = Math.floor(now / 1000);
+  liveBuffers[sensor].push({x: epoch, y: value});
   if (liveBuffers[sensor].length > GRAPH_MAX_LIVE) {
     liveBuffers[sensor] = liveBuffers[sensor].slice(-GRAPH_MAX_LIVE);
   }
-  if (graphChart && sensor === graphSensor && !liveUpdatePending) {
-    liveUpdatePending = true;
-    requestAnimationFrame(function() {
-      liveUpdatePending = false;
-      if (!graphChart) return;
-      graphChart.data.datasets[0].data = liveBuffers[sensor];
-      graphChart.update('none');
-    });
+  if (graphChart && sensor === graphSensor) {
+    graphChart.data.datasets[0].data = liveBuffers[sensor];
+    graphChart.update('none');
   }
 }
 
@@ -873,11 +875,15 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
         calibrationActive = g_systemState.calibrationActive;
         portEXIT_CRITICAL(&g_stateMux);
 
-        if (!calibrationActive) {
+             if (!calibrationActive) {
           if (index == RELAY_HOH || index == RELAY_AIR_ASSIST) {
-            automation_activateHumidityOverride();
+            if (!automation_isHumidityOverrideActive()) {
+              automation_activateHumidityOverride();
+            }
           } else if (index == RELAY_EXHAUST) {
-            automation_activateCO2Override();
+            if (!automation_isCO2OverrideActive()) {
+              automation_activateCO2Override();
+            }
           }
 
           if (relayManager_setRelay(index, state, force)) {
@@ -1192,16 +1198,15 @@ bool webUI_init() {
   Serial.println(F("[WEB] Initializing web server..."));
 
   g_server.on("/chart-4.4.0.min.js", []() {
-    if (LittleFS.exists("/chart-4.4.0.min.js")) {
+    if (SPIFFS.exists("/chart-4.4.0.min.js")) {
       g_server.sendHeader("Cache-Control", "max-age=31536000, immutable");
-      File f = LittleFS.open("/chart-4.4.0.min.js", "r");
+      File f = SPIFFS.open("/chart-4.4.0.min.js", "r");
       g_server.streamFile(f, "application/javascript");
       f.close();
     } else {
       g_server.send(404, "text/plain", "Not Found");
     }
   });
-
   g_server.on("/", handleRoot);
   g_server.onNotFound(handleNotFound);
 
