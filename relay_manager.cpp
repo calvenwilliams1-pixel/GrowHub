@@ -61,11 +61,11 @@ static RelayMapping g_relayMapping;
 // Default factory mapping
 static const RelayMapping g_defaultMapping = {
   .magic = RELAY_MAPPING_MAGIC,
-  .pinHOH = DEFAULT_PIN_HOH,
-  .pinAirAssist = DEFAULT_PIN_AIR_ASSIST,
-  .pinExhaust = DEFAULT_PIN_EXHAUST,
-  .pinCompressor = DEFAULT_PIN_COMPRESSOR,
-  .reserved = {0, 0, 0}
+  .pinPos1 = DEFAULT_PIN_POS1,
+  .pinPos2 = DEFAULT_PIN_POS2,
+  .pinPos3 = DEFAULT_PIN_POS3,
+  .pinPos4 = DEFAULT_PIN_POS4,
+  .functionForPos = {0, 1, 2, 3}  // Pos1=HOH, Pos2=AirAssist, Pos3=Exhaust, Pos4=Compressor
 };
 
 // ============================================
@@ -222,17 +222,7 @@ void relayManager_resetMapping() {
 
 bool relayManager_init(const RelayMapping* useMapping) {
   // Apply mapping: use provided mapping if valid, otherwise factory defaults
-  if (useMapping && useMapping->magic == RELAY_MAPPING_MAGIC &&
-      relayManager_isPinValid(useMapping->pinHOH) &&
-      relayManager_isPinValid(useMapping->pinAirAssist) &&
-      relayManager_isPinValid(useMapping->pinExhaust) &&
-      relayManager_isPinValid(useMapping->pinCompressor) &&
-      useMapping->pinHOH != useMapping->pinAirAssist &&
-      useMapping->pinHOH != useMapping->pinExhaust &&
-      useMapping->pinHOH != useMapping->pinCompressor &&
-      useMapping->pinAirAssist != useMapping->pinExhaust &&
-      useMapping->pinAirAssist != useMapping->pinCompressor &&
-      useMapping->pinExhaust != useMapping->pinCompressor) {
+  if (useMapping && relayManager_validateMapping(useMapping)) {
     memcpy(&g_relayMapping, useMapping, sizeof(RelayMapping));
     Serial.println(F("[RELAY] Using cached relay mapping"));
   } else {
@@ -240,10 +230,13 @@ bool relayManager_init(const RelayMapping* useMapping) {
     Serial.println(F("[RELAY] Using factory default relay mapping"));
   }
 
-  g_relayPins[RELAY_HOH] = g_relayMapping.pinHOH;
-  g_relayPins[RELAY_AIR_ASSIST] = g_relayMapping.pinAirAssist;
-  g_relayPins[RELAY_EXHAUST] = g_relayMapping.pinExhaust;
-  g_relayPins[RELAY_COMPRESSOR] = g_relayMapping.pinCompressor;
+    // Map positions to functions
+  uint8_t pins[4] = {g_relayMapping.pinPos1, g_relayMapping.pinPos2,
+                     g_relayMapping.pinPos3, g_relayMapping.pinPos4};
+  for (int pos = 0; pos < RELAY_COUNT; pos++) {
+    uint8_t func = g_relayMapping.functionForPos[pos];
+    g_relayPins[func] = pins[pos];
+  }
 
   // GH-SYS-003: CRITICAL - Set ALL relays HIGH (OFF) immediately
   unsigned long now = millis();
