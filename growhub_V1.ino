@@ -170,6 +170,11 @@ void setup() {
     g_runtimeCache.weatherLon = DEFAULT_WEATHER_LON;
   }
 
+  // Seed default override timeout (v1.6)
+  if (g_runtimeCache.overrideTimeoutMinutes == 0) {
+    g_runtimeCache.overrideTimeoutMinutes = DEFAULT_OVERRIDE_TIMEOUT_MIN;
+  }
+   
   // Apply cached relay mapping if available (v1.4)
   if (g_runtimeCache.relayMapping.magic == RELAY_MAPPING_MAGIC) {
     relayManager_updateMapping(&g_runtimeCache.relayMapping);
