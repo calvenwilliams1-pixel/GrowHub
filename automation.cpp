@@ -87,6 +87,7 @@
 #include "automation.h"
 #include "rtc_handler.h"
 #include "network.h"
+#include "sd_logger.h"
 
 // ============================================================
 // External Declarations
@@ -96,6 +97,7 @@
 // Called from real-time control loop — must not allocate or block.
 extern void network_sendAlert(const char* title, const char* message);
 extern portMUX_TYPE g_stateMux;
+extern RuntimeCache g_runtimeCache;
 
 // ============================================================
 // Forward Declarations
