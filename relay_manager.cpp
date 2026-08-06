@@ -412,6 +412,9 @@ bool relayManager_isRelayOn(uint8_t relayIndex) {
 bool relayManager_canToggle(uint8_t relayIndex) {
   if (relayIndex >= RELAY_COUNT) return false;
 
+  // Burst-cycled relays (Air Assist) toggle rapidly by design — exempt
+  if (relayManager_isBurstCycled(relayIndex)) return true;
+
   RelayState* relay = &g_relays[relayIndex];
   unsigned long now = millis();
 
