@@ -244,6 +244,14 @@ bool network_isFridgeHeartbeatLost() {
   return lost;
 }
 
+uint8_t network_getActiveAlerts() {
+  uint8_t alerts = 0;
+  if (network_isFridgeHeartbeatLost()) {
+    alerts |= 0x08;  // Bit 3: Fridge offline
+  }
+  return alerts;
+}
+
 uint16_t network_getFridgeLastSequence() {
   uint16_t seq;
   portENTER_CRITICAL(&g_stateMux);
