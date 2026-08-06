@@ -426,6 +426,21 @@ void relayManager_logCycle(uint8_t relayIndex) {
 // Emergency Shutdown
 // ============================================
 
+bool relayManager_isRelayLoud(uint8_t relayIndex) {
+    if (relayIndex >= RELAY_COUNT) return false;
+    return g_relayCaps[relayIndex].isLoud;
+}
+
+bool relayManager_requiresCooldown(uint8_t relayIndex) {
+    if (relayIndex >= RELAY_COUNT) return false;
+    return g_relayCaps[relayIndex].requiresCooldown;
+}
+
+bool relayManager_isBurstCycled(uint8_t relayIndex) {
+    if (relayIndex >= RELAY_COUNT) return false;
+    return g_relayCaps[relayIndex].isBurstCycled;
+}
+
 void relayManager_forceAllOff() {
   unsigned long now = millis();
 
@@ -439,13 +454,6 @@ void relayManager_forceAllOff() {
     g_relays[i].isActive = false;
     g_relays[i].lastOffTime = now;
     g_relays[i].totalOnDuration = 0;
-
-    if (relayManager_requiresCooldown(i)) {
-      g_relays[i].cooldownLocked = true;
-      g_relays[i].cooldownStart = now;
-      g_relays[i].cooldownOffEpoch = rtc_getGH2000Seconds();
-    }
-  }
 
   g_systemState.hoHActive = false;
   g_systemState.airAssistActive = false;
