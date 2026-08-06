@@ -257,10 +257,10 @@
 // ============================================================
 // SAFETY: Override & Recovery
 // ============================================================
-// Pre-calculated millisecond value (avoids caller overflow bugs)
-#define MANUAL_OVERRIDE_TIMEOUT_MS      (600UL * 1000UL)  // 10 minutes
-// @deprecated — Use MANUAL_OVERRIDE_TIMEOUT_MS. Remove in v1.4.
-#define MANUAL_OVERRIDE_TIMEOUT_SEC     600UL
+// v1.6: Configurable override timeout — persisted in RuntimeCache
+#define MIN_OVERRIDE_TIMEOUT_MIN         1
+#define DEFAULT_OVERRIDE_TIMEOUT_MIN     10
+#define MAX_OVERRIDE_TIMEOUT_MIN          1440
 
 // Default recovery rate: ~1% RH per minute = 0.0167% RH per second
 #define DEFAULT_RECOVERY_RATE_PCT_PER_SEC  0.0167f
