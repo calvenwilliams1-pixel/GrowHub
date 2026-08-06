@@ -1376,7 +1376,6 @@ static void sendSystemStatus() {
   doc["assist"] = assist;
   doc["fan"] = fan;
   doc["compressor"] = compressor;
-  doc["compressorLocked"] = relayManager_isCompressorCooldownActive();
   doc["humOverride"] = automation_isHumidityOverrideActive();
   doc["humOverrideRemaining"] = automation_getHumidityOverrideRemaining() / 1000;
   doc["co2Override"] = automation_isCO2OverrideActive();
