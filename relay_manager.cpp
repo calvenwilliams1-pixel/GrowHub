@@ -444,16 +444,15 @@ bool relayManager_isBurstCycled(uint8_t relayIndex) {
 void relayManager_forceAllOff() {
   unsigned long now = millis();
 
-  // HARDWARE SAFETY FIRST: Cut power before ANY Serial I/O.
-  // In an emergency, milliseconds matter. Serial can block on full UART buffer.
   portENTER_CRITICAL(&g_stateMux);
   for (uint8_t i = 0; i < RELAY_COUNT; i++) {
     if (g_relays[i].pin != 255) {
-      digitalWrite(g_relays[i].pin, HIGH);  // Active LOW = OFF
+      digitalWrite(g_relays[i].pin, HIGH);
     }
     g_relays[i].isActive = false;
     g_relays[i].lastOffTime = now;
     g_relays[i].totalOnDuration = 0;
+  }
 
   g_systemState.hoHActive = false;
   g_systemState.airAssistActive = false;
@@ -461,6 +460,5 @@ void relayManager_forceAllOff() {
   g_systemState.compressorActive = false;
   portEXIT_CRITICAL(&g_stateMux);
 
-  // Safe to log now — hardware is already off
   Serial.println(F("[RELAY] EMERGENCY: ALL relays forced OFF and system state cleared"));
 }
