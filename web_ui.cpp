@@ -704,20 +704,22 @@ function requestHistorical() {
   sendWS({type: 100, sensor: graphSensor, start: start, end: Math.floor(now / 1000), max: 350, rid: graphRequestId});
 }
 
+var lastLiveFeedTime = [0, 0, 0, 0];
+
 function feedLiveGraph(sensor, value) {
-  var now = Math.floor(Date.now() / 1000);
-  liveBuffers[sensor].push({x: now, y: value});
+  var now = Date.now();
+  // Only record one point per minute
+  if (now - lastLiveFeedTime[sensor] < 60000) return;
+  lastLiveFeedTime[sensor] = now;
+
+  var epoch = Math.floor(now / 1000);
+  liveBuffers[sensor].push({x: epoch, y: value});
   if (liveBuffers[sensor].length > GRAPH_MAX_LIVE) {
     liveBuffers[sensor] = liveBuffers[sensor].slice(-GRAPH_MAX_LIVE);
   }
-  if (graphChart && sensor === graphSensor && !liveUpdatePending) {
-    liveUpdatePending = true;
-    requestAnimationFrame(function() {
-      liveUpdatePending = false;
-      if (!graphChart) return;
-      graphChart.data.datasets[0].data = liveBuffers[sensor];
-      graphChart.update('none');
-    });
+  if (graphChart && sensor === graphSensor) {
+    graphChart.data.datasets[0].data = liveBuffers[sensor];
+    graphChart.update('none');
   }
 }
 
