@@ -300,27 +300,37 @@ bool sdLogger_loadCache() {
 
   const char* cacheFile = "/cache.dat";
 
-  if (!SD.exists(cacheFile)) {
+    if (!SD.exists(cacheFile)) {
     Serial.println(F("[SD] No cache file found - using factory defaults"));
+    g_runtimeCache.version = 2;
     g_runtimeCache.totalRuntimeHours = 0;
     g_runtimeCache.lastActiveBand = 0;
     g_runtimeCache.emaWeight = DEFAULT_EMA_WEIGHT;
     g_runtimeCache.compressorLastOffTimestamp = 0;
     g_runtimeCache.compressorCooldownActive = false;
+    const RelayMapping* defMap = relayManager_getDefaultMapping();
+    memcpy(&g_runtimeCache.relayMapping, defMap, sizeof(RelayMapping));
     return false;
   }
 
   File f = SD.open(cacheFile, FILE_READ);
-  if (!f) {
+   if (!f) {
     Serial.println(F("[SD] Cannot open cache file - using defaults"));
+    g_runtimeCache.version = 2;
+    const RelayMapping* defMap = relayManager_getDefaultMapping();
+    memcpy(&g_runtimeCache.relayMapping, defMap, sizeof(RelayMapping));
     return false;
   }
 
-  size_t bytesRead = f.read((uint8_t*)&g_runtimeCache, sizeof(RuntimeCache));
-  f.close();
+   size_t bytesRead = f.read((uint8_t*)&g_runtimeCache, sizeof(RuntimeCache));
 
   if (bytesRead == sizeof(RuntimeCache)) {
     bool cacheValid = true;
+
+    if (g_runtimeCache.version == 0 || g_runtimeCache.version > 2) {
+      Serial.println(F("[SD] Cache: Unknown version — resetting"));
+      cacheValid = false;
+    }
 
     if (g_runtimeCache.emaWeight < EMA_WEIGHT_MIN || g_runtimeCache.emaWeight > EMA_WEIGHT_MAX) {
       Serial.println(F("[SD] Cache: EMA weight out of range - resetting"));
@@ -371,11 +381,12 @@ bool sdLogger_loadCache() {
     Serial.print(bytesRead);
     Serial.println(F(") - resetting to defaults for new format"));
 
+    g_runtimeCache.version = 2;
     g_runtimeCache.totalRuntimeHours = 0;
     g_runtimeCache.lastActiveBand = 0;
     g_runtimeCache.emaWeight = DEFAULT_EMA_WEIGHT;
     g_runtimeCache.compressorLastOffTimestamp = 0;
-     g_runtimeCache.compressorCooldownActive = false;
+    g_runtimeCache.compressorCooldownActive = false;
 
     // Initialize relay mapping to defaults
     const RelayMapping* defMap = relayManager_getDefaultMapping();
