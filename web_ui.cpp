@@ -246,6 +246,17 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
     <h3>Adaptive Learning</h3>
     <div class="config-row"><label>EMA Weight (0.10-0.50)</label><input type="number" id="emaWeight" value="0.30" step="0.05" min="0.10" max="0.50"></div>
   </div>
+   <div class="config-group">
+    <h3>Manual Override Timeout</h3>
+    <div class="config-row"><label>Timeout (minutes)</label><input type="number" id="overrideTimeout" value="10" min="1" max="1440" step="1"></div>
+    <div style="display:flex;gap:4px;margin-top:8px;flex-wrap:wrap;">
+      <button class="btn btn-neutral override-btn" onclick="setOverrideTime(10,this)">10 min</button>
+      <button class="btn btn-neutral override-btn" onclick="setOverrideTime(30,this)">30 min</button>
+      <button class="btn btn-neutral override-btn" onclick="setOverrideTime(60,this)">1 hr</button>
+      <button class="btn btn-neutral override-btn" onclick="setOverrideTime(360,this)">6 hr</button>
+      <button class="btn btn-neutral override-btn" onclick="setOverrideTime(1440,this)">24 hr</button>
+    </div>
+  </div>
   <div class="config-group">
     <h3>Weather Location</h3>
     <div class="config-row"><label>Latitude</label><input type="number" id="weatherLat" value="43.68" step="0.01" min="-90" max="90"></div>
@@ -544,6 +555,7 @@ function updateConfig(msg){
   document.getElementById('funcPos4').value = msg.funcPos4;
   document.getElementById('weatherLat').value = msg.weatherLat;
   document.getElementById('weatherLon').value = msg.weatherLon;
+  document.getElementById('overrideTimeout').value = msg.overrideTimeout || 10;
 }
 
 function updateOverrideStatus(msg){
@@ -710,7 +722,18 @@ function saveThresholds(){
     return;
   }
 
-  var thresholds = {
+    var wLat = parseFloat(document.getElementById('weatherLat').value);
+  var wLon = parseFloat(document.getElementById('weatherLon').value);
+  if (isNaN(wLat) || wLat < -90 || wLat > 90 || isNaN(wLon) || wLon < -180 || wLon > 180) {
+    addLog('Invalid weather coordinates', 'warn');
+    return;
+  }
+
+  var overrideTimeout = parseInt(document.getElementById('overrideTimeout').value, 10);
+  if (isNaN(overrideTimeout) || overrideTimeout < 1) overrideTimeout = 10;
+  if (overrideTimeout > 1440) overrideTimeout = 1440;
+
+   var thresholds = {
     humHoHFloor: hohFloor,
     humAssistFloor: assistFloor,
     humCeiling: ceiling,
@@ -719,16 +742,11 @@ function saveThresholds(){
     assistOffSec: assistOff,
     co2HighLimit: co2High,
     co2LowTarget: co2Low,
-      co2Emergency: co2Emer,
+    co2Emergency: co2Emer,
     weatherLat: wLat,
-    weatherLon: wLon
+    weatherLon: wLon,
+    overrideTimeout: overrideTimeout
   };
-   var wLat = parseFloat(document.getElementById('weatherLat').value);
-  var wLon = parseFloat(document.getElementById('weatherLon').value);
-  if (isNaN(wLat) || wLat < -90 || wLat > 90 || isNaN(wLon) || wLon < -180 || wLon > 180) {
-    addLog('Invalid weather coordinates', 'warn');
-    return;
-  }
 
   sendWS({type: 6, cmd: 'thresholds', data: thresholds});
   var emaWeight = parseFloat(document.getElementById('emaWeight').value);
@@ -763,6 +781,12 @@ function runSimulation(){
   }
 
   sendWS({type: 6, cmd: 'simulate', current: current, target: target});
+}
+
+function setOverrideTime(minutes, btn) {
+  document.getElementById('overrideTimeout').value = minutes;
+  document.querySelectorAll('.override-btn').forEach(function(b) { b.classList.remove('active'); });
+  btn.classList.add('active');
 }
 
 function setRTCTime(){
@@ -1132,6 +1156,12 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
         float wLon = doc["data"]["weatherLon"] | g_runtimeCache.weatherLon;
         if (wLat >= -90.0f && wLat <= 90.0f) g_runtimeCache.weatherLat = wLat;
         if (wLon >= -180.0f && wLon <= 180.0f) g_runtimeCache.weatherLon = wLon;
+                 // v1.6: Configurable override timeout
+        int parsedTimeout = doc["data"]["overrideTimeout"] | DEFAULT_OVERRIDE_TIMEOUT_MIN;
+        if (parsedTimeout < MIN_OVERRIDE_TIMEOUT_MIN) parsedTimeout = MIN_OVERRIDE_TIMEOUT_MIN;
+        if (parsedTimeout > MAX_OVERRIDE_TIMEOUT_MIN) parsedTimeout = MAX_OVERRIDE_TIMEOUT_MIN;
+        g_runtimeCache.overrideTimeoutMinutes = (uint16_t)parsedTimeout;
+        sdLogger_saveCache();
       }
       else if (msgType == WS_COMMAND && strcmp(cmd, "ema") == 0) {
         float weight = doc["weight"] | DEFAULT_EMA_WEIGHT;
@@ -1387,6 +1417,7 @@ static void sendConfigUpdate(uint8_t clientNum) {
   doc["funcPos4"] = mapping->functionForPos[3];
   doc["weatherLat"] = g_runtimeCache.weatherLat;
   doc["weatherLon"] = g_runtimeCache.weatherLon;
+  doc["overrideTimeout"] = g_runtimeCache.overrideTimeoutMinutes;
   char output[256];
   size_t len = serializeJson(doc, output, sizeof(output));
   if (len >= sizeof(output)) {
