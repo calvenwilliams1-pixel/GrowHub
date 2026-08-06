@@ -52,17 +52,15 @@ static void sendCalibrationUpdate();
 // ============================================================
 // EMBEDDED HTML/CSS/JS (Single Page Application)
 // ============================================================
-
 static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-<title>GrowHub32 v1.4</title>  <!-- bump WEB_UI_VERSION above -->
+<title>GrowHub32 v1.5</title>
 <style>
   *{margin:0;padding:0;box-sizing:border-box;}
   body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:linear-gradient(180deg,#0d1117 0%,#111827 100%);color:#c9d1d9;min-height:100vh;}
-  .sticky-header-wrapper{position:sticky;top:0;z-index:100;background:#161b22;}
   .header{padding:14px 18px;border-bottom:1px solid #30363d;}
   .header h1{font-size:1.3em;color:#58a6ff;}
   .header .status{font-size:0.75em;color:#8b949e;margin-top:3px;}
@@ -75,7 +73,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   .tab-content{display:none;padding:16px;}
   .tab-content.active{display:block;}
   .sensor-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin-bottom:18px;}
-  .sensor-card{background:#161b22;border:1px solid #3d444d;border-radius:12px;padding:18px;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,0.5);transition:box-shadow 0.2s ease;}
+  .sensor-card{background:#161b22;border:1px solid #3d444d;border-radius:12px;padding:18px;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,0.5);}
   .sensor-card .label{font-size:0.7em;color:#8b949e;text-transform:uppercase;letter-spacing:0.5px;}
   .sensor-card .value{font-size:2.2em;font-weight:700;margin:8px 0;color:#ffffff;line-height:1;font-variant-numeric:tabular-nums;min-height:1.2em;}
   .sensor-card .unit{font-size:0.6em;color:#8b949e;font-weight:500;text-transform:uppercase;letter-spacing:0.5px;}
@@ -84,7 +82,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   .sensor-card .status-dot.fault{background:#da3633;box-shadow:0 0 6px rgba(218,54,51,0.4);}
   .relay-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:18px;}
   .relay-card{background:#161b22;border:1px solid #3d444d;border-radius:12px;padding:14px;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,0.5);}
-  .relay-card:has(.state.on){border-color:#3fb950;box-shadow:0 0 16px rgba(63,185,80,0.25);}
+  .relay-card.active{border-color:#3fb950;box-shadow:0 0 16px rgba(63,185,80,0.25);}
   .relay-card .name{font-size:0.7em;color:#8b949e;text-transform:uppercase;letter-spacing:0.5px;}
   .relay-card .state{font-size:1.1em;font-weight:bold;margin:6px 0;}
   .relay-card .state.on{color:#3fb950;}
@@ -107,6 +105,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   .config-row input{width:90px;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#e6edf3;padding:8px 12px;font-size:0.95em;text-align:right;font-variant-numeric:tabular-nums;}
   .config-row input:focus{outline:2px solid #58a6ff;outline-offset:2px;}
   .config-row input:invalid{border-color:#da3633;color:#da3633;box-shadow:0 0 8px rgba(218,54,51,0.4);}
+  .config-row select{width:160px;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#e6edf3;padding:8px 12px;font-size:0.95em;}
   .log-area{background:#0d1117;border:1px solid #3d444d;border-radius:12px;padding:14px;max-height:300px;overflow-y:auto;font-family:monospace;font-size:0.75em;line-height:1.6;}
   .log-entry{padding:3px 0;}
   .log-entry.warn{color:#d29922;}
@@ -117,9 +116,6 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   .sim-result .time{font-size:1.5em;color:#3fb950;}
   .footer{text-align:center;padding:18px;font-size:0.7em;color:#484f58;}
   .override-panel{display:none;background:#3a2a1a;color:#d29922;padding:10px;border-radius:8px;margin-bottom:14px;text-align:center;font-weight:bold;border:1px solid #d29922;}
-  .status-pill{display:inline-block;padding:4px 10px;border-radius:999px;font-size:0.7em;font-weight:500;margin:2px 4px;}
-  .status-pill.good{background:#1a3a1a;color:#3fb950;border:1px solid #3fb950;}
-  .status-pill.warn{background:#3a2a1a;color:#d29922;border:1px solid #d29922;}
   .sticky-save-container{position:sticky;bottom:16px;background:rgba(13,17,23,0.95);padding:12px;border-radius:8px;border:1px solid #30363d;text-align:center;margin-top:16px;box-shadow:0 -4px 12px rgba(0,0,0,0.4);}
   ::-webkit-scrollbar{width:6px;height:6px;}
   ::-webkit-scrollbar-track{background:transparent;}
@@ -192,13 +188,13 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
 
 <div id="controls" class="tab-content">
   <h3>Manual Relay Override</h3>
-  <p style="font-size:0.75em;color:#8b949e;">Calibration mode must be OFF to use manual controls. Manual commands pause automation. Safety interlocks (such as compressor cooldown) remain active.</p>
+  <p style="font-size:0.75em;color:#8b949e;">Calibration mode must be OFF to use manual controls. Manual commands pause automation. Safety interlocks remain active.</p>
   <div class="override-panel" id="overridePanel">
     Automation PAUSED - <span id="overrideTime">0:00</span> remaining
     <br><button class="btn btn-off" style="margin-top:6px;" onclick="resumeAutomation()">Resume Automation Now</button>
   </div>
   <div class="config-group">
-       <div class="config-row"><label>Humidifier</label><div><button class="btn btn-neutral" onclick="identifyRelay(0)">ID</button><button class="btn btn-on" onclick="relayCmd(0,1)">ON</button><button class="btn btn-off" onclick="relayCmd(0,0)">OFF</button></div></div>
+    <div class="config-row"><label>Humidifier</label><div><button class="btn btn-neutral" onclick="identifyRelay(0)">ID</button><button class="btn btn-on" onclick="relayCmd(0,1)">ON</button><button class="btn btn-off" onclick="relayCmd(0,0)">OFF</button></div></div>
     <div class="config-row"><label>Air Assist</label><div><button class="btn btn-neutral" onclick="identifyRelay(1)">ID</button><button class="btn btn-on" onclick="relayCmd(1,1)">ON</button><button class="btn btn-off" onclick="relayCmd(1,0)">OFF</button></div></div>
     <div class="config-row"><label>Exhaust Fan</label><div><button class="btn btn-neutral" onclick="identifyRelay(2)">ID</button><button class="btn btn-on" onclick="relayCmd(2,1)">ON</button><button class="btn btn-off" onclick="relayCmd(2,0)">OFF</button></div></div>
     <div class="config-row"><label>Compressor</label><div><button class="btn btn-neutral" onclick="identifyRelay(3)">ID</button><button class="btn btn-on" onclick="relayCmd(3,1)">ON</button><button class="btn btn-off" onclick="relayCmd(3,0)">OFF</button></div></div>
@@ -232,14 +228,20 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   </div>
   <div class="config-group">
     <h3>Relay Mapping</h3>
-    <p style="font-size:0.7em;color:#8b949e;margin-bottom:8px;">Changes take effect immediately. GPIO 0-3,5,12,15,18-23 are blocked.</p>
-    <div class="config-row"><label>HOH Humidifier Pin</label><input type="number" id="pinHOH" value="13" min="0" max="39"></div>
-    <div class="config-row"><label>Air Assist Pin</label><input type="number" id="pinAirAssist" value="26" min="0" max="39"></div>
-    <div class="config-row"><label>Exhaust Fan Pin</label><input type="number" id="pinExhaust" value="14" min="0" max="39"></div>
-    <div class="config-row"><label>Compressor Pin</label><input type="number" id="pinCompressor" value="27" min="0" max="39"></div>
+    <p style="font-size:0.7em;color:#8b949e;margin-bottom:8px;">Assign GPIO pins and functions to physical relay positions 1-4. Use the ID button on the Controls tab to identify which position is which. Each function must be assigned exactly once.</p>
+    <div class="config-row"><label>Position 1 — GPIO</label><input type="number" id="pinPos1" value="13" min="0" max="39"></div>
+    <div class="config-row"><label>Position 1 — Function</label><select id="funcPos1"><option value="0" selected>HOH Humidifier</option><option value="1">Air Assist</option><option value="2">Exhaust Fan</option><option value="3">Compressor</option></select></div>
+    <div class="config-row"><label>Position 2 — GPIO</label><input type="number" id="pinPos2" value="26" min="0" max="39"></div>
+    <div class="config-row"><label>Position 2 — Function</label><select id="funcPos2"><option value="0">HOH Humidifier</option><option value="1" selected>Air Assist</option><option value="2">Exhaust Fan</option><option value="3">Compressor</option></select></div>
+    <div class="config-row"><label>Position 3 — GPIO</label><input type="number" id="pinPos3" value="14" min="0" max="39"></div>
+    <div class="config-row"><label>Position 3 — Function</label><select id="funcPos3"><option value="0">HOH Humidifier</option><option value="1">Air Assist</option><option value="2" selected>Exhaust Fan</option><option value="3">Compressor</option></select></div>
+    <div class="config-row"><label>Position 4 — GPIO</label><input type="number" id="pinPos4" value="27" min="0" max="39"></div>
+    <div class="config-row"><label>Position 4 — Function</label><select id="funcPos4"><option value="0">HOH Humidifier</option><option value="1">Air Assist</option><option value="2">Exhaust Fan</option><option value="3" selected>Compressor</option></select></div>
     <button class="btn btn-on" onclick="saveRelayMapping()">Apply Relay Mapping</button>
   </div>
-  <button class="btn btn-on" onclick="saveThresholds()">Save All Settings</button>
+  <div class="sticky-save-container">
+    <button class="btn btn-on" onclick="saveThresholds()">Save All Thresholds</button>
+  </div>
 </div>
 
 <div id="calibration" class="tab-content">
@@ -290,11 +292,10 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   </div>
 </div>
 
-<div class="footer">GrowHub32 v1.4 | Calvin</div>
+<div class="footer">GrowHub32 v1.5 | Calven</div>
 
 <script>
 var ws;
-var logLines = [];
 var reconnectDelay = 3000;
 
 function sendWS(data){
@@ -304,6 +305,7 @@ function sendWS(data){
 }
 
 function connectWS(){
+  if (ws && ws.readyState <= 1) return;
   ws = new WebSocket('ws://' + location.hostname + ':81/');
   ws.onopen = function(){
     document.getElementById('connectionStatus').textContent = 'Connected | ' + location.hostname;
@@ -359,7 +361,7 @@ function handleMessage(msg){
 function updateSensors(msg){
   document.getElementById('tempValue').textContent = (typeof msg.temp === 'number') ? msg.temp.toFixed(1) : '--';
   document.getElementById('humValue').textContent = (typeof msg.hum === 'number') ? msg.hum.toFixed(1) : '--';
-  document.getElementById('co2Value').textContent = (msg.co2 != null) ? msg.co2 : '--';
+  document.getElementById('co2Value').textContent = (typeof msg.co2 === 'number') ? msg.co2 : '--';
   document.getElementById('fridgeValue').textContent = (typeof msg.fridge === 'number') ? msg.fridge.toFixed(1) : '--';
   document.getElementById('fridgeHumValue').textContent = (typeof msg.fridgeHum === 'number') ? msg.fridgeHum.toFixed(1) : '--';
   var doorEl = document.getElementById('fridgeDoorValue');
@@ -408,18 +410,26 @@ function updateRelays(msg){
   var hoh = document.getElementById('hohState');
   hoh.textContent = msg.hoh ? 'ON' : 'OFF';
   hoh.className = 'state ' + (msg.hoh ? 'on' : 'off');
+  var hohCard = hoh.parentElement;
+  if (msg.hoh) hohCard.classList.add('active'); else hohCard.classList.remove('active');
 
   var assist = document.getElementById('assistState');
   assist.textContent = msg.assist ? 'ON' : 'OFF';
   assist.className = 'state ' + (msg.assist ? 'on' : 'off');
+  var assistCard = assist.parentElement;
+  if (msg.assist) assistCard.classList.add('active'); else assistCard.classList.remove('active');
 
   var fan = document.getElementById('fanState');
   fan.textContent = msg.fan ? 'ON' : 'OFF';
   fan.className = 'state ' + (msg.fan ? 'on' : 'off');
+  var fanCard = fan.parentElement;
+  if (msg.fan) fanCard.classList.add('active'); else fanCard.classList.remove('active');
 
   var comp = document.getElementById('compState');
   comp.textContent = msg.compressor ? 'ON' : 'OFF';
   comp.className = 'state ' + (msg.compressor ? 'on' : 'off');
+  var compCard = comp.parentElement;
+  if (msg.compressor) compCard.classList.add('active'); else compCard.classList.remove('active');
 
   document.getElementById('compLock').textContent = msg.compressorLocked ? '(COOLDOWN)' : '';
 }
@@ -435,10 +445,14 @@ function updateConfig(msg){
   document.getElementById('co2Low').value = msg.co2LowTarget;
   document.getElementById('co2Emergency').value = msg.co2Emergency;
   document.getElementById('emaWeight').value = msg.emaWeight;
-  document.getElementById('pinHOH').value = msg.pinHOH;
-  document.getElementById('pinAirAssist').value = msg.pinAirAssist;
-  document.getElementById('pinExhaust').value = msg.pinExhaust;
-  document.getElementById('pinCompressor').value = msg.pinCompressor;
+  document.getElementById('pinPos1').value = msg.pinPos1;
+  document.getElementById('pinPos2').value = msg.pinPos2;
+  document.getElementById('pinPos3').value = msg.pinPos3;
+  document.getElementById('pinPos4').value = msg.pinPos4;
+  document.getElementById('funcPos1').value = msg.funcPos1;
+  document.getElementById('funcPos2').value = msg.funcPos2;
+  document.getElementById('funcPos3').value = msg.funcPos3;
+  document.getElementById('funcPos4').value = msg.funcPos4;
 }
 
 function updateOverrideStatus(msg){
@@ -482,11 +496,12 @@ function updateCalibration(msg){
 }
 
 function addLog(message, level){
-  var now = new Date().toLocaleTimeString();
+  var d = new Date();
+  var timeStr = d.getHours() + ':' + String(d.getMinutes()).padStart(2,'0') + ':' + String(d.getSeconds()).padStart(2,'0');
   var logArea = document.getElementById('logArea');
   var div = document.createElement('div');
   div.className = 'log-entry ' + (level || 'info');
-  div.textContent = '[' + now + '] ' + message;
+  div.textContent = '[' + timeStr + '] ' + message;
   logArea.insertBefore(div, logArea.firstChild);
   while (logArea.children.length > 100) {
     logArea.removeChild(logArea.lastChild);
@@ -501,21 +516,24 @@ function switchTab(element, tabId){
 }
 
 var identifyTimer = null;
+var identifyTimeout = null;
 
 function identifyRelay(index) {
   if (identifyTimer) { clearInterval(identifyTimer); identifyTimer = null; }
+  if (identifyTimeout) { clearTimeout(identifyTimeout); identifyTimeout = null; }
   var state = false;
   sendWS({type: 6, cmd: 'relay', index: index, state: 1, force: true, confirmed: true});
-  addLog('Relay ' + index + ' identification started - toggling for 5 seconds', 'info');
+  addLog('Relay identification started - toggling for 5 seconds', 'info');
   identifyTimer = setInterval(function() {
     state = !state;
     sendWS({type: 6, cmd: 'relay', index: index, state: state ? 1 : 0, force: true, confirmed: true});
   }, 500);
-  setTimeout(function() {
+  identifyTimeout = setTimeout(function() {
     clearInterval(identifyTimer);
     identifyTimer = null;
+    identifyTimeout = null;
     sendWS({type: 6, cmd: 'relay', index: index, state: 0, force: true, confirmed: true});
-    addLog('Relay ' + index + ' identification complete', 'info');
+    addLog('Relay identification complete', 'info');
   }, 5000);
 }
 
@@ -542,8 +560,12 @@ function saveThresholds(){
     addLog('Invalid humidity threshold value', 'warn');
     return;
   }
-  if (isNaN(assistOn) || isNaN(assistOff)) {
-    addLog('Invalid assist timing value', 'warn');
+  if (isNaN(assistOn) || assistOn < 0) {
+    addLog('Assist ON time cannot be negative', 'warn');
+    return;
+  }
+  if (isNaN(assistOff) || assistOff < 0) {
+    addLog('Assist OFF time cannot be negative', 'warn');
     return;
   }
   if (isNaN(co2High) || isNaN(co2Low) || isNaN(co2Emer)) {
@@ -565,6 +587,10 @@ function saveThresholds(){
   sendWS({type: 6, cmd: 'thresholds', data: thresholds});
 
   var emaWeight = parseFloat(document.getElementById('emaWeight').value);
+  if (isNaN(emaWeight) || emaWeight < 0.10 || emaWeight > 0.50) {
+    addLog('EMA Weight must be between 0.10 and 0.50', 'warn');
+    return;
+  }
   sendWS({type: 6, cmd: 'ema', weight: emaWeight});
 
   addLog('Settings saved!', 'info');
@@ -605,13 +631,39 @@ function setRTCTime(){
 }
 
 function saveRelayMapping(){
-  var pins = {
-    pinHOH: parseInt(document.getElementById('pinHOH').value, 10),
-    pinAirAssist: parseInt(document.getElementById('pinAirAssist').value, 10),
-    pinExhaust: parseInt(document.getElementById('pinExhaust').value, 10),
-    pinCompressor: parseInt(document.getElementById('pinCompressor').value, 10)
+  var pinPos1 = parseInt(document.getElementById('pinPos1').value, 10);
+  var pinPos2 = parseInt(document.getElementById('pinPos2').value, 10);
+  var pinPos3 = parseInt(document.getElementById('pinPos3').value, 10);
+  var pinPos4 = parseInt(document.getElementById('pinPos4').value, 10);
+
+  if (isNaN(pinPos1) || isNaN(pinPos2) || isNaN(pinPos3) || isNaN(pinPos4) ||
+      pinPos1 < 0 || pinPos1 > 39 || pinPos2 < 0 || pinPos2 > 39 ||
+      pinPos3 < 0 || pinPos3 > 39 || pinPos4 < 0 || pinPos4 > 39) {
+    addLog('Invalid GPIO pin entered', 'warn');
+    return;
+  }
+
+    var f1 = parseInt(document.getElementById('funcPos1').value, 10);
+  var f2 = parseInt(document.getElementById('funcPos2').value, 10);
+  var f3 = parseInt(document.getElementById('funcPos3').value, 10);
+  var f4 = parseInt(document.getElementById('funcPos4').value, 10);
+
+  if (new Set([f1, f2, f3, f4]).size !== 4) {
+    addLog('Each function must be assigned exactly once!', 'warn');
+    return;
+  }
+
+  var data = {
+    pinPos1: pinPos1,
+    pinPos2: pinPos2,
+    pinPos3: pinPos3,
+    pinPos4: pinPos4,
+    funcPos1: f1,
+    funcPos2: f2,
+    funcPos3: f3,
+    funcPos4: f4
   };
-  sendWS({type: 6, cmd: 'relay_mapping', data: pins});
+  sendWS({type: 6, cmd: 'relay_mapping', data: data});
   addLog('Relay mapping update sent', 'info');
 }
 
@@ -630,7 +682,6 @@ var graphRequestId = 0;
 var graphLastRequestTime = 0;
 var liveBuffers = [[],[],[],[]];
 var GRAPH_MAX_LIVE = 3600;
-var liveUpdatePending = false;
 
 function initGraph() {
   var canvas = document.getElementById('graphCanvas');
@@ -727,7 +778,7 @@ var lastLiveFeedTime = [0, 0, 0, 0];
 
 function feedLiveGraph(sensor, value) {
   var now = Date.now();
-  // Only record one point per minute
+  // Record one point every 5 seconds
   if (now - lastLiveFeedTime[sensor] < 5000) return;
   lastLiveFeedTime[sensor] = now;
 
@@ -756,7 +807,6 @@ connectWS();
 </body>
 </html>
 )rawliteral";
-
 // ============================================================
 // Web Server Handlers
 // ============================================================
@@ -986,14 +1036,17 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
         automation_deactivateAllOverrides();
       }
       else if (msgType == WS_COMMAND && strcmp(cmd, "relay_mapping") == 0) {
-        const RelayMapping* current = relayManager_getMapping();
+              const RelayMapping* current = relayManager_getMapping();
         RelayMapping newMapping;
         newMapping.magic = RELAY_MAPPING_MAGIC;
-        newMapping.pinHOH = doc["data"]["pinHOH"] | current->pinHOH;
-        newMapping.pinAirAssist = doc["data"]["pinAirAssist"] | current->pinAirAssist;
-        newMapping.pinExhaust = doc["data"]["pinExhaust"] | current->pinExhaust;
-        newMapping.pinCompressor = doc["data"]["pinCompressor"] | current->pinCompressor;
-        memset(newMapping.reserved, 0, sizeof(newMapping.reserved));
+        newMapping.pinPos1 = doc["data"]["pinPos1"] | current->pinPos1;
+        newMapping.pinPos2 = doc["data"]["pinPos2"] | current->pinPos2;
+        newMapping.pinPos3 = doc["data"]["pinPos3"] | current->pinPos3;
+        newMapping.pinPos4 = doc["data"]["pinPos4"] | current->pinPos4;
+        newMapping.functionForPos[0] = doc["data"]["funcPos1"] | current->functionForPos[0];
+        newMapping.functionForPos[1] = doc["data"]["funcPos2"] | current->functionForPos[1];
+        newMapping.functionForPos[2] = doc["data"]["funcPos3"] | current->functionForPos[2];
+        newMapping.functionForPos[3] = doc["data"]["funcPos4"] | current->functionForPos[3];
 
         if (relayManager_updateMapping(&newMapping)) {
           memcpy(&g_runtimeCache.relayMapping, relayManager_getMapping(), sizeof(RelayMapping));
@@ -1015,7 +1068,6 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
           size_t responseLen = serializeJson(responseDoc, response, sizeof(response));
           g_webSocket.sendTXT(num, (const uint8_t*)response, responseLen);
         }
-      }
       else if (msgType == WS_COMMAND && strcmp(cmd, "simulate") == 0) {
         float current = doc["current"] | 0.0f;
         float target = doc["target"] | 88.0f;
@@ -1165,10 +1217,14 @@ static void sendConfigUpdate(uint8_t clientNum) {
   doc["co2Emergency"] = t->co2Emergency;
   doc["emaWeight"] = adaptive_getEMAWeight();
   const RelayMapping* mapping = relayManager_getMapping();
-  doc["pinHOH"] = mapping->pinHOH;
-  doc["pinAirAssist"] = mapping->pinAirAssist;
-  doc["pinExhaust"] = mapping->pinExhaust;
-  doc["pinCompressor"] = mapping->pinCompressor;
+  doc["pinPos1"] = mapping->pinPos1;
+  doc["pinPos2"] = mapping->pinPos2;
+  doc["pinPos3"] = mapping->pinPos3;
+  doc["pinPos4"] = mapping->pinPos4;
+  doc["funcPos1"] = mapping->functionForPos[0];
+  doc["funcPos2"] = mapping->functionForPos[1];
+  doc["funcPos3"] = mapping->functionForPos[2];
+  doc["funcPos4"] = mapping->functionForPos[3];
   char output[256];
   size_t len = serializeJson(doc, output, sizeof(output));
   if (len >= sizeof(output)) {
