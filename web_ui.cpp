@@ -342,7 +342,7 @@ function connectWS(){
 function handleMessage(msg){
   switch(msg.type){
     case 0: updateSensors(msg); break;
-    case 1: updateRelays(msg); updateOverrideStatus(msg); break;
+    case 1: updateRelays(msg); updateOverrideStatus(msg); updateAlerts(msg); break;
     case 2:
       if(msg.message === "CONFIRM_LOUD_NIGHT"){
         var relayNames = ["Humidifier","Air Assist","Exhaust Fan","Compressor"];
