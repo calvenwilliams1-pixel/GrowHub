@@ -1,0 +1,47 @@
+# GrowHub32 v1.5.0 — Position-Based Relay Mapping & Compressor Rework
+
+## New Features
+- **Position-based relay mapping** — Relays mapped by physical position (1-4) with function assignment dropdowns. GPIO pin + function per position. Duplicate function validation client and server side.
+- **Relay Identify button** — Toggles a relay at 2Hz for 5 seconds to identify which physical position is which.
+- **Compressor rework** — Shop compressor with own pressure switch. ON at boot, OFF during night mode, ON at morning. No cooldown, no max runtime enforcement.
+- **Cache versioning** — `RuntimeCache` now includes a version byte for future-proof migration.
+
+## Improvements
+- Air Assist exempt from relay cycle limits (burst-cycled by design)
+- Manual override no longer kills other humidity relay on toggle
+- `COMPRESSOR_MAX_ON_MS` and `COMPRESSOR_COOLDOWN` constants removed
+- Magic number bumped to `0x524E` for cache migration
+- `__attribute__((packed))` + `static_assert` on `RelayMapping`
+- `relayManager_validateMapping()` extracted — shared validation logic
+- Safe hardware transition on remap (all OFF, tristate old pins, init new)
+- EMA weight bounds check in Web UI
+- GPIO pin validation in Web UI before sending
+- Config tab HTML structure fixed
+- Dropdown defaults correctly set
+- `identifyRelay` timeout leak fixed
+- `:has()` CSS replaced with `.active` class for browser compatibility
+- `connectWS()` guard against double-connect
+- Graph live feed at 5-second intervals
+- `static_assert(sizeof(FridgePacket) == 13)` added
+- `strlen` replaced with `serializeJson` return length throughout WebSocket handlers
+
+## v1.4.0 — Fridge Integration, Graphs & Offline Alerts
+
+### New Features
+- **Fridge Alarms** — High temp (8°C) and low temp (0°C) alerts with 10-min cooldown
+- **Fridge Bridge** — ESP-NOW protocol expanded to include humidity and door state, backward-compatible
+- **Graph Dashboard** — Historical sensor graphs (1h/6h/24h) using Chart.js, two-pass CSV downsampling
+- **Offline Alert Framework** — Periodic alive pings via ntfy.sh with MAC address identification
+- **RTC Time Setting** — Set DS3231 time from Web UI
+- **High Humidity Exhaust** — Configurable exhaust fan trigger
+- **Sensor Calibration Offsets** — Compile-time temperature/humidity/CO2 offsets
+- **Web UI Visual Upgrade** — Dark theme, mobile-optimized tabs, sensor cards, relay grid
+
+### Fixes
+- GPIO12 bootstrapping issue resolved (Air Assist default → GPIO26)
+- `network.cpp` duplication and missing `if` fixed
+- HTTP timeout (2000ms), heap-free URL, MAC in ping
+- CRC out-of-bounds read in ESP-NOW legacy packet handling
+- Sequence gap detection restored
+- Chart.js served from SPIFFS with versioned URL and cache headers
+- Multiple Web UI bugs fixed (double div, markdown artifacts, stray tags, `strlen` usage)
