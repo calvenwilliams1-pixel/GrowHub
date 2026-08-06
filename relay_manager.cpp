@@ -350,8 +350,6 @@ bool relayManager_setRelay(uint8_t relayIndex, bool turnOn, bool force) {
     relay->lastOffTime = now;
     relay->totalOnDuration = 0;
 
-    }
-
     Serial.print(F("[RELAY] "));
     Serial.print(relayNames[relayIndex]);
     Serial.println(F(" -> OFF"));
