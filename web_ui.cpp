@@ -179,6 +179,11 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
     <div class="relay-card" data-relay-index="1" data-relay-state="false"><div class="name">Air Assist</div><div class="state off" id="assistState">OFF</div></div>
     <div class="relay-card" data-relay-index="2" data-relay-state="false"><div class="name">Exhaust Fan</div><div class="state off" id="fanState">OFF</div></div>
     <div class="relay-card" data-relay-index="3" data-relay-state="false"><div class="name">Compressor</div><div class="state off" id="compState">OFF</div><div class="locked" id="compLock"></div></div>
+    </div>
+  <div class="config-group" id="alertsPanel" style="display:none;">
+    <h3>⚠️ Alerts</h3>
+    <div id="alertsList"></div>
+  </div>
   <div class="config-group">
     <h3>System Status</h3>
     <div class="config-row"><label>Night Mode</label><span id="nightModeStatus">--</span></div>
@@ -407,6 +412,35 @@ function updateSensors(msg){
   if (typeof msg.hum === 'number') feedLiveGraph(1, msg.hum);
   if (typeof msg.co2 === 'number') feedLiveGraph(2, msg.co2);
   if (typeof msg.fridge === 'number') feedLiveGraph(3, msg.fridge);
+}
+
+var lastAlertBitmask = -1;
+
+function updateAlerts(msg) {
+  var panel = document.getElementById('alertsPanel');
+  var list = document.getElementById('alertsList');
+  if (!panel || !list) return;
+
+  var alerts = msg.alerts || 0;
+  if (alerts === lastAlertBitmask) return;
+  lastAlertBitmask = alerts;
+
+  if (alerts === 0) {
+    list.innerHTML = '';
+    panel.style.display = 'none';
+    return;
+  }
+
+  panel.style.display = 'block';
+  var html = '';
+
+  if (alerts & 0x01) html += '<div style="color:#f85149;background:rgba(248,81,73,0.1);border:1px solid rgba(248,81,73,0.4);padding:8px 12px;margin-bottom:6px;border-radius:6px;font-size:0.85em;font-weight:600;">Sensor Fault — Using Last Known Values</div>';
+  if (alerts & 0x02) html += '<div style="color:#d29922;background:rgba(210,153,34,0.1);border:1px solid rgba(210,153,34,0.4);padding:8px 12px;margin-bottom:6px;border-radius:6px;font-size:0.85em;font-weight:600;">Humidifier Dry-Run Suspected — Check Tank</div>';
+  if (alerts & 0x04) html += '<div style="color:#d29922;background:rgba(210,153,34,0.1);border:1px solid rgba(210,153,34,0.4);padding:8px 12px;margin-bottom:6px;border-radius:6px;font-size:0.85em;font-weight:600;">Exhaust Fan May Be Blocked — CO2 Not Dropping</div>';
+  if (alerts & 0x08) html += '<div style="color:#d29922;background:rgba(210,153,34,0.1);border:1px solid rgba(210,153,34,0.4);padding:8px 12px;margin-bottom:6px;border-radius:6px;font-size:0.85em;font-weight:600;">Fridge Node Offline</div>';
+
+  // ⚠️ Strings are hardcoded — do not interpolate dynamic data into innerHTML
+  list.innerHTML = html;
 }
 
 function updateRelays(msg){
@@ -1246,6 +1280,7 @@ static void sendSystemStatus() {
   doc["humOverrideRemaining"] = automation_getHumidityOverrideRemaining() / 1000;
   doc["co2Override"] = automation_isCO2OverrideActive();
   doc["co2OverrideRemaining"] = automation_getCO2OverrideRemaining() / 1000;
+  doc["alerts"] = safety_getActiveAlerts() | network_getActiveAlerts();
 
   char output[256];
   size_t len = serializeJson(doc, output, sizeof(output));
