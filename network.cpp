@@ -35,6 +35,7 @@
 #include "system_state.h"
 #include <ESPmDNS.h>
 #include "sd_logger.h"
+#include <ArduinoJson.h>
 
 // ============================================================
 // Network Credentials (private — do not commit to version control)
