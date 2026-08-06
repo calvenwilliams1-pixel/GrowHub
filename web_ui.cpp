@@ -875,11 +875,15 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
         calibrationActive = g_systemState.calibrationActive;
         portEXIT_CRITICAL(&g_stateMux);
 
-        if (!calibrationActive) {
+             if (!calibrationActive) {
           if (index == RELAY_HOH || index == RELAY_AIR_ASSIST) {
-            automation_activateHumidityOverride();
+            if (!automation_isHumidityOverrideActive()) {
+              automation_activateHumidityOverride();
+            }
           } else if (index == RELAY_EXHAUST) {
-            automation_activateCO2Override();
+            if (!automation_isCO2OverrideActive()) {
+              automation_activateCO2Override();
+            }
           }
 
           if (relayManager_setRelay(index, state, force)) {
