@@ -174,6 +174,18 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
       <div class="unit"></div>
     </div>
   </div>
+   <div class="config-group" id="weatherPanel" style="display:none;">
+    <h3>🌤️ Outdoor Weather</h3>
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+      <span id="weatherIcon" style="font-size:2.5em;" aria-label="Current weather condition"></span>
+      <div>
+        <div id="weatherTemp" style="font-size:1.4em;font-weight:bold;color:#ffffff;">--</div>
+        <div id="weatherHum" style="font-size:0.85em;color:#8b949e;">--</div>
+        <div id="weatherWind" style="font-size:0.85em;color:#8b949e;">--</div>
+      </div>
+    </div>
+    <div id="weatherStale" style="display:none;font-size:0.75em;color:#d29922;margin-top:6px;">⚠️ Data may be stale</div>
+  </div>
   <div class="relay-grid">
        <div class="relay-card" data-relay-index="0" data-relay-state="false"><div class="name">Humidifier</div><div class="state off" id="hohState">OFF</div></div>
     <div class="relay-card" data-relay-index="1" data-relay-state="false"><div class="name">Air Assist</div><div class="state off" id="assistState">OFF</div></div>
@@ -233,6 +245,11 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   <div class="config-group">
     <h3>Adaptive Learning</h3>
     <div class="config-row"><label>EMA Weight (0.10-0.50)</label><input type="number" id="emaWeight" value="0.30" step="0.05" min="0.10" max="0.50"></div>
+  </div>
+  <div class="config-group">
+    <h3>Weather Location</h3>
+    <div class="config-row"><label>Latitude</label><input type="number" id="weatherLat" value="43.68" step="0.01" min="-90" max="90"></div>
+    <div class="config-row"><label>Longitude</label><input type="number" id="weatherLon" value="-79.77" step="0.01" min="-180" max="180"></div>
   </div>
   <div class="config-group">
     <h3>Relay Mapping</h3>
@@ -412,6 +429,37 @@ function updateSensors(msg){
   if (typeof msg.hum === 'number') feedLiveGraph(1, msg.hum);
   if (typeof msg.co2 === 'number') feedLiveGraph(2, msg.co2);
   if (typeof msg.fridge === 'number') feedLiveGraph(3, msg.fridge);
+  updateWeather(msg);
+}
+
+function updateWeather(msg) {
+  var panel = document.getElementById('weatherPanel');
+  if (!panel) return;
+
+  if (!msg.weatherValid) {
+    panel.style.display = 'none';
+    return;
+  }
+
+  panel.style.display = '';
+  document.getElementById('weatherTemp').textContent = (typeof msg.weatherTemp === 'number') ? msg.weatherTemp.toFixed(1) + '°C' : '--';
+  document.getElementById('weatherHum').textContent = (typeof msg.weatherHum === 'number') ? 'Humidity: ' + msg.weatherHum + '%' : '';
+  document.getElementById('weatherWind').textContent = (typeof msg.weatherWind === 'number') ? 'Wind: ' + msg.weatherWind.toFixed(1) + ' km/h' : '';
+
+  var code = msg.weatherCode || 0;
+  var emoji = '🌤️';
+  if (code === 0) emoji = '☀️';
+  else if (code >= 1 && code <= 3) emoji = '⛅';
+  else if (code >= 45 && code <= 48) emoji = '🌫️';
+  else if (code >= 51 && code <= 55) emoji = '🌦️';
+  else if (code >= 61 && code <= 65) emoji = '🌧️';
+  else if (code >= 71 && code <= 75) emoji = '❄️';
+  else if (code >= 80 && code <= 82) emoji = '🌦️';
+  else if (code >= 95 && code <= 99) emoji = '⛈️';
+  document.getElementById('weatherIcon').textContent = emoji;
+
+  var staleEl = document.getElementById('weatherStale');
+  staleEl.style.display = msg.weatherStale ? 'block' : 'none';
 }
 
 var lastAlertBitmask = -1;
@@ -494,6 +542,8 @@ function updateConfig(msg){
   document.getElementById('funcPos2').value = msg.funcPos2;
   document.getElementById('funcPos3').value = msg.funcPos3;
   document.getElementById('funcPos4').value = msg.funcPos4;
+  document.getElementById('weatherLat').value = msg.weatherLat;
+  document.getElementById('weatherLon').value = msg.weatherLon;
 }
 
 function updateOverrideStatus(msg){
@@ -669,10 +719,18 @@ function saveThresholds(){
     assistOffSec: assistOff,
     co2HighLimit: co2High,
     co2LowTarget: co2Low,
-    co2Emergency: co2Emer
+      co2Emergency: co2Emer,
+    weatherLat: wLat,
+    weatherLon: wLon
   };
-  sendWS({type: 6, cmd: 'thresholds', data: thresholds});
+   var wLat = parseFloat(document.getElementById('weatherLat').value);
+  var wLon = parseFloat(document.getElementById('weatherLon').value);
+  if (isNaN(wLat) || wLat < -90 || wLat > 90 || isNaN(wLon) || wLon < -180 || wLon > 180) {
+    addLog('Invalid weather coordinates', 'warn');
+    return;
+  }
 
+  sendWS({type: 6, cmd: 'thresholds', data: thresholds});
   var emaWeight = parseFloat(document.getElementById('emaWeight').value);
   if (isNaN(emaWeight) || emaWeight < 0.10 || emaWeight > 0.50) {
     addLog('EMA Weight must be between 0.10 and 0.50', 'warn');
@@ -1069,6 +1127,11 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
         newThresholds.co2Emergency = doc["data"]["co2Emergency"] | thresholds->co2Emergency;
 
         automation_updateThresholds(&newThresholds);
+                 // v1.6: Weather location
+        float wLat = doc["data"]["weatherLat"] | g_runtimeCache.weatherLat;
+        float wLon = doc["data"]["weatherLon"] | g_runtimeCache.weatherLon;
+        if (wLat >= -90.0f && wLat <= 90.0f) g_runtimeCache.weatherLat = wLat;
+        if (wLon >= -180.0f && wLon <= 180.0f) g_runtimeCache.weatherLon = wLon;
       }
       else if (msgType == WS_COMMAND && strcmp(cmd, "ema") == 0) {
         float weight = doc["weight"] | DEFAULT_EMA_WEIGHT;
@@ -1230,7 +1293,7 @@ static void sendSensorUpdate() {
     controlMode = "PID";
   }
 
-  StaticJsonDocument<768> doc;
+  StaticJsonDocument<1024> doc;
   doc["type"] = WS_SENSOR_UPDATE;
   doc["temp"] = temp;
   doc["hum"] = hum;
@@ -1249,6 +1312,13 @@ static void sendSensorUpdate() {
   doc["activeBand"] = activeBand;
   doc["confidence"] = confidence;
   doc["controlMode"] = controlMode;
+  doc["weatherValid"] = g_systemState.weatherValid;
+  doc["weatherTemp"] = g_systemState.weatherTemp;
+  doc["weatherHum"] = g_systemState.weatherHum;
+  doc["weatherCode"] = g_systemState.weatherCode;
+  doc["weatherWind"] = g_systemState.weatherWind;
+  doc["weatherStale"] = (g_systemState.weatherValid && 
+                         (millis() - g_systemState.weatherLastFetch > WEATHER_STALE_MS));
 
   char output[768];
   size_t len = serializeJson(doc, output, sizeof(output));
@@ -1315,6 +1385,8 @@ static void sendConfigUpdate(uint8_t clientNum) {
   doc["funcPos2"] = mapping->functionForPos[1];
   doc["funcPos3"] = mapping->functionForPos[2];
   doc["funcPos4"] = mapping->functionForPos[3];
+  doc["weatherLat"] = g_runtimeCache.weatherLat;
+  doc["weatherLon"] = g_runtimeCache.weatherLon;
   char output[256];
   size_t len = serializeJson(doc, output, sizeof(output));
   if (len >= sizeof(output)) {
