@@ -82,6 +82,13 @@ struct RuntimeCache {
 
   // v1.4: Configurable relay mapping persistence
   RelayMapping relayMapping;
+
+  // v1.6: Weather location persistence
+  float weatherLat;
+  float weatherLon;
+
+  // v1.6: Configurable override timeout (minutes)
+  uint16_t overrideTimeoutMinutes;
 };
 
 extern RuntimeCache g_runtimeCache;

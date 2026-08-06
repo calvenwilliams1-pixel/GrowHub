@@ -68,12 +68,13 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   .warning-banner.active{display:flex;align-items:center;justify-content:center;gap:8px;animation:pulse-danger 2s infinite;}
   @keyframes pulse-danger{0%{background-color:#da3633;}50%{background-color:#8e1519;}100%{background-color:#da3633;}}
   .tabs{display:flex;background:rgba(22,27,34,0.95);backdrop-filter:blur(5px);border-bottom:1px solid #30363d;overflow-x:auto;}
-  .tab{padding:14px 20px;font-size:0.9em;color:#8b949e;border:none;background:none;cursor:pointer;white-space:nowrap;border-bottom:2px solid transparent;transition:all 0.2s;}
-  .tab.active{color:#58a6ff;border-bottom-color:#58a6ff;}
+  .tab{padding:10px 16px;font-size:0.85em;color:#8b949e;border:none;background:none;cursor:pointer;white-space:nowrap;border-radius:20px;margin:4px 2px;transition:all 0.2s;font-weight:500;}
+  .tab:hover{color:#c9d1d9;}
+  .tab.active{color:#58a6ff;background:rgba(88,166,255,0.15);border:1px solid rgba(88,166,255,0.3);}
   .tab-content{display:none;padding:16px;}
   .tab-content.active{display:block;}
   .sensor-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin-bottom:18px;}
-  .sensor-card{background:#161b22;border:1px solid #3d444d;border-radius:12px;padding:18px;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,0.5);}
+  .sensor-card{background:linear-gradient(180deg,#161b22 0%,#0d1117 100%);border:1px solid #30363d;border-radius:12px;padding:18px;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,0.35);}
   .sensor-card .label{font-size:0.7em;color:#8b949e;text-transform:uppercase;letter-spacing:0.5px;}
   .sensor-card .value{font-size:2.2em;font-weight:700;margin:8px 0;color:#ffffff;line-height:1;font-variant-numeric:tabular-nums;min-height:1.2em;}
   .sensor-card .unit{font-size:0.6em;color:#8b949e;font-weight:500;text-transform:uppercase;letter-spacing:0.5px;}
@@ -81,8 +82,10 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   .sensor-card .status-dot.ok{background:#3fb950;box-shadow:0 0 6px rgba(63,185,80,0.4);}
   .sensor-card .status-dot.fault{background:#da3633;box-shadow:0 0 6px rgba(218,54,51,0.4);}
   .relay-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:18px;}
-  .relay-card{background:#161b22;border:1px solid #3d444d;border-radius:12px;padding:14px;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,0.5);}
+  .relay-card{background:linear-gradient(180deg,#161b22 0%,#0d1117 100%);border:1px solid #30363d;border-radius:12px;padding:14px;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,0.35);cursor:pointer;user-select:none;-webkit-tap-highlight-color:transparent;touch-action:manipulation;transition:transform 0.15s ease,border-color 0.15s ease;}
+  .relay-card:active{transform:scale(0.97);border-color:#58a6ff;}
   .relay-card.active{border-color:#3fb950;box-shadow:0 0 16px rgba(63,185,80,0.25);}
+  .relay-card.active:active{border-color:#3fb950;}
   .relay-card .name{font-size:0.7em;color:#8b949e;text-transform:uppercase;letter-spacing:0.5px;}
   .relay-card .state{font-size:1.1em;font-weight:bold;margin:6px 0;}
   .relay-card .state.on{color:#3fb950;}
@@ -97,7 +100,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   .btn-off:hover{background:#30363d;}
   .btn-neutral{background:#30363d;color:#c9d1d9;}
   .btn-neutral:hover{background:#484f58;}
-  .config-group{margin-bottom:18px;background:#161b22;border:1px solid #3d444d;border-radius:12px;padding:16px;}
+  .config-group{background:linear-gradient(180deg,#161b22 0%,#0d1117 100%);border:1px solid #30363d;border-radius:12px;padding:16px;margin-bottom:18px;box-shadow:0 4px 12px rgba(0,0,0,0.35);}
   .config-group h3{font-size:0.95em;color:#58a6ff;margin-bottom:12px;border-left:4px solid #58a6ff;padding-left:10px;}
   .config-row{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid #21262d;}
   .config-row:last-child{border-bottom:none;}
@@ -112,7 +115,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   .log-entry.error{color:#da3633;}
   .calibration-panel{text-align:center;padding:24px;}
   .countdown{font-size:3em;font-weight:bold;color:#58a6ff;}
-  .sim-result{background:#161b22;border:1px solid #3d444d;border-radius:12px;padding:16px;margin-top:12px;text-align:center;}
+  .sim-result{background:linear-gradient(180deg,#161b22 0%,#0d1117 100%);border:1px solid #30363d;border-radius:12px;padding:16px;margin-top:12px;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,0.35);}
   .sim-result .time{font-size:1.5em;color:#3fb950;}
   .footer{text-align:center;padding:18px;font-size:0.7em;color:#484f58;}
   .override-panel{display:none;background:#3a2a1a;color:#d29922;padding:10px;border-radius:8px;margin-bottom:14px;text-align:center;font-weight:bold;border:1px solid #d29922;}
@@ -131,6 +134,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
 </div>
 
 <div class="warning-banner" id="warningBanner">Warning: Sensor Fault - System Running Last Known Values</div>
+<div id="toastPanel" style="display:none;position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:#30363d;color:#e6edf3;padding:10px 24px;border-radius:20px;font-size:0.9em;font-weight:500;z-index:200;box-shadow:0 4px 12px rgba(0,0,0,0.5);pointer-events:none;"><span id="toastMsg"></span></div>
 
 <div class="tabs">
   <button class="tab active" onclick="switchTab(this, 'dashboard')">Dashboard</button>
@@ -170,11 +174,27 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
       <div class="unit"></div>
     </div>
   </div>
+   <div class="config-group" id="weatherPanel" style="display:none;">
+    <h3>🌤️ Outdoor Weather</h3>
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+      <span id="weatherIcon" style="font-size:2.5em;" aria-label="Current weather condition"></span>
+      <div>
+        <div id="weatherTemp" style="font-size:1.4em;font-weight:bold;color:#ffffff;">--</div>
+        <div id="weatherHum" style="font-size:0.85em;color:#8b949e;">--</div>
+        <div id="weatherWind" style="font-size:0.85em;color:#8b949e;">--</div>
+      </div>
+    </div>
+    <div id="weatherStale" style="display:none;font-size:0.75em;color:#d29922;margin-top:6px;">⚠️ Data may be stale</div>
+  </div>
   <div class="relay-grid">
-    <div class="relay-card"><div class="name">Humidifier</div><div class="state off" id="hohState">OFF</div></div>
-    <div class="relay-card"><div class="name">Air Assist</div><div class="state off" id="assistState">OFF</div></div>
-    <div class="relay-card"><div class="name">Exhaust Fan</div><div class="state off" id="fanState">OFF</div></div>
-    <div class="relay-card"><div class="name">Compressor</div><div class="state off" id="compState">OFF</div><div class="locked" id="compLock"></div></div>
+       <div class="relay-card" data-relay-index="0" data-relay-state="false"><div class="name">Humidifier</div><div class="state off" id="hohState">OFF</div></div>
+    <div class="relay-card" data-relay-index="1" data-relay-state="false"><div class="name">Air Assist</div><div class="state off" id="assistState">OFF</div></div>
+    <div class="relay-card" data-relay-index="2" data-relay-state="false"><div class="name">Exhaust Fan</div><div class="state off" id="fanState">OFF</div></div>
+    <div class="relay-card" data-relay-index="3" data-relay-state="false"><div class="name">Compressor</div><div class="state off" id="compState">OFF</div><div class="locked" id="compLock"></div></div>
+    </div>
+  <div class="config-group" id="alertsPanel" style="display:none;">
+    <h3>⚠️ Alerts</h3>
+    <div id="alertsList"></div>
   </div>
   <div class="config-group">
     <h3>System Status</h3>
@@ -225,6 +245,22 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   <div class="config-group">
     <h3>Adaptive Learning</h3>
     <div class="config-row"><label>EMA Weight (0.10-0.50)</label><input type="number" id="emaWeight" value="0.30" step="0.05" min="0.10" max="0.50"></div>
+  </div>
+   <div class="config-group">
+    <h3>Manual Override Timeout</h3>
+    <div class="config-row"><label>Timeout (minutes)</label><input type="number" id="overrideTimeout" value="10" min="1" max="1440" step="1"></div>
+    <div style="display:flex;gap:4px;margin-top:8px;flex-wrap:wrap;">
+      <button class="btn btn-neutral override-btn" onclick="setOverrideTime(10,this)">10 min</button>
+      <button class="btn btn-neutral override-btn" onclick="setOverrideTime(30,this)">30 min</button>
+      <button class="btn btn-neutral override-btn" onclick="setOverrideTime(60,this)">1 hr</button>
+      <button class="btn btn-neutral override-btn" onclick="setOverrideTime(360,this)">6 hr</button>
+      <button class="btn btn-neutral override-btn" onclick="setOverrideTime(1440,this)">24 hr</button>
+    </div>
+  </div>
+  <div class="config-group">
+    <h3>Weather Location</h3>
+    <div class="config-row"><label>Latitude</label><input type="number" id="weatherLat" value="43.68" step="0.01" min="-90" max="90"></div>
+    <div class="config-row"><label>Longitude</label><input type="number" id="weatherLon" value="-79.77" step="0.01" min="-180" max="180"></div>
   </div>
   <div class="config-group">
     <h3>Relay Mapping</h3>
@@ -334,7 +370,7 @@ function connectWS(){
 function handleMessage(msg){
   switch(msg.type){
     case 0: updateSensors(msg); break;
-    case 1: updateRelays(msg); updateOverrideStatus(msg); break;
+    case 1: updateRelays(msg); updateOverrideStatus(msg); updateAlerts(msg); break;
     case 2:
       if(msg.message === "CONFIRM_LOUD_NIGHT"){
         var relayNames = ["Humidifier","Air Assist","Exhaust Fan","Compressor"];
@@ -404,6 +440,66 @@ function updateSensors(msg){
   if (typeof msg.hum === 'number') feedLiveGraph(1, msg.hum);
   if (typeof msg.co2 === 'number') feedLiveGraph(2, msg.co2);
   if (typeof msg.fridge === 'number') feedLiveGraph(3, msg.fridge);
+  updateWeather(msg);
+}
+
+function updateWeather(msg) {
+  var panel = document.getElementById('weatherPanel');
+  if (!panel) return;
+
+  if (!msg.weatherValid) {
+    panel.style.display = 'none';
+    return;
+  }
+
+  panel.style.display = '';
+  document.getElementById('weatherTemp').textContent = (typeof msg.weatherTemp === 'number') ? msg.weatherTemp.toFixed(1) + '°C' : '--';
+  document.getElementById('weatherHum').textContent = (typeof msg.weatherHum === 'number') ? 'Humidity: ' + msg.weatherHum + '%' : '';
+  document.getElementById('weatherWind').textContent = (typeof msg.weatherWind === 'number') ? 'Wind: ' + msg.weatherWind.toFixed(1) + ' km/h' : '';
+
+  var code = msg.weatherCode || 0;
+  var emoji = '🌤️';
+  if (code === 0) emoji = '☀️';
+  else if (code >= 1 && code <= 3) emoji = '⛅';
+  else if (code >= 45 && code <= 48) emoji = '🌫️';
+  else if (code >= 51 && code <= 55) emoji = '🌦️';
+  else if (code >= 61 && code <= 65) emoji = '🌧️';
+  else if (code >= 71 && code <= 75) emoji = '❄️';
+  else if (code >= 80 && code <= 82) emoji = '🌦️';
+  else if (code >= 95 && code <= 99) emoji = '⛈️';
+  document.getElementById('weatherIcon').textContent = emoji;
+
+  var staleEl = document.getElementById('weatherStale');
+  staleEl.style.display = msg.weatherStale ? 'block' : 'none';
+}
+
+var lastAlertBitmask = -1;
+
+function updateAlerts(msg) {
+  var panel = document.getElementById('alertsPanel');
+  var list = document.getElementById('alertsList');
+  if (!panel || !list) return;
+
+  var alerts = msg.alerts || 0;
+  if (alerts === lastAlertBitmask) return;
+  lastAlertBitmask = alerts;
+
+  if (alerts === 0) {
+    list.innerHTML = '';
+    panel.style.display = 'none';
+    return;
+  }
+
+  panel.style.display = 'block';
+  var html = '';
+
+  if (alerts & 0x01) html += '<div style="color:#f85149;background:rgba(248,81,73,0.1);border:1px solid rgba(248,81,73,0.4);padding:8px 12px;margin-bottom:6px;border-radius:6px;font-size:0.85em;font-weight:600;">Sensor Fault — Using Last Known Values</div>';
+  if (alerts & 0x02) html += '<div style="color:#d29922;background:rgba(210,153,34,0.1);border:1px solid rgba(210,153,34,0.4);padding:8px 12px;margin-bottom:6px;border-radius:6px;font-size:0.85em;font-weight:600;">Humidifier Dry-Run Suspected — Check Tank</div>';
+  if (alerts & 0x04) html += '<div style="color:#d29922;background:rgba(210,153,34,0.1);border:1px solid rgba(210,153,34,0.4);padding:8px 12px;margin-bottom:6px;border-radius:6px;font-size:0.85em;font-weight:600;">Exhaust Fan May Be Blocked — CO2 Not Dropping</div>';
+  if (alerts & 0x08) html += '<div style="color:#d29922;background:rgba(210,153,34,0.1);border:1px solid rgba(210,153,34,0.4);padding:8px 12px;margin-bottom:6px;border-radius:6px;font-size:0.85em;font-weight:600;">Fridge Node Offline</div>';
+
+  // ⚠️ Strings are hardcoded — do not interpolate dynamic data into innerHTML
+  list.innerHTML = html;
 }
 
 function updateRelays(msg){
@@ -412,24 +508,28 @@ function updateRelays(msg){
   hoh.className = 'state ' + (msg.hoh ? 'on' : 'off');
   var hohCard = hoh.parentElement;
   if (msg.hoh) hohCard.classList.add('active'); else hohCard.classList.remove('active');
+  hohCard.setAttribute('data-relay-state', msg.hoh ? 'true' : 'false');
 
   var assist = document.getElementById('assistState');
   assist.textContent = msg.assist ? 'ON' : 'OFF';
   assist.className = 'state ' + (msg.assist ? 'on' : 'off');
   var assistCard = assist.parentElement;
   if (msg.assist) assistCard.classList.add('active'); else assistCard.classList.remove('active');
+  assistCard.setAttribute('data-relay-state', msg.assist ? 'true' : 'false');
 
   var fan = document.getElementById('fanState');
   fan.textContent = msg.fan ? 'ON' : 'OFF';
   fan.className = 'state ' + (msg.fan ? 'on' : 'off');
   var fanCard = fan.parentElement;
   if (msg.fan) fanCard.classList.add('active'); else fanCard.classList.remove('active');
+  fanCard.setAttribute('data-relay-state', msg.fan ? 'true' : 'false');
 
   var comp = document.getElementById('compState');
   comp.textContent = msg.compressor ? 'ON' : 'OFF';
   comp.className = 'state ' + (msg.compressor ? 'on' : 'off');
   var compCard = comp.parentElement;
   if (msg.compressor) compCard.classList.add('active'); else compCard.classList.remove('active');
+  compCard.setAttribute('data-relay-state', msg.compressor ? 'true' : 'false');
 
   document.getElementById('compLock').textContent = msg.compressorLocked ? '(COOLDOWN)' : '';
 }
@@ -453,6 +553,9 @@ function updateConfig(msg){
   document.getElementById('funcPos2').value = msg.funcPos2;
   document.getElementById('funcPos3').value = msg.funcPos3;
   document.getElementById('funcPos4').value = msg.funcPos4;
+  document.getElementById('weatherLat').value = msg.weatherLat;
+  document.getElementById('weatherLon').value = msg.weatherLon;
+  document.getElementById('overrideTimeout').value = msg.overrideTimeout || 10;
 }
 
 function updateOverrideStatus(msg){
@@ -515,6 +618,52 @@ function switchTab(element, tabId){
   document.getElementById(tabId).classList.add('active');
 }
 
+var lastOverrideConfirmation = 0;
+var pendingConfirmRelay = -1;
+var pendingConfirmTimer = null;
+var toastTimer = null;
+
+function showToast(msg) {
+  var el = document.getElementById('toastMsg');
+  if (el) el.textContent = msg;
+  var panel = document.getElementById('toastPanel');
+  if (panel) panel.style.display = 'block';
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(function() {
+    var p = document.getElementById('toastPanel');
+    if (p) p.style.display = 'none';
+  }, 3000);
+}
+
+function initDashboardTaps() {
+  document.querySelectorAll('.relay-card').forEach(function(card) {
+    card.addEventListener('click', function(e) {
+      if (e.target.tagName === 'BUTTON') return;
+      var relayId = parseInt(this.getAttribute('data-relay-index'), 10);
+      var isActive = this.getAttribute('data-relay-state') === 'true';
+      var targetState = isActive ? 0 : 1;
+      var now = Date.now();
+
+      if (now - lastOverrideConfirmation > 300000) {
+        if (pendingConfirmRelay === relayId) {
+          relayCmd(relayId, targetState);
+          lastOverrideConfirmation = now;
+          pendingConfirmRelay = -1;
+          if (pendingConfirmTimer) clearTimeout(pendingConfirmTimer);
+          showToast('Override requested...');
+        } else {
+          pendingConfirmRelay = relayId;
+          var relayName = this.querySelector('.name').textContent;
+          showToast('Tap again to ' + (targetState ? 'start' : 'stop') + ' ' + relayName);
+          if (pendingConfirmTimer) clearTimeout(pendingConfirmTimer);
+          pendingConfirmTimer = setTimeout(function() { pendingConfirmRelay = -1; }, 3000);
+        }
+      } else {
+        relayCmd(relayId, targetState);
+      }
+    });
+  });
+}
 var identifyTimer = null;
 var identifyTimeout = null;
 
@@ -573,7 +722,18 @@ function saveThresholds(){
     return;
   }
 
-  var thresholds = {
+    var wLat = parseFloat(document.getElementById('weatherLat').value);
+  var wLon = parseFloat(document.getElementById('weatherLon').value);
+  if (isNaN(wLat) || wLat < -90 || wLat > 90 || isNaN(wLon) || wLon < -180 || wLon > 180) {
+    addLog('Invalid weather coordinates', 'warn');
+    return;
+  }
+
+  var overrideTimeout = parseInt(document.getElementById('overrideTimeout').value, 10);
+  if (isNaN(overrideTimeout) || overrideTimeout < 1) overrideTimeout = 10;
+  if (overrideTimeout > 1440) overrideTimeout = 1440;
+
+   var thresholds = {
     humHoHFloor: hohFloor,
     humAssistFloor: assistFloor,
     humCeiling: ceiling,
@@ -582,10 +742,13 @@ function saveThresholds(){
     assistOffSec: assistOff,
     co2HighLimit: co2High,
     co2LowTarget: co2Low,
-    co2Emergency: co2Emer
+    co2Emergency: co2Emer,
+    weatherLat: wLat,
+    weatherLon: wLon,
+    overrideTimeout: overrideTimeout
   };
-  sendWS({type: 6, cmd: 'thresholds', data: thresholds});
 
+  sendWS({type: 6, cmd: 'thresholds', data: thresholds});
   var emaWeight = parseFloat(document.getElementById('emaWeight').value);
   if (isNaN(emaWeight) || emaWeight < 0.10 || emaWeight > 0.50) {
     addLog('EMA Weight must be between 0.10 and 0.50', 'warn');
@@ -618,6 +781,12 @@ function runSimulation(){
   }
 
   sendWS({type: 6, cmd: 'simulate', current: current, target: target});
+}
+
+function setOverrideTime(minutes, btn) {
+  document.getElementById('overrideTimeout').value = minutes;
+  document.querySelectorAll('.override-btn').forEach(function(b) { b.classList.remove('active'); });
+  btn.classList.add('active');
 }
 
 function setRTCTime(){
@@ -802,6 +971,8 @@ function handleGraphResponse(msg) {
   graphChart.update('none');
 }
 
+initDashboardTaps();
+
 connectWS();
 </script>
 </body>
@@ -980,6 +1151,17 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
         newThresholds.co2Emergency = doc["data"]["co2Emergency"] | thresholds->co2Emergency;
 
         automation_updateThresholds(&newThresholds);
+                 // v1.6: Weather location
+        float wLat = doc["data"]["weatherLat"] | g_runtimeCache.weatherLat;
+        float wLon = doc["data"]["weatherLon"] | g_runtimeCache.weatherLon;
+        if (wLat >= -90.0f && wLat <= 90.0f) g_runtimeCache.weatherLat = wLat;
+        if (wLon >= -180.0f && wLon <= 180.0f) g_runtimeCache.weatherLon = wLon;
+                 // v1.6: Configurable override timeout
+        int parsedTimeout = doc["data"]["overrideTimeout"] | DEFAULT_OVERRIDE_TIMEOUT_MIN;
+        if (parsedTimeout < MIN_OVERRIDE_TIMEOUT_MIN) parsedTimeout = MIN_OVERRIDE_TIMEOUT_MIN;
+        if (parsedTimeout > MAX_OVERRIDE_TIMEOUT_MIN) parsedTimeout = MAX_OVERRIDE_TIMEOUT_MIN;
+        g_runtimeCache.overrideTimeoutMinutes = (uint16_t)parsedTimeout;
+        sdLogger_saveCache();
       }
       else if (msgType == WS_COMMAND && strcmp(cmd, "ema") == 0) {
         float weight = doc["weight"] | DEFAULT_EMA_WEIGHT;
@@ -1141,7 +1323,7 @@ static void sendSensorUpdate() {
     controlMode = "PID";
   }
 
-  StaticJsonDocument<768> doc;
+  StaticJsonDocument<1024> doc;
   doc["type"] = WS_SENSOR_UPDATE;
   doc["temp"] = temp;
   doc["hum"] = hum;
@@ -1160,6 +1342,13 @@ static void sendSensorUpdate() {
   doc["activeBand"] = activeBand;
   doc["confidence"] = confidence;
   doc["controlMode"] = controlMode;
+  doc["weatherValid"] = g_systemState.weatherValid;
+  doc["weatherTemp"] = g_systemState.weatherTemp;
+  doc["weatherHum"] = g_systemState.weatherHum;
+  doc["weatherCode"] = g_systemState.weatherCode;
+  doc["weatherWind"] = g_systemState.weatherWind;
+  doc["weatherStale"] = (g_systemState.weatherValid && 
+                         (millis() - g_systemState.weatherLastFetch > WEATHER_STALE_MS));
 
   char output[768];
   size_t len = serializeJson(doc, output, sizeof(output));
@@ -1191,6 +1380,7 @@ static void sendSystemStatus() {
   doc["humOverrideRemaining"] = automation_getHumidityOverrideRemaining() / 1000;
   doc["co2Override"] = automation_isCO2OverrideActive();
   doc["co2OverrideRemaining"] = automation_getCO2OverrideRemaining() / 1000;
+  doc["alerts"] = safety_getActiveAlerts() | network_getActiveAlerts();
 
   char output[256];
   size_t len = serializeJson(doc, output, sizeof(output));
@@ -1225,6 +1415,9 @@ static void sendConfigUpdate(uint8_t clientNum) {
   doc["funcPos2"] = mapping->functionForPos[1];
   doc["funcPos3"] = mapping->functionForPos[2];
   doc["funcPos4"] = mapping->functionForPos[3];
+  doc["weatherLat"] = g_runtimeCache.weatherLat;
+  doc["weatherLon"] = g_runtimeCache.weatherLon;
+  doc["overrideTimeout"] = g_runtimeCache.overrideTimeoutMinutes;
   char output[256];
   size_t len = serializeJson(doc, output, sizeof(output));
   if (len >= sizeof(output)) {
