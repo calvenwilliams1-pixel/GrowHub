@@ -82,6 +82,10 @@ struct RuntimeCache {
 
   // v1.4: Configurable relay mapping persistence
   RelayMapping relayMapping;
+
+  // v1.6: Weather location persistence
+  float weatherLat;
+  float weatherLon;
 };
 
 extern RuntimeCache g_runtimeCache;
