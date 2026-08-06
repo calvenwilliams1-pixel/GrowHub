@@ -709,7 +709,7 @@ var lastLiveFeedTime = [0, 0, 0, 0];
 function feedLiveGraph(sensor, value) {
   var now = Date.now();
   // Only record one point per minute
-  if (now - lastLiveFeedTime[sensor] < 60000) return;
+  if (now - lastLiveFeedTime[sensor] < 10000) return;
   lastLiveFeedTime[sensor] = now;
 
   var epoch = Math.floor(now / 1000);
