@@ -198,10 +198,10 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
     <br><button class="btn btn-off" style="margin-top:6px;" onclick="resumeAutomation()">Resume Automation Now</button>
   </div>
   <div class="config-group">
-    <div class="config-row"><label>Humidifier</label><div><button class="btn btn-on" onclick="relayCmd(0,1)">ON</button><button class="btn btn-off" onclick="relayCmd(0,0)">OFF</button></div></div>
-    <div class="config-row"><label>Air Assist</label><div><button class="btn btn-on" onclick="relayCmd(1,1)">ON</button><button class="btn btn-off" onclick="relayCmd(1,0)">OFF</button></div></div>
-    <div class="config-row"><label>Exhaust Fan</label><div><button class="btn btn-on" onclick="relayCmd(2,1)">ON</button><button class="btn btn-off" onclick="relayCmd(2,0)">OFF</button></div></div>
-    <div class="config-row"><label>Compressor</label><div><button class="btn btn-on" onclick="relayCmd(3,1)">ON</button><button class="btn btn-off" onclick="relayCmd(3,0)">OFF</button></div></div>
+       <div class="config-row"><label>Humidifier</label><div><button class="btn btn-neutral" onclick="identifyRelay(0)">ID</button><button class="btn btn-on" onclick="relayCmd(0,1)">ON</button><button class="btn btn-off" onclick="relayCmd(0,0)">OFF</button></div></div>
+    <div class="config-row"><label>Air Assist</label><div><button class="btn btn-neutral" onclick="identifyRelay(1)">ID</button><button class="btn btn-on" onclick="relayCmd(1,1)">ON</button><button class="btn btn-off" onclick="relayCmd(1,0)">OFF</button></div></div>
+    <div class="config-row"><label>Exhaust Fan</label><div><button class="btn btn-neutral" onclick="identifyRelay(2)">ID</button><button class="btn btn-on" onclick="relayCmd(2,1)">ON</button><button class="btn btn-off" onclick="relayCmd(2,0)">OFF</button></div></div>
+    <div class="config-row"><label>Compressor</label><div><button class="btn btn-neutral" onclick="identifyRelay(3)">ID</button><button class="btn btn-on" onclick="relayCmd(3,1)">ON</button><button class="btn btn-off" onclick="relayCmd(3,0)">OFF</button></div></div>
   </div>
 </div>
 
@@ -498,6 +498,25 @@ function switchTab(element, tabId){
   document.querySelectorAll('.tab-content').forEach(function(c){ c.classList.remove('active'); });
   element.classList.add('active');
   document.getElementById(tabId).classList.add('active');
+}
+
+var identifyTimer = null;
+
+function identifyRelay(index) {
+  if (identifyTimer) { clearInterval(identifyTimer); identifyTimer = null; }
+  var state = false;
+  sendWS({type: 6, cmd: 'relay', index: index, state: 1, force: true, confirmed: true});
+  addLog('Relay ' + index + ' identification started - toggling for 5 seconds', 'info');
+  identifyTimer = setInterval(function() {
+    state = !state;
+    sendWS({type: 6, cmd: 'relay', index: index, state: state ? 1 : 0, force: true, confirmed: true});
+  }, 500);
+  setTimeout(function() {
+    clearInterval(identifyTimer);
+    identifyTimer = null;
+    sendWS({type: 6, cmd: 'relay', index: index, state: 0, force: true, confirmed: true});
+    addLog('Relay ' + index + ' identification complete', 'info');
+  }, 5000);
 }
 
 function relayCmd(index, state){
