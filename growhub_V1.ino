@@ -295,15 +295,6 @@ void loop() {
   safety_checkDryRun(now);
   safety_checkFanStall(now);
 
-  // Enforce compressor max ON time (GH-SAFE-002)
-  {
-    unsigned long compressorOnDuration = relayManager_getOnDuration(RELAY_COMPRESSOR);
-    if (compressorOnDuration >= COMPRESSOR_MAX_ON_MS) {
-      Serial.println(F("[SAFETY] Compressor max ON time reached - forcing OFF"));
-      relayManager_setRelay(RELAY_COMPRESSOR, false);
-    }
-  }
-
   // Adaptive learning update (calibration state machine)
   adaptive_updateCalibration();
 
