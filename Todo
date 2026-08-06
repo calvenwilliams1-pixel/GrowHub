@@ -1,56 +1,59 @@
-# GrowHub32 — v1.5 Task List (Updated)
+# GrowHub32 — v1.6 Task List
 
 ---
 
-## ✅ Done This Session
+## DONE (v1.5)
 
 | Priority | Item | Status |
 |----------|------|--------|
-| 🔴 P0 | Compressor cooldown removed — shop compressor with own pressure switch | ✅ Done |
-| 🔴 P0 | Air Assist exempt from relay cycle limits | ✅ Done |
-| 🔴 P0 | Compressor ON at boot, OFF at night, ON at morning | ✅ Done |
-| 🔴 P0 | `COMPRESSOR_MAX_ON_MS` enforcement removed from `.ino` | ✅ Done |
-| 🔴 P0 | Manual override no longer kills other relay | ✅ Done |
-| 🟠 P1 | Relay Identify button — toggles at 2Hz for 5 seconds | ✅ Done |
-| 🟠 P1 | Relay mapping renamed to position-based (Position 1-4 + function dropdowns) | ✅ Done |
-| 🟠 P1 | Duplicate function validation — C++ backend + JS client-side | ✅ Done |
-| 🟠 P1 | Magic number bumped to `0x524E` for cache migration | ✅ Done |
-| 🟠 P1 | `__attribute__((packed))` + `static_assert` on `RelayMapping` | ✅ Done |
-| 🟠 P1 | `relayManager_validateMapping()` extracted — shared by init + update | ✅ Done |
-| 🟡 P2 | Safe hardware transition on remap (all OFF, tristate old, init new) | ✅ Done |
-| 🟡 P2 | EMA weight bounds check in JS | ✅ Done |
-| 🟡 P2 | `saveThresholds()` button restored | ✅ Done |
-| 🟡 P2 | GPIO pin validation in JS before sending | ✅ Done |
-| 🟡 P2 | Config tab HTML structure fixed (closing div, Adaptive Learning wrapper) | ✅ Done |
-| 🟡 P2 | `<select>` styling added to match dark theme | ✅ Done |
-| 🟡 P2 | Dropdown defaults set correctly (HOH/AirAssist/Exhaust/Compressor) | ✅ Done |
-| 🟡 P2 | `identifyRelay` timeout leak fixed | ✅ Done |
-| 🟡 P2 | `:has()` replaced with `.active` class for browser compatibility | ✅ Done |
-| 🟡 P2 | `connectWS()` guard against double-connect | ✅ Done |
-| 🟡 P2 | Graph live feed comment fixed (5 seconds, not 1 minute) | ✅ Done |
-| 🟡 P2 | Footer name corrected to Calven | ✅ Done |
-| 🟢 P3 | Graph live feed changed to 5-second intervals | ✅ Done |
-| 🟢 P3 | Chart.js served from SPIFFS | ✅ Done |
-| 🟢 P3 | `static_assert(sizeof(FridgePacket) == 13)` added to `network.h` | ✅ Done |
-| 🟢 P3 | `COMPRESSOR_COOLDOWN` constants removed from `config.h` | ✅ Done |
+| 🔴 P0 | Compressor rework (no cooldown, ON at boot, OFF at night) | ✅ |
+| 🔴 P0 | Air Assist exempt from cycle limits | ✅ |
+| 🔴 P0 | Manual override fix | ✅ |
+| 🟠 P1 | Position-based relay mapping | ✅ |
+| 🟠 P1 | Relay Identify button | ✅ |
+| 🟡 P2 | Safe hardware remap, EMA bounds, UI fixes | ✅ |
+| 🟢 P3 | Cache versioning, CHANGELOG, Graph 5s feed | ✅ |
 
 ---
 
-## Remaining
+## v1.6 — Dashboard Refresh (Pure Frontend)
 
-| Priority | Item | Effort |
-|----------|------|--------|
-| 🟢 P3 | `feat/satellite-display` — Separate ESP32 OLED WebSocket display | Medium |
-| 🟢 P3 | Add cache versioning to `RuntimeCache` | Small |
-| 🟢 P3 | Update `CHANGELOG.md` | Small |
+| Priority | Item | Details | Effort |
+|----------|------|---------|--------|
+| 🟡 P2 | Visual refresh | Gradient cards, box-shadows, colored tab pills, relay card glow on active | Medium |
+| 🟡 P2 | Mascot | CSS-animated mushroom emoji, GPU-accelerated, reduced-motion fallback | Small |
+| 🟡 P2 | Tap-to-override | Double-tap relay cards to toggle ON/OFF. 5-min confirmation cooldown. `data-relay-index` attributes. | Medium |
 
 ---
 
-## Design Decisions (v1.5)
+## v1.6 — Alerts Panel (Backend + Frontend)
 
-- **Compressor:** ON at boot, OFF during night mode, ON at morning. No cooldown. No max runtime. Shop compressor with own pressure switch.
-- **Burst-cycled relays:** Exempt from relay cycle limits.
-- **Manual override:** Activate on first toggle only. Subsequent toggles within 10-min window don't re-trigger shutdown.
-- **Relay mapping:** Position-based (1-4). Each position has a GPIO pin and a function assignment. Functions must be unique — validated both client and server side.
-- **Identify button:** Toggles the selected function's relay at 2Hz for 5 seconds for physical identification.
-- **Graph dashboard:** 350 points max, 8KB heap buffer, 5-second live feed, Chart.js from SPIFFS.
+| Priority | Item | Details | Effort |
+|----------|------|---------|--------|
+| 🟡 P2 | Alerts panel on dashboard | Shows dry-run, fan stall, sensor fault, fridge offline. Sent on state change + on WS connect. Severity color-coded. | Medium |
+
+---
+
+## v1.6 — Weather Card (Backend + Frontend)
+
+| Priority | Item | Details | Effort |
+|----------|------|---------|--------|
+| 🟡 P2 | Weather card | Open-Meteo API via HTTPS, configurable lat/lon in Config tab, stale-data detection, weather emoji mapping | Medium |
+
+---
+
+## v1.6 — Override Timeout (Backend + Frontend)
+
+| Priority | Item | Details | Effort |
+|----------|------|---------|--------|
+| 🟡 P2 | Configurable override timeout | Number input + quick-select (10min/1h/6h/24h), server-validated, persisted to RuntimeCache | Medium |
+
+---
+
+## Design Decisions
+
+- **Dashboard refresh ships alone** — zero backend changes, pure `web_ui.cpp`
+- **Tap-to-override uses double-tap** — no native `confirm()` dialogs, glove-friendly
+- **Alerts panel is its own item** — needs backend to read safety flags and push on WS connect
+- **Weather uses configurable lat/lon** — no GPS module, user sets coordinates in Config tab
+- **Override timeout persisted** — survives reboots via RuntimeCache
