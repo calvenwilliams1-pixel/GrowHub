@@ -27,7 +27,7 @@
 #include "system_state.h"
 #include "sd_logger.h"
 #include <ArduinoJson.h>
-#include <LittleFS.h>
+#include <SPIFFS.h>
 
 // ============================================================
 // UPDATE VERSION HERE WHEN BUMPING FIRMWARE
@@ -1192,16 +1192,15 @@ bool webUI_init() {
   Serial.println(F("[WEB] Initializing web server..."));
 
   g_server.on("/chart-4.4.0.min.js", []() {
-    if (LittleFS.exists("/chart-4.4.0.min.js")) {
+    if (SPIFFS.exists("/chart-4.4.0.min.js")) {
       g_server.sendHeader("Cache-Control", "max-age=31536000, immutable");
-      File f = LittleFS.open("/chart-4.4.0.min.js", "r");
+      File f = SPIFFS.open("/chart-4.4.0.min.js", "r");
       g_server.streamFile(f, "application/javascript");
       f.close();
     } else {
       g_server.send(404, "text/plain", "Not Found");
     }
   });
-
   g_server.on("/", handleRoot);
   g_server.onNotFound(handleNotFound);
 
