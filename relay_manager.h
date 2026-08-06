@@ -54,22 +54,23 @@ struct RelayCapability {
 // ============================================================
 // Configurable Relay Mapping (v1.4)
 // ============================================================
-struct RelayMapping {
+struct __attribute__((packed)) RelayMapping {
   uint8_t magic;                       // RELAY_MAPPING_MAGIC for validation
-  uint8_t pinHOH;                      // GPIO pin for HOH humidifier
-  uint8_t pinAirAssist;                // GPIO pin for Air Assist valve
-  uint8_t pinExhaust;                  // GPIO pin for Exhaust fan
-  uint8_t pinCompressor;               // GPIO pin for Compressor
-  uint8_t reserved[3];                 // Future expansion
+  uint8_t pinPos1;                     // GPIO pin for physical relay position 1
+  uint8_t pinPos2;                     // GPIO pin for physical relay position 2
+  uint8_t pinPos3;                     // GPIO pin for physical relay position 3
+  uint8_t pinPos4;                     // GPIO pin for physical relay position 4
+  uint8_t functionForPos[4];           // What function each position controls (0=HOH,1=AirAssist,2=Exhaust,3=Compressor)
 };
-
+static_assert(sizeof(RelayMapping) == 9, "RelayMapping size mismatch — check packing");
 // ============================================================
 // Public API
 // ============================================================
 
-// Configurable relay mapping (v1.4)
+// Configurable relay mapping (v1.5 — position-based)
 const RelayMapping* relayManager_getMapping();
 const RelayMapping* relayManager_getDefaultMapping();
+bool relayManager_validateMapping(const RelayMapping* mapping);
 bool relayManager_updateMapping(const RelayMapping* newMapping);
 uint8_t relayManager_getPin(uint8_t relayIndex);
 bool relayManager_isPinValid(uint8_t pin);

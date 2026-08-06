@@ -59,22 +59,28 @@
 #define RELAY_COMPRESSOR_PIN            27
 
 // ============================================================
-// HARDWARE: Configurable Relay Mapping (v1.4)
+// HARDWARE: Configurable Relay Mapping (v1.5)
 // ============================================================
 #define RELAY_FUNCTION_COUNT             4
-#define RELAY_MAPPING_MAGIC              0x524D  // "RM" — cache validation
+#define RELAY_MAPPING_MAGIC              0x524E  // "RN" — v1.5 cache validation (bumped from 0x524D "RM")
 
-// Default GPIO assignments (used on first boot or factory reset)
-#define DEFAULT_PIN_HOH                  13
-#define DEFAULT_PIN_AIR_ASSIST           26      // v1.4: was GPIO 12
-#define DEFAULT_PIN_EXHAUST              14
-#define DEFAULT_PIN_COMPRESSOR           27
-// ============================================================
-// HARDWARE: Compressor Protection
-// ============================================================
-#define COMPRESSOR_COOLDOWN_MS          300000UL  // 5 minutes between compressor cycles
-#define COMPRESSOR_COOLDOWN_SEC         300       // Same, in seconds (for serial display)
-#define COMPRESSOR_MAX_ON_MS            300000UL  // 5 minutes maximum continuous ON time
+// Physical relay positions (1-4 on the relay board)
+#define RELAY_POSITION_HOH               1
+#define RELAY_POSITION_AIR_ASSIST        2
+#define RELAY_POSITION_EXHAUST           3
+#define RELAY_POSITION_COMPRESSOR        4
+
+// Default GPIO assignments per position (used on first boot or factory reset)
+#define DEFAULT_PIN_POS1                 13      // Position 1 → HOH
+#define DEFAULT_PIN_POS2                 26      // Position 2 → Air Assist (v1.4: was GPIO 12)
+#define DEFAULT_PIN_POS3                 14      // Position 3 → Exhaust
+#define DEFAULT_PIN_POS4                 27      // Position 4 → Compressor
+
+// @deprecated — Use DEFAULT_PIN_POS1-4. Remove in v1.6.
+#define DEFAULT_PIN_HOH                  DEFAULT_PIN_POS1
+#define DEFAULT_PIN_AIR_ASSIST           DEFAULT_PIN_POS2
+#define DEFAULT_PIN_EXHAUST              DEFAULT_PIN_POS3
+#define DEFAULT_PIN_COMPRESSOR           DEFAULT_PIN_POS4
 
 // ============================================================
 // HARDWARE: Relay Cycle Protection
@@ -83,6 +89,7 @@
 #define RELAY_MAX_CYCLES_PER_MIN        2         // Max relay toggles per minute (automation)
 #define RELAY_MANUAL_CYCLE_ALLOWANCE    8         // Additional toggles allowed for manual control
 #define RAPID_FIRE_LOCKOUT_MS           5000UL    // Lockout duration after rapid-fire detection
+
 // ============================================================
 // HARDWARE: I2C Addresses
 // ============================================================

@@ -61,11 +61,11 @@ static RelayMapping g_relayMapping;
 // Default factory mapping
 static const RelayMapping g_defaultMapping = {
   .magic = RELAY_MAPPING_MAGIC,
-  .pinHOH = DEFAULT_PIN_HOH,
-  .pinAirAssist = DEFAULT_PIN_AIR_ASSIST,
-  .pinExhaust = DEFAULT_PIN_EXHAUST,
-  .pinCompressor = DEFAULT_PIN_COMPRESSOR,
-  .reserved = {0, 0, 0}
+  .pinPos1 = DEFAULT_PIN_POS1,
+  .pinPos2 = DEFAULT_PIN_POS2,
+  .pinPos3 = DEFAULT_PIN_POS3,
+  .pinPos4 = DEFAULT_PIN_POS4,
+  .functionForPos = {0, 1, 2, 3}  // Pos1=HOH, Pos2=AirAssist, Pos3=Exhaust, Pos4=Compressor
 };
 
 // ============================================
@@ -111,42 +111,50 @@ uint8_t relayManager_getPin(uint8_t relayIndex) {
   return g_relayPins[relayIndex];
 }
 
+bool relayManager_validateMapping(const RelayMapping* mapping) {
+  if (!mapping) return false;
+  if (mapping->magic != RELAY_MAPPING_MAGIC) return false;
+
+  if (!relayManager_isPinValid(mapping->pinPos1) ||
+      !relayManager_isPinValid(mapping->pinPos2) ||
+      !relayManager_isPinValid(mapping->pinPos3) ||
+      !relayManager_isPinValid(mapping->pinPos4)) return false;
+
+  if (mapping->pinPos1 == mapping->pinPos2 ||
+      mapping->pinPos1 == mapping->pinPos3 ||
+      mapping->pinPos1 == mapping->pinPos4 ||
+      mapping->pinPos2 == mapping->pinPos3 ||
+      mapping->pinPos2 == mapping->pinPos4 ||
+      mapping->pinPos3 == mapping->pinPos4) return false;
+
+  bool funcSeen[4] = {false, false, false, false};
+  for (int i = 0; i < 4; i++) {
+    uint8_t f = mapping->functionForPos[i];
+    if (f >= RELAY_COUNT || funcSeen[f]) return false;
+    funcSeen[f] = true;
+  }
+
+  return true;
+}
+
 bool relayManager_updateMapping(const RelayMapping* newMapping) {
   if (!newMapping) return false;
-  if (newMapping->magic != RELAY_MAPPING_MAGIC) return false;
+  if (!relayManager_validateMapping(newMapping)) return false;
 
   uint8_t pins[RELAY_FUNCTION_COUNT] = {
-    newMapping->pinHOH,
-    newMapping->pinAirAssist,
-    newMapping->pinExhaust,
-    newMapping->pinCompressor
+    newMapping->pinPos1,
+    newMapping->pinPos2,
+    newMapping->pinPos3,
+    newMapping->pinPos4
   };
 
-  // Validate all pins
   for (int i = 0; i < RELAY_FUNCTION_COUNT; i++) {
-    if (!relayManager_isPinValid(pins[i])) {
-      Serial.print(F("[RELAY] Invalid pin in mapping: "));
-      Serial.println(pins[i]);
-      return false;
-    }
     if (pins[i] == 255) {
       Serial.println(F("[RELAY] Pin 255 is reserved — rejected"));
       return false;
     }
   }
 
-  // Check for duplicate pins
-  for (int i = 0; i < RELAY_FUNCTION_COUNT; i++) {
-    for (int j = i + 1; j < RELAY_FUNCTION_COUNT; j++) {
-      if (pins[i] == pins[j]) {
-        Serial.print(F("[RELAY] Duplicate pin in mapping: "));
-        Serial.println(pins[i]);
-        return false;
-      }
-    }
-  }
-
-  // Capture timestamp and cooldown state BEFORE critical section
   unsigned long now = millis();
   bool preserveCooldown[RELAY_COUNT];
   unsigned long preserveCooldownStart[RELAY_COUNT];
@@ -157,28 +165,22 @@ bool relayManager_updateMapping(const RelayMapping* newMapping) {
     preserveCooldownOffEpoch[i] = g_relays[i].cooldownOffEpoch;
   }
 
-  // --- Hardware transition under mutex ---
-  // CRITICAL: No Serial, no SD, no blocking calls inside this block.
   portENTER_CRITICAL(&g_stateMux);
 
-  // 1. Force all old pins OFF and tristate
   for (uint8_t i = 0; i < RELAY_COUNT; i++) {
     if (g_relays[i].pin != 255) {
-      digitalWrite(g_relays[i].pin, HIGH);   // Active LOW = OFF
-      pinMode(g_relays[i].pin, INPUT);        // Tristate
+      digitalWrite(g_relays[i].pin, HIGH);
+      pinMode(g_relays[i].pin, INPUT);
     }
   }
 
-  // 2. Update mapping and dynamic array
   memcpy(&g_relayMapping, newMapping, sizeof(RelayMapping));
-  g_relayPins[RELAY_HOH] = g_relayMapping.pinHOH;
-  g_relayPins[RELAY_AIR_ASSIST] = g_relayMapping.pinAirAssist;
-  g_relayPins[RELAY_EXHAUST] = g_relayMapping.pinExhaust;
-  g_relayPins[RELAY_COMPRESSOR] = g_relayMapping.pinCompressor;
 
-  // 3. Update RelayState structs and configure new pins
-  // Cooldown state is PRESERVED — it belongs to the compressor function,
-  // not the GPIO pin. Wiping it would allow short-cycling after remap.
+  for (int pos = 0; pos < RELAY_COUNT; pos++) {
+    uint8_t func = g_relayMapping.functionForPos[pos];
+    g_relayPins[func] = pins[pos];
+  }
+
   for (uint8_t i = 0; i < RELAY_COUNT; i++) {
     g_relays[i].pin = g_relayPins[i];
     g_relays[i].isActive = false;
@@ -188,20 +190,16 @@ bool relayManager_updateMapping(const RelayMapping* newMapping) {
     g_relays[i].cycleCount = 0;
     g_relays[i].cycleWindowStart = now;
     g_relays[i].rapidFireLockoutStart = 0;
-
-    // Restore cooldown state — compressor protection survives remap
     g_relays[i].cooldownLocked = preserveCooldown[i];
     g_relays[i].cooldownStart = preserveCooldownStart[i];
     g_relays[i].cooldownOffEpoch = preserveCooldownOffEpoch[i];
 
-    // Pre-latch HIGH before OUTPUT to prevent nanosecond pulse glitch
     digitalWrite(g_relays[i].pin, HIGH);
     pinMode(g_relays[i].pin, OUTPUT);
   }
 
   portEXIT_CRITICAL(&g_stateMux);
 
-  // Safe logging outside critical section
   for (uint8_t i = 0; i < RELAY_COUNT; i++) {
     Serial.print(F("[RELAY] Remapped "));
     Serial.print(relayNames[i]);
@@ -224,17 +222,7 @@ void relayManager_resetMapping() {
 
 bool relayManager_init(const RelayMapping* useMapping) {
   // Apply mapping: use provided mapping if valid, otherwise factory defaults
-  if (useMapping && useMapping->magic == RELAY_MAPPING_MAGIC &&
-      relayManager_isPinValid(useMapping->pinHOH) &&
-      relayManager_isPinValid(useMapping->pinAirAssist) &&
-      relayManager_isPinValid(useMapping->pinExhaust) &&
-      relayManager_isPinValid(useMapping->pinCompressor) &&
-      useMapping->pinHOH != useMapping->pinAirAssist &&
-      useMapping->pinHOH != useMapping->pinExhaust &&
-      useMapping->pinHOH != useMapping->pinCompressor &&
-      useMapping->pinAirAssist != useMapping->pinExhaust &&
-      useMapping->pinAirAssist != useMapping->pinCompressor &&
-      useMapping->pinExhaust != useMapping->pinCompressor) {
+  if (useMapping && relayManager_validateMapping(useMapping)) {
     memcpy(&g_relayMapping, useMapping, sizeof(RelayMapping));
     Serial.println(F("[RELAY] Using cached relay mapping"));
   } else {
@@ -242,10 +230,13 @@ bool relayManager_init(const RelayMapping* useMapping) {
     Serial.println(F("[RELAY] Using factory default relay mapping"));
   }
 
-  g_relayPins[RELAY_HOH] = g_relayMapping.pinHOH;
-  g_relayPins[RELAY_AIR_ASSIST] = g_relayMapping.pinAirAssist;
-  g_relayPins[RELAY_EXHAUST] = g_relayMapping.pinExhaust;
-  g_relayPins[RELAY_COMPRESSOR] = g_relayMapping.pinCompressor;
+    // Map positions to functions
+  uint8_t pins[4] = {g_relayMapping.pinPos1, g_relayMapping.pinPos2,
+                     g_relayMapping.pinPos3, g_relayMapping.pinPos4};
+  for (int pos = 0; pos < RELAY_COUNT; pos++) {
+    uint8_t func = g_relayMapping.functionForPos[pos];
+    g_relayPins[func] = pins[pos];
+  }
 
   // GH-SYS-003: CRITICAL - Set ALL relays HIGH (OFF) immediately
   unsigned long now = millis();

@@ -1,62 +1,56 @@
-# GrowHub32 — v1.5 Task List
+# GrowHub32 — v1.5 Task List (Updated)
 
 ---
 
-## Testing in Progress
+## ✅ Done This Session
 
 | Priority | Item | Status |
 |----------|------|--------|
-| 🔴 P0 | Calibration test — verify STABILIZE → RISE phase transition | 🔄 Running |
+| 🔴 P0 | Compressor cooldown removed — shop compressor with own pressure switch | ✅ Done |
+| 🔴 P0 | Air Assist exempt from relay cycle limits | ✅ Done |
+| 🔴 P0 | Compressor ON at boot, OFF at night, ON at morning | ✅ Done |
+| 🔴 P0 | `COMPRESSOR_MAX_ON_MS` enforcement removed from `.ino` | ✅ Done |
+| 🔴 P0 | Manual override no longer kills other relay | ✅ Done |
+| 🟠 P1 | Relay Identify button — toggles at 2Hz for 5 seconds | ✅ Done |
+| 🟠 P1 | Relay mapping renamed to position-based (Position 1-4 + function dropdowns) | ✅ Done |
+| 🟠 P1 | Duplicate function validation — C++ backend + JS client-side | ✅ Done |
+| 🟠 P1 | Magic number bumped to `0x524E` for cache migration | ✅ Done |
+| 🟠 P1 | `__attribute__((packed))` + `static_assert` on `RelayMapping` | ✅ Done |
+| 🟠 P1 | `relayManager_validateMapping()` extracted — shared by init + update | ✅ Done |
+| 🟡 P2 | Safe hardware transition on remap (all OFF, tristate old, init new) | ✅ Done |
+| 🟡 P2 | EMA weight bounds check in JS | ✅ Done |
+| 🟡 P2 | `saveThresholds()` button restored | ✅ Done |
+| 🟡 P2 | GPIO pin validation in JS before sending | ✅ Done |
+| 🟡 P2 | Config tab HTML structure fixed (closing div, Adaptive Learning wrapper) | ✅ Done |
+| 🟡 P2 | `<select>` styling added to match dark theme | ✅ Done |
+| 🟡 P2 | Dropdown defaults set correctly (HOH/AirAssist/Exhaust/Compressor) | ✅ Done |
+| 🟡 P2 | `identifyRelay` timeout leak fixed | ✅ Done |
+| 🟡 P2 | `:has()` replaced with `.active` class for browser compatibility | ✅ Done |
+| 🟡 P2 | `connectWS()` guard against double-connect | ✅ Done |
+| 🟡 P2 | Graph live feed comment fixed (5 seconds, not 1 minute) | ✅ Done |
+| 🟡 P2 | Footer name corrected to Calven | ✅ Done |
+| 🟢 P3 | Graph live feed changed to 5-second intervals | ✅ Done |
+| 🟢 P3 | Chart.js served from SPIFFS | ✅ Done |
+| 🟢 P3 | `static_assert(sizeof(FridgePacket) == 13)` added to `network.h` | ✅ Done |
+| 🟢 P3 | `COMPRESSOR_COOLDOWN` constants removed from `config.h` | ✅ Done |
 
 ---
 
-## Bugs Found During Testing
-
-| Priority | Item | Status |
-|----------|------|--------|
-| 🔴 P0 | Manual override kills other humidity relay when one is toggled | ⬜ TODO |
-| 🔴 P0 | Air Assist blocked by relay cycle limit (2/min) — exempt burst-cycled relays | ⬜ TODO |
-| 🔴 P0 | Compressor never turns on at boot — needs ON at boot, OFF at night, ON at morning | ⬜ TODO |
-| 🔴 P0 | Compressor shouldn't have cooldown — it's a shop compressor with its own pressure switch | ⬜ TODO |
-| 🔴 P0 | `COMPRESSOR_MAX_ON_MS` check in `.ino` loop shouldn't force compressor off — let its own switch handle it | ⬜ TODO |
-
----
-
-## Relay Mapping UX Improvements
+## Remaining
 
 | Priority | Item | Effort |
 |----------|------|--------|
-| 🟠 P1 | Add "Identify" button per relay — toggles every 500ms for 5 seconds | Small |
-| 🟠 P1 | Rename mapping from GPIO-based to position-based (Relay 1-4) with function assignment | Medium |
-| 🟡 P2 | Visual indicator showing which relay position maps to which function | Small |
+| 🟢 P3 | `feat/satellite-display` — Separate ESP32 OLED WebSocket display | Medium |
+| 🟢 P3 | Add cache versioning to `RuntimeCache` | Small |
+| 🟢 P3 | Update `CHANGELOG.md` | Small |
 
 ---
 
-## Features
+## Design Decisions (v1.5)
 
-| Priority | Item | Effort |
-|----------|------|--------|
-| 🟡 P2 | Automated cooling: compressor ON when temp exceeds user-configurable threshold | Medium |
-| 🟢 P3 | `feat/satellite-display` — Separate ESP32 with OLED, WiFi WebSocket display | Medium |
-| 🟢 P3 | Upload `chart-4.4.0.min.js` to LittleFS (pending from v1.4) | Setup |
-
----
-
-## Technical Debt
-
-| Priority | Item | Effort |
-|----------|------|--------|
-| 🟢 P3 | Add cache versioning to `RuntimeCache` (prevent full reset on format change) | Small |
-| 🟢 P3 | Update `CHANGELOG.md` with v1.4/v1.5 entries | Small |
-| 🟢 P3 | Compile-time assert for `sizeof(FridgePacket) == 13` | Tiny |
-| 🟢 P3 | Fix double `<div class="config-group">` in Config tab | Tiny |
-| 🟢 P3 | Remove `COMPRESSOR_MAX_ON_MS` enforcement from `.ino` loop | Tiny |
-
----
-
-## Design Decisions
-
-- **Compressor:** ON at boot, OFF during night mode, ON at morning. No cooldown. No max runtime enforcement. Shop compressor with own pressure switch handles all regulation.
-- **Burst-cycled relays:** Exempt from relay cycle limits. Only the compressor (if it were a fridge-type) would need rate limiting.
-- **Manual override:** Activate override on first toggle only. Subsequent toggles within 10-min window must not re-trigger `stopHumidityOutputs()`.
-- **Relay identify:** Simple JS button that toggles at 2Hz for 5 seconds via WebSocket commands. No backend changes.
+- **Compressor:** ON at boot, OFF during night mode, ON at morning. No cooldown. No max runtime. Shop compressor with own pressure switch.
+- **Burst-cycled relays:** Exempt from relay cycle limits.
+- **Manual override:** Activate on first toggle only. Subsequent toggles within 10-min window don't re-trigger shutdown.
+- **Relay mapping:** Position-based (1-4). Each position has a GPIO pin and a function assignment. Functions must be unique — validated both client and server side.
+- **Identify button:** Toggles the selected function's relay at 2Hz for 5 seconds for physical identification.
+- **Graph dashboard:** 350 points max, 8KB heap buffer, 5-second live feed, Chart.js from SPIFFS.
