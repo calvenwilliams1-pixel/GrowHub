@@ -264,15 +264,11 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   </div>
   <div class="config-group">
     <h3>Relay Mapping</h3>
-    <p style="font-size:0.7em;color:#8b949e;margin-bottom:8px;">Assign GPIO pins and functions to physical relay positions 1-4. Use the ID button on the Controls tab to identify which position is which. Each function must be assigned exactly once.</p>
-    <div class="config-row"><label>Position 1 — GPIO</label><input type="number" id="pinPos1" value="13" min="0" max="39"></div>
-    <div class="config-row"><label>Position 1 — Function</label><select id="funcPos1"><option value="0" selected>HOH Humidifier</option><option value="1">Air Assist</option><option value="2">Exhaust Fan</option><option value="3">Compressor</option></select></div>
-    <div class="config-row"><label>Position 2 — GPIO</label><input type="number" id="pinPos2" value="26" min="0" max="39"></div>
-    <div class="config-row"><label>Position 2 — Function</label><select id="funcPos2"><option value="0">HOH Humidifier</option><option value="1" selected>Air Assist</option><option value="2">Exhaust Fan</option><option value="3">Compressor</option></select></div>
-    <div class="config-row"><label>Position 3 — GPIO</label><input type="number" id="pinPos3" value="14" min="0" max="39"></div>
-    <div class="config-row"><label>Position 3 — Function</label><select id="funcPos3"><option value="0">HOH Humidifier</option><option value="1">Air Assist</option><option value="2" selected>Exhaust Fan</option><option value="3">Compressor</option></select></div>
-    <div class="config-row"><label>Position 4 — GPIO</label><input type="number" id="pinPos4" value="27" min="0" max="39"></div>
-    <div class="config-row"><label>Position 4 — Function</label><select id="funcPos4"><option value="0">HOH Humidifier</option><option value="1">Air Assist</option><option value="2">Exhaust Fan</option><option value="3" selected>Compressor</option></select></div>
+    <p style="font-size:0.7em;color:#8b949e;margin-bottom:8px;">Assign functions to physical relay positions 1-4. Use the ID button on the Controls tab to identify which position is which. Each function must be assigned exactly once.</p>
+    <div class="config-row"><label>Position 1 (GPIO 13)</label><select id="funcPos1"><option value="0" selected>HOH Humidifier</option><option value="1">Air Assist</option><option value="2">Exhaust Fan</option><option value="3">Compressor</option></select></div>
+    <div class="config-row"><label>Position 2 (GPIO 26)</label><select id="funcPos2"><option value="0">HOH Humidifier</option><option value="1" selected>Air Assist</option><option value="2">Exhaust Fan</option><option value="3">Compressor</option></select></div>
+    <div class="config-row"><label>Position 3 (GPIO 14)</label><select id="funcPos3"><option value="0">HOH Humidifier</option><option value="1">Air Assist</option><option value="2" selected>Exhaust Fan</option><option value="3">Compressor</option></select></div>
+    <div class="config-row"><label>Position 4 (GPIO 27)</label><select id="funcPos4"><option value="0">HOH Humidifier</option><option value="1">Air Assist</option><option value="2">Exhaust Fan</option><option value="3" selected>Compressor</option></select></div>
     <button class="btn btn-on" onclick="saveRelayMapping()">Apply Relay Mapping</button>
   </div>
   <div class="sticky-save-container">
@@ -545,10 +541,6 @@ function updateConfig(msg){
   document.getElementById('co2Low').value = msg.co2LowTarget;
   document.getElementById('co2Emergency').value = msg.co2Emergency;
   document.getElementById('emaWeight').value = msg.emaWeight;
-  document.getElementById('pinPos1').value = msg.pinPos1;
-  document.getElementById('pinPos2').value = msg.pinPos2;
-  document.getElementById('pinPos3').value = msg.pinPos3;
-  document.getElementById('pinPos4').value = msg.pinPos4;
   document.getElementById('funcPos1').value = msg.funcPos1;
   document.getElementById('funcPos2').value = msg.funcPos2;
   document.getElementById('funcPos3').value = msg.funcPos3;
@@ -800,19 +792,7 @@ function setRTCTime(){
 }
 
 function saveRelayMapping(){
-  var pinPos1 = parseInt(document.getElementById('pinPos1').value, 10);
-  var pinPos2 = parseInt(document.getElementById('pinPos2').value, 10);
-  var pinPos3 = parseInt(document.getElementById('pinPos3').value, 10);
-  var pinPos4 = parseInt(document.getElementById('pinPos4').value, 10);
-
-  if (isNaN(pinPos1) || isNaN(pinPos2) || isNaN(pinPos3) || isNaN(pinPos4) ||
-      pinPos1 < 0 || pinPos1 > 39 || pinPos2 < 0 || pinPos2 > 39 ||
-      pinPos3 < 0 || pinPos3 > 39 || pinPos4 < 0 || pinPos4 > 39) {
-    addLog('Invalid GPIO pin entered', 'warn');
-    return;
-  }
-
-    var f1 = parseInt(document.getElementById('funcPos1').value, 10);
+  var f1 = parseInt(document.getElementById('funcPos1').value, 10);
   var f2 = parseInt(document.getElementById('funcPos2').value, 10);
   var f3 = parseInt(document.getElementById('funcPos3').value, 10);
   var f4 = parseInt(document.getElementById('funcPos4').value, 10);
@@ -822,11 +802,11 @@ function saveRelayMapping(){
     return;
   }
 
-  var data = {
-    pinPos1: pinPos1,
-    pinPos2: pinPos2,
-    pinPos3: pinPos3,
-    pinPos4: pinPos4,
+   var data = {
+    pinPos1: 13,
+    pinPos2: 26,
+    pinPos3: 14,
+    pinPos4: 27,
     funcPos1: f1,
     funcPos2: f2,
     funcPos3: f3,
@@ -1407,10 +1387,6 @@ static void sendConfigUpdate(uint8_t clientNum) {
   doc["co2Emergency"] = t->co2Emergency;
   doc["emaWeight"] = adaptive_getEMAWeight();
   const RelayMapping* mapping = relayManager_getMapping();
-  doc["pinPos1"] = mapping->pinPos1;
-  doc["pinPos2"] = mapping->pinPos2;
-  doc["pinPos3"] = mapping->pinPos3;
-  doc["pinPos4"] = mapping->pinPos4;
   doc["funcPos1"] = mapping->functionForPos[0];
   doc["funcPos2"] = mapping->functionForPos[1];
   doc["funcPos3"] = mapping->functionForPos[2];
