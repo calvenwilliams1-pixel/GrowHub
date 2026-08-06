@@ -160,8 +160,8 @@ void setup() {
   }
 
   // Initialize LittleFS for static web assets (v1.4)
-  if (!LittleFS.begin()) {
-    Serial.println(F("[BOOT] WARNING: LittleFS mount FAILED — graph dashboard disabled"));
+  if (!SPIFFS.begin()) {
+    Serial.println(F("[BOOT] WARNING: SPIFFS mount FAILED — graph dashboard disabled"));
   }
 
   // Apply cached relay mapping if available (v1.4)
