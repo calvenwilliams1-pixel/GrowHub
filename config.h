@@ -62,7 +62,7 @@
 // HARDWARE: Configurable Relay Mapping (v1.5)
 // ============================================================
 #define RELAY_FUNCTION_COUNT             4
-#define RELAY_MAPPING_MAGIC              0x524D  // "RM" — cache validation
+#define RELAY_MAPPING_MAGIC              0x524E  // "RN" — v1.5 cache validation (bumped from 0x524D "RM")
 
 // Physical relay positions (1-4 on the relay board)
 #define RELAY_POSITION_HOH               1
