@@ -40,6 +40,9 @@ static unsigned long g_lastWSUpdate = 0;
 
 extern portMUX_TYPE g_stateMux;
 extern RuntimeCache g_runtimeCache;
+extern unsigned long g_compressorWarmupStart;
+extern unsigned long g_compressorWarmupDuration;
+extern bool g_warmupSelected;
 
 // Forward declarations
 static void handleRoot();
@@ -143,6 +146,18 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
 </div>
 
 <div id="dashboard" class="tab-content active">
+  <div id="warmupPanel" style="display:none;background:linear-gradient(180deg,#161b22 0%,#0d1117 100%);border:1px solid #58a6ff;border-radius:12px;padding:20px;margin-bottom:16px;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,0.35);">
+    <h3 style="color:#58a6ff;margin-bottom:8px;">🔄 Compressor Warmup</h3>
+    <p style="font-size:0.85em;color:#8b949e;margin-bottom:12px;">The air tank needs time to fill before Air Assist can work. How long should the compressor warm up?</p>
+    <div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap;">
+      <button class="btn btn-neutral" onclick="startWarmup(0)">Skip</button>
+      <button class="btn btn-neutral" onclick="startWarmup(30)">30 sec</button>
+      <button class="btn btn-neutral" onclick="startWarmup(60)">1 min</button>
+      <button class="btn btn-neutral" onclick="startWarmup(120)">2 min</button>
+      <button class="btn btn-neutral" onclick="startWarmup(300)">5 min</button>
+    </div>
+    <p id="warmupStatus" style="font-size:0.8em;color:#3fb950;margin-top:10px;display:none;"></p>
+  </div>
   <div class="sensor-grid">
     <div class="sensor-card">
       <div class="label"><span class="status-dot ok" id="tempDot"></span>Temperature</div>
@@ -404,6 +419,15 @@ function updateSensors(msg){
   if (typeof msg.hum === 'number') feedLiveGraph(1, msg.hum);
   if (typeof msg.co2 === 'number') feedLiveGraph(2, msg.co2);
   if (typeof msg.fridge === 'number') feedLiveGraph(3, msg.fridge);
+  if (msg.warmupSelected) {
+    var panel = document.getElementById('warmupPanel');
+    if (panel) panel.style.display = 'none';
+  } else {
+    var panel = document.getElementById('warmupPanel');
+    if (panel && panel.style.display === 'none') {
+      panel.style.display = 'block';
+    }
+  }
 }
 
 function updateRelays(msg){
@@ -513,6 +537,24 @@ function switchTab(element, tabId){
   document.querySelectorAll('.tab-content').forEach(function(c){ c.classList.remove('active'); });
   element.classList.add('active');
   document.getElementById(tabId).classList.add('active');
+}
+
+var warmupCountdown = null;
+
+function startWarmup(seconds) {
+  if (warmupCountdown) { clearInterval(warmupCountdown); warmupCountdown = null; }
+  document.querySelectorAll('#warmupPanel button').forEach(function(b) { b.disabled = true; });
+  
+  sendWS({type: 6, cmd: 'warmup', duration: seconds});
+  var panel = document.getElementById('warmupPanel');
+  
+  if (seconds === 0) {
+    panel.innerHTML = '<h3 style="color:#3fb950;margin-bottom:8px;">✅ Warmup Skipped</h3><p style="font-size:0.9em;color:#8b949e;">Automation starting immediately.</p>';
+    setTimeout(function() { panel.style.display = 'none'; }, 3000);
+    return;
+  }
+
+  panel.innerHTML = '<h3 style="color:#3fb950;margin-bottom:8px;">⚙️ Compressor Warming Up</h3><p style="font-size:0.9em;color:#8b949e;">Air Assist will be available shortly...</p>';
 }
 
 var identifyTimer = null;
@@ -1032,8 +1074,26 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
       else if (msgType == WS_COMMAND && strcmp(cmd, "calibrate_cancel") == 0) {
         adaptive_cancelCalibration();
       }
-      else if (msgType == WS_COMMAND && strcmp(cmd, "resume_automation") == 0) {
+         else if (msgType == WS_COMMAND && strcmp(cmd, "resume_automation") == 0) {
         automation_deactivateAllOverrides();
+      }
+      else if (msgType == WS_COMMAND && strcmp(cmd, "warmup") == 0) {
+        if (g_warmupSelected) return;  // First decision wins
+        unsigned long duration = doc["duration"] | 0;
+        if (duration > 600) duration = 600;
+        
+        relayManager_setRelay(RELAY_COMPRESSOR, true);
+        
+        if (duration > 0) {
+          g_compressorWarmupStart = millis();
+          g_compressorWarmupDuration = duration * 1000UL;
+          Serial.print(F("[BOOT] Compressor warmup: "));
+          Serial.print(duration);
+          Serial.println(F(" seconds"));
+        } else {
+          Serial.println(F("[BOOT] Compressor warmup skipped"));
+        }
+        g_warmupSelected = true;
       }
       else if (msgType == WS_COMMAND && strcmp(cmd, "relay_mapping") == 0) {
               const RelayMapping* current = relayManager_getMapping();
@@ -1186,12 +1246,12 @@ static void sendSystemStatus() {
   doc["assist"] = assist;
   doc["fan"] = fan;
   doc["compressor"] = compressor;
-  doc["compressorLocked"] = relayManager_isCompressorCooldownActive();
   doc["humOverride"] = automation_isHumidityOverrideActive();
   doc["humOverrideRemaining"] = automation_getHumidityOverrideRemaining() / 1000;
   doc["co2Override"] = automation_isCO2OverrideActive();
   doc["co2OverrideRemaining"] = automation_getCO2OverrideRemaining() / 1000;
-
+  doc["warmupSelected"] = g_warmupSelected;
+   
   char output[256];
   size_t len = serializeJson(doc, output, sizeof(output));
   if (len >= sizeof(output)) {
