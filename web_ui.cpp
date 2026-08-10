@@ -62,7 +62,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <title>GrowHub32 v1.5</title>
 <style>
-  *{margin:0;padding:0;box-sizing:border-box;}
+  *{rgin:0;padding:0;box-sizing:border-box;}
   body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:linear-gradient(180deg,#0d1117 0%,#111827 100%);color:#c9d1d9;min-height:100vh;}
   .header{padding:14px 18px;border-bottom:1px solid #30363d;}
   .header h1{font-size:1.3em;color:#58a6ff;}
@@ -124,15 +124,26 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   ::-webkit-scrollbar-track{background:transparent;}
   ::-webkit-scrollbar-thumb{background:#3d444d;border-radius:10px;}
   ::-webkit-scrollbar-thumb:hover{background:#58a6ff;}
+.mascot-stage{width:64px;height:56px;flex-shrink:0;}
+.mushroom{position:relative;width:64px;height:56px;image-rendering:pixelated;animation:idleBounce 2s ease-in-out infinite;}
+.pixel{position:absolute;width:4px;height:4px;}
+.c1{background:#b02020;}.c2{background:#c83838;}.c3{background:#d85555;}.c4{background:#b84860;}.c5{background:#9a4a70;}
+.cs{background:#a02020;}.w{background:#fff;}.st{background:#f5e6d0;}.sts{background:#e8d5b8;}.bk{background:#1a1a1a;}.bl{background:#f0a0a0;}
+@keyframes idleBounce{0%,15%{transform:translateY(0);}20%{transform:translateY(-2px) scaleY(0.95) scaleX(1.05);}25%{transform:translateY(-4px) scaleY(1.05) scaleX(0.95);}30%{transform:translateY(-2px) scaleY(1.02) scaleX(0.98);}35%{transform:translateY(0) scaleY(0.98) scaleX(1.02);}38%,100%{transform:translateY(0) scaleY(1.0) scaleX(1.0);}}
+@media (prefers-reduced-motion:reduce){.mushroom{animation:none;}}
 </style>
 <script src="/chart-4.4.0.min.js"></script>
 </head>
 <body>
-<div class="header">
-  <h1>GrowHub32</h1>
-  <div class="status" id="connectionStatus">Connecting...</div>
+<div class="header" style="overflow-x:hidden;">
+  <div style="display:flex;align-items:center;gap:12px;">
+    <div class="mascot-stage"><div class="mushroom"><div class="pixel c2" style="top:0;left:24px"></div><div class="pixel c2" style="top:4px;left:16px"></div><div class="pixel c2" style="top:4px;left:20px"></div><div class="pixel c2" style="top:4px;left:24px"></div><div class="pixel c3" style="top:4px;left:28px"></div><div class="pixel c3" style="top:4px;left:32px"></div><div class="pixel c2" style="top:4px;left:36px"></div><div class="pixel c2" style="top:4px;left:40px"></div><div class="pixel c2" style="top:4px;left:44px"></div><div class="pixel c2" style="top:8px;left:12px"></div><div class="pixel c3" style="top:8px;left:16px"></div><div class="pixel c3" style="top:8px;left:20px"></div><div class="pixel c3" style="top:8px;left:24px"></div><div class="pixel c3" style="top:8px;left:28px"></div><div class="pixel c3" style="top:8px;left:32px"></div><div class="pixel c3" style="top:8px;left:36px"></div><div class="pixel c3" style="top:8px;left:40px"></div><div class="pixel c3" style="top:8px;left:44px"></div><div class="pixel c2" style="top:8px;left:48px"></div><div class="pixel c4" style="top:12px;left:8px"></div><div class="pixel c3" style="top:12px;left:12px"></div><div class="pixel w" style="top:12px;left:16px"></div><div class="pixel c3" style="top:12px;left:20px"></div><div class="pixel c3" style="top:12px;left:24px"></div><div class="pixel c3" style="top:12px;left:28px"></div><div class="pixel w" style="top:12px;left:32px"></div><div class="pixel c3" style="top:12px;left:36px"></div><div class="pixel c3" style="top:12px;left:40px"></div><div class="pixel c3" style="top:12px;left:44px"></div><div class="pixel c4" style="top:12px;left:48px"></div><div class="pixel c4" style="top:12px;left:52px"></div><div class="pixel c4" style="top:16px;left:8px"></div><div class="pixel c3" style="top:16px;left:12px"></div><div class="pixel w" style="top:16px;left:16px"></div><div class="pixel c3" style="top:16px;left:20px"></div><div class="pixel w" style="top:16px;left:24px"></div><div class="pixel c3" style="top:16px;left:28px"></div><div class="pixel c3" style="top:16px;left:32px"></div><div class="pixel w" style="top:16px;left:36px"></div><div class="pixel c3" style="top:16px;left:40px"></div><div class="pixel c3" style="top:16px;left:44px"></div><div class="pixel c3" style="top:16px;left:48px"></div><div class="pixel c4" style="top:16px;left:52px"></div><div class="pixel c5" style="top:20px;left:4px"></div><div class="pixel c3" style="top:20px;left:8px"></div><div class="pixel c3" style="top:20px;left:12px"></div><div class="pixel c3" style="top:20px;left:16px"></div><div class="pixel c3" style="top:20px;left:20px"></div><div class="pixel c3" style="top:20px;left:24px"></div><div class="pixel c3" style="top:20px;left:28px"></div><div class="pixel c3" style="top:20px;left:32px"></div><div class="pixel c3" style="top:20px;left:36px"></div><div class="pixel c3" style="top:20px;left:40px"></div><div class="pixel c3" style="top:20px;left:44px"></div><div class="pixel c3" style="top:20px;left:48px"></div><div class="pixel c3" style="top:20px;left:52px"></div><div class="pixel c5" style="top:20px;left:56px"></div><div class="pixel c5" style="top:24px;left:4px"></div><div class="pixel c5" style="top:24px;left:8px"></div><div class="pixel c5" style="top:24px;left:12px"></div><div class="pixel c5" style="top:24px;left:16px"></div><div class="pixel c5" style="top:24px;left:20px"></div><div class="pixel c5" style="top:24px;left:24px"></div><div class="pixel c5" style="top:24px;left:28px"></div><div class="pixel c5" style="top:24px;left:32px"></div><div class="pixel c5" style="top:24px;left:36px"></div><div class="pixel c5" style="top:24px;left:40px"></div><div class="pixel c5" style="top:24px;left:44px"></div><div class="pixel c5" style="top:24px;left:48px"></div><div class="pixel c5" style="top:24px;left:52px"></div><div class="pixel c5" style="top:24px;left:56px"></div><div class="pixel st" style="top:28px;left:24px"></div><div class="pixel st" style="top:28px;left:28px"></div><div class="pixel st" style="top:28px;left:32px"></div><div class="pixel st" style="top:28px;left:36px"></div><div class="pixel st" style="top:32px;left:24px"></div><div class="pixel bk" style="top:32px;left:28px"></div><div class="pixel st" style="top:32px;left:32px"></div><div class="pixel bk" style="top:32px;left:36px"></div><div class="pixel st" style="top:32px;left:40px"></div><div class="pixel st" style="top:36px;left:20px"></div><div class="pixel st" style="top:36px;left:24px"></div><div class="pixel bl" style="top:36px;left:28px"></div><div class="pixel st" style="top:36px;left:32px"></div><div class="pixel bl" style="top:36px;left:36px"></div><div class="pixel st" style="top:36px;left:40px"></div><div class="pixel st" style="top:36px;left:44px"></div><div class="pixel st" style="top:40px;left:22px"></div><div class="pixel st" style="top:40px;left:26px"></div><div class="pixel st" style="top:40px;left:30px"></div><div class="pixel st" style="top:40px;left:34px"></div><div class="pixel st" style="top:40px;left:38px"></div><div class="pixel sts" style="top:44px;left:24px"></div><div class="pixel sts" style="top:44px;left:28px"></div><div class="pixel sts" style="top:44px;left:32px"></div><div class="pixel sts" style="top:44px;left:36px"></div></div></div>
+    <div>
+      <h1 style="margin:0;line-height:1.2;">GrowHub32</h1>
+      <div class="status" id="connectionStatus" style="margin-top:2px;">Connecting...</div>
+    </div>
+  </div>
 </div>
-
 <div class="warning-banner" id="warningBanner">Warning: Sensor Fault - System Running Last Known Values</div>
 
 <div class="tabs">
