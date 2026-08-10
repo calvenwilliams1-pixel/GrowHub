@@ -161,6 +161,10 @@ static bool g_airAssistInOnPhase = false;
 // ============================================================
 
 static bool g_inEmergencyRecovery = false;
+unsigned long g_compressorWarmupStart = 0;
+unsigned long g_compressorWarmupDuration = 0;
+bool g_warmupSelected = false;
+static unsigned long g_automationInitTime = 0;
     
 // ============================================================
 // Manual Override State
@@ -419,7 +423,19 @@ static void updateWatchdog() {
  * prevent stale timers on morning transition.
  */
 static void runAirAssistBursts() {
-      // Night mode lockout — Air Assist is loud, compressor is loud.
+    // Compressor warmup gate — block Air Assist until warmup complete
+    if (!g_warmupSelected) return;
+    if (g_compressorWarmupStart > 0 && g_compressorWarmupDuration > 0) {
+      if (millis() - g_compressorWarmupStart < g_compressorWarmupDuration) {
+        return;
+      } else {
+        g_compressorWarmupStart = 0;
+        g_compressorWarmupDuration = 0;
+        Serial.println(F("[AUTO] Warmup complete — Air Assist available"));
+      }
+    }
+
+    // Night mode lockout — Air Assist is loud, compressor is loud.
     // HOH is briefly reset on night mode entry then re-engages via
     // the normal humidity loop if RH is below floor.
     if (g_systemState.nightModeActive) {
@@ -620,8 +636,8 @@ void automation_init() {
     g_lastTunedConfidence = 0.0f;
 
       // Compressor runs whenever system is active — pressure switch handles cutoff
-    relayManager_setRelay(RELAY_COMPRESSOR, true);
-    Serial.println(F("[AUTO] Automation engine initialized"));
+     g_automationInitTime = millis();
+    Serial.println(F("[AUTO] Automation engine initialized — awaiting warmup"));
 }
 void automation_loadDefaults() {
     g_thresholds.humHoHFloor = DEFAULT_HUM_HOH_FLOOR;
@@ -645,6 +661,17 @@ void automation_runHumidityLoop() {
     unsigned long now = millis();
     updateWatchdog();
 
+    // Failsafe: auto-start 5-minute warmup if no user input after 30 seconds
+    static bool failsafeTriggered = false;
+    if (!g_warmupSelected && !failsafeTriggered && (millis() - g_automationInitTime > 30000UL)) {
+      failsafeTriggered = true;
+      g_warmupSelected = true;
+      g_compressorWarmupStart = millis();
+      g_compressorWarmupDuration = 300000UL;
+      relayManager_setRelay(RELAY_COMPRESSOR, true);
+      Serial.println(F("[AUTO] No user input — auto-starting 5-minute compressor warmup"));
+      network_sendAlert("GrowHub32 Auto-Warmup", "No user input after 30s. Starting 5-minute warmup.");
+    }
     if (g_systemState.calibrationActive) return;
 
     // Check manual override — getter handles mutex + auto-expiry
