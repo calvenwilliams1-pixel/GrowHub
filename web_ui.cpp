@@ -1,26 +1,17 @@
+```cpp
 /*
    web_ui.cpp
    GrowHub32 - Local Web Application Interface Implementation
    Version: 1.4.0
-   Revision: Updated CALIBRATION_DURATION_SEC to CALIBRATION_TOTAL_SEC.
-             Removed adaptive_updateCalibration() double-call from pushUpdates().
-             Added #include "system_state.h" for centralized state access.
-             Fixed g_systemState.calibrationActive read outside mutex in sendSensorUpdate().
-             Updated UI text for manual override description.
-             Updated default values for 88% ceiling and 20-min calibration.
-             Fixed spinlock I/O violation in warmup handler.
-             Fixed warmup globals race conditions.
-             Fixed warmup panel visibility on reconnect.
-             Added client-side countdown interval for UI smoothness.
-             Fixed reconnect race: infer warmupDuration from warmupRemaining.
-             Fixed panel visibility in updateSensors() and startWarmup().
-             Added aria-hidden to mascot.
-             identifyRelay now uses dedicated identify flag (not force bypass).
-             Fixed lastRequestedSensor hoisting.
-             Fixed millis() capture in sendSystemStatus().
+   Revision: Added "Mascots" tab with interactive mushroom designer.
+             Users can design custom mushrooms with real-time preview,
+             randomise, and export as JSON configs.
+             Supports saving/loading/deleting up to 8 profiles to SPIFFS
+             with atomic writes, corruption recovery, and mutex protection.
+             All code changes are contained within this single file.
 
    This serves a single-page application from program memory.
-   Chart.js is served from LittleFS for cache efficiency (v1.4).
+   Chart.js is served from SPIFFS for cache efficiency (v1.4).
 
    The UI connects via WebSocket on port 81 for real-time updates.
    HTTP server runs on port 80.
@@ -38,6 +29,7 @@
 #include "sd_logger.h"
 #include <ArduinoJson.h>
 #include <SPIFFS.h>
+#include <freertos/semphr.h>
 
 // ============================================================
 // UPDATE VERSION HERE WHEN BUMPING FIRMWARE
@@ -54,13 +46,39 @@ extern unsigned long g_compressorWarmupStart;
 extern unsigned long g_compressorWarmupDuration;
 extern bool g_warmupSelected;
 
-// Forward declarations
+// ============================================================
+// Mascots Tab — Profile Storage Constants
+// ============================================================
+#define MAX_PROFILES 8
+#define PROFILES_FILE "/profiles.json"
+#define PROFILES_TEMP "/profiles.tmp"
+#define PROFILES_BACKUP "/profiles.json.bak"
+
+// Mutex for profile operations (FreeRTOS mutex, not spinlock!)
+static SemaphoreHandle_t g_profileMutex = NULL;
+
+// ============================================================
+// Forward Declarations
+// ============================================================
 static void handleRoot();
 static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t length);
 static void sendSensorUpdate();
 static void sendSystemStatus();
 static void sendConfigUpdate(uint8_t clientNum);
 static void sendCalibrationUpdate();
+
+// Profile helper forward declarations
+enum class LoadResult { OK, Empty, Recovered, Failed };
+static LoadResult loadProfilesJson(JsonDocument& doc, bool& wasRecovered);
+static bool saveProfilesJson(const JsonDocument& doc);
+static void getProfileNames(JsonArray& names);
+static bool validateProfileData(const JsonObject& data);
+static void sendProfileResponse(uint8_t num, const char* cmd, const char* status, const char* message);
+static void handleProfileList(uint8_t num);
+static void handleProfileSave(uint8_t num, const JsonDocument& req);
+static void handleProfileLoad(uint8_t num, const JsonDocument& req);
+static void handleProfileDelete(uint8_t num, const JsonDocument& req);
+static void recoverProfiles();
 
 // ============================================================
 // EMBEDDED HTML/CSS/JS (Single Page Application)
@@ -73,7 +91,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
 <title>GrowHub32 v1.4.0</title>
 <style>
   *{margin:0;padding:0;box-sizing:border-box;}
-  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:linear-gradient(180deg,#0d1117 0%,#1a1a2e 50%,#111827 100%);color:#c9d1d9;min-height:100vh;}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:linear-gradient(180deg,#0d1117 0%,#1a1a2e 50%,#111827 100%);color:#c9d1d9;min-height:100vh;display:flex;flex-direction:column;}
   .header{padding:14px 18px;border-bottom:1px solid #2a2a4a;box-shadow:0 2px 12px rgba(184,74,255,0.04);}
   .header h1{font-size:1.3em;color:#58a6ff;}
   .header .status{font-size:0.75em;color:#8b949e;margin-top:3px;}
@@ -84,7 +102,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   .tabs{display:flex;background:rgba(22,27,34,0.95);backdrop-filter:blur(5px);border-bottom:1px solid #2a2a4a;overflow-x:auto;box-shadow:0 2px 12px rgba(184,74,255,0.04);}
   .tab{padding:14px 20px;font-size:0.9em;color:#8b949e;border:none;background:none;cursor:pointer;white-space:nowrap;border-bottom:2px solid transparent;transition:all 0.2s;}
   .tab.active{color:#b84aff;border-bottom-color:#b84aff;text-shadow:0 0 20px rgba(184,74,255,0.3);}
-  .tab-content{display:none;padding:16px;}
+  .tab-content{display:none;padding:16px;flex:1;}
   .tab-content.active{display:block;}
   .sensor-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin-bottom:18px;}
   .sensor-card{background:#161b22;border:1px solid #2a2a4a;border-radius:12px;padding:18px;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,0.5),0 0 16px rgba(184,74,255,0.06);}
@@ -128,7 +146,6 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   .countdown{font-size:3em;font-weight:bold;color:#58a6ff;}
   .sim-result{background:#161b22;border:1px solid #2a2a4a;border-radius:12px;padding:16px;margin-top:12px;text-align:center;box-shadow:0 0 12px rgba(184,74,255,0.06);}
   .sim-result .time{font-size:1.5em;color:#3fb950;}
-  .footer{text-align:center;padding:18px;font-size:0.7em;color:#484f58;}
   .override-panel{display:none;background:#3a2a1a;color:#d29922;padding:10px;border-radius:8px;margin-bottom:14px;text-align:center;font-weight:bold;border:1px solid #d29922;}
   .sticky-save-container{position:sticky;bottom:16px;background:rgba(13,17,23,0.95);padding:12px;border-radius:8px;border:1px solid #2a2a4a;text-align:center;margin-top:16px;box-shadow:0 -4px 12px rgba(0,0,0,0.4),0 0 16px rgba(184,74,255,0.08);}
   ::-webkit-scrollbar{width:6px;height:6px;}
@@ -139,9 +156,194 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   .mushroom{position:relative;width:64px;height:56px;image-rendering:pixelated;animation:idleBounce 2s ease-in-out infinite;}
   .pixel{position:absolute;width:4px;height:4px;}
   .c1{background:#b02020;}.c2{background:#c83838;}.c3{background:#d85555;}.c4{background:#b84860;}.c5{background:#9a4a70;}.c6{background:#8a3030;}
-  .cs{background:#a02020;}.w{background:#fff;}.st{background:#f5e6d0;}.sts{background:#e8d5b8;}.bk{background:#1a1a1a;}.bl{background:#f0a0a0;}
+  .cs{background:#a02020;}.w{background:#ffffff;}.st{background:#f5e6d0;}.sts{background:#e8d5b8;}.bk{background:#1a1a1a;}.bl{background:#f0a0a0;}
   @keyframes idleBounce{0%,15%{transform:translateY(0);}20%{transform:translateY(-2px) scaleY(0.95) scaleX(1.05);}25%{transform:translateY(-4px) scaleY(1.05) scaleX(0.95);}30%{transform:translateY(-2px) scaleY(1.02) scaleX(0.98);}35%{transform:translateY(0) scaleY(0.98) scaleX(1.02);}38%,100%{transform:translateY(0) scaleY(1.0) scaleX(1.0);}}
   @media (prefers-reduced-motion:reduce){.mushroom{animation:none;}}
+
+  /* ─── Mushroom Footer ─── */
+  .mushroom-footer {
+    width: 100%;
+    max-width: 820px;
+    margin: 20px auto 0;
+    display: flex;
+    justify-content: center;
+    align-items: flex-end;
+    gap: 20px;
+    padding: 20px 10px 30px;
+    background: linear-gradient(to top, rgba(0,0,0,0.4) 0%, transparent 100%);
+    flex-wrap: wrap;
+    border-top: 1px solid #1a1a2e;
+  }
+  .mushroom-wrapper {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    position: relative;
+  }
+  .mushroom-sprite {
+    width: 64px;
+    height: 64px;
+    position: relative;
+    transform-origin: bottom center;
+    image-rendering: pixelated;
+  }
+  .mushroom-sprite .pixel {
+    position: absolute;
+    width: 4px;
+    height: 4px;
+    shape-rendering: crispEdges;
+  }
+  .mushroom-shadow {
+    width: 40px;
+    height: 10px;
+    background: radial-gradient(ellipse at center, rgba(0,0,0,0.7) 0%, rgba(0,0,0,0) 70%);
+    margin-top: -2px;
+    border-radius: 50%;
+    transform-origin: center;
+  }
+  @keyframes mushroom-bounce {
+    0%, 100% { transform: translateY(0) scaleY(1) scaleX(1); }
+    10% { transform: translateY(2px) scaleY(0.9) scaleX(1.1); }
+    30% { transform: translateY(-12px) scaleY(1.1) scaleX(0.95); }
+    50% { transform: translateY(-16px) scaleY(1.05) scaleX(0.98); }
+    70% { transform: translateY(-8px) scaleY(1.08) scaleX(0.96); }
+    85% { transform: translateY(2px) scaleY(0.95) scaleX(1.05); }
+    95% { transform: translateY(0) scaleY(1) scaleX(1); }
+  }
+  @keyframes mushroom-shadow-scale {
+    0%, 100% { transform: scale(1); opacity: 0.7; }
+    10% { transform: scale(1.15); opacity: 0.9; }
+    30% { transform: scale(0.5); opacity: 0.25; }
+    50% { transform: scale(0.45); opacity: 0.2; }
+    70% { transform: scale(0.55); opacity: 0.35; }
+    85% { transform: scale(1.15); opacity: 0.9; }
+    95% { transform: scale(1); opacity: 0.7; }
+  }
+  .mushroom-wrapper:nth-child(1) .mushroom-sprite { animation: mushroom-bounce 2.1s ease-in-out infinite; animation-delay: 0s; }
+  .mushroom-wrapper:nth-child(1) .mushroom-shadow { animation: mushroom-shadow-scale 2.1s ease-in-out infinite; animation-delay: 0s; }
+  .mushroom-wrapper:nth-child(2) .mushroom-sprite { animation: mushroom-bounce 2.4s ease-in-out infinite; animation-delay: 0.3s; }
+  .mushroom-wrapper:nth-child(2) .mushroom-shadow { animation: mushroom-shadow-scale 2.4s ease-in-out infinite; animation-delay: 0.3s; }
+  .mushroom-wrapper:nth-child(3) .mushroom-sprite { animation: mushroom-bounce 1.9s ease-in-out infinite; animation-delay: 0.7s; }
+  .mushroom-wrapper:nth-child(3) .mushroom-shadow { animation: mushroom-shadow-scale 1.9s ease-in-out infinite; animation-delay: 0.7s; }
+  .mushroom-wrapper:nth-child(4) .mushroom-sprite { animation: mushroom-bounce 2.6s ease-in-out infinite; animation-delay: 0.1s; }
+  .mushroom-wrapper:nth-child(4) .mushroom-shadow { animation: mushroom-shadow-scale 2.6s ease-in-out infinite; animation-delay: 0.1s; }
+  .mushroom-wrapper:nth-child(5) .mushroom-sprite { animation: mushroom-bounce 2.2s ease-in-out infinite; animation-delay: 0.5s; }
+  .mushroom-wrapper:nth-child(5) .mushroom-shadow { animation: mushroom-shadow-scale 2.2s ease-in-out infinite; animation-delay: 0.5s; }
+  @media (max-width: 600px) {
+    .mushroom-footer { gap: 8px; padding: 16px 6px 20px; }
+    .mushroom-sprite { transform: scale(0.7); transform-origin: bottom center; }
+    .mushroom-shadow { transform: scale(0.7); }
+  }
+
+  /* ─── Mascots Tab Designer ─── */
+  .mascots-tab .designer-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  @media (max-width: 700px) { .mascots-tab .designer-grid { grid-template-columns: 1fr; } }
+
+  .mascots-tab .designer-preview {
+    background: #161b22; border: 1px solid #2a2a4a; border-radius: 12px;
+    padding: 20px; display: flex; flex-direction: column; align-items: center;
+  }
+  .mascots-tab .designer-preview h4 {
+    color: #8b949e; font-size: 0.8em; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px;
+  }
+  .mascots-tab .preview-stage {
+    width: 200px; height: 200px; display: flex; align-items: flex-end; justify-content: center;
+    background: radial-gradient(ellipse at center bottom, rgba(0,0,0,0.4), transparent); border-radius: 16px;
+  }
+  .mascots-tab .preview-stage .mushroom-sprite {
+    position: relative; width: 60px; height: 72px; image-rendering: pixelated; transform-origin: bottom center;
+  }
+  .mascots-tab .preview-stage .mushroom-sprite .pixel {
+    position: absolute; border-radius: 1px; shape-rendering: crispEdges;
+  }
+
+  @keyframes designerBounce {
+    0%, 100% { transform: translateY(0) scaleY(1) scaleX(1); }
+    10% { transform: translateY(2px) scaleY(0.9) scaleX(1.1); }
+    30% { transform: translateY(-12px) scaleY(1.1) scaleX(0.95); }
+    50% { transform: translateY(-16px) scaleY(1.05) scaleX(0.98); }
+    70% { transform: translateY(-8px) scaleY(1.08) scaleX(0.96); }
+    85% { transform: translateY(2px) scaleY(0.95) scaleX(1.05); }
+    95% { transform: translateY(0) scaleY(1) scaleX(1); }
+  }
+  @media (prefers-reduced-motion: reduce) { .mascots-tab .preview-stage .mushroom-sprite { animation: none !important; } }
+
+  .mascots-tab .preview-name { color: #58a6ff; font-size: 1.1em; margin-top: 12px; font-weight: bold; }
+
+  .mascots-tab .designer-controls {
+    background: #161b22; border: 1px solid #2a2a4a; border-radius: 12px;
+    padding: 16px; display: flex; flex-direction: column; gap: 12px;
+  }
+  .mascots-tab .control-group { border-bottom: 1px solid #21262d; padding-bottom: 12px; }
+  .mascots-tab .control-group:last-child { border-bottom: none; padding-bottom: 0; }
+  .mascots-tab .control-group label {
+    font-size: 0.75em; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; display: block; margin-bottom: 6px;
+  }
+
+  .mascots-tab .btn-group { display: flex; gap: 4px; flex-wrap: wrap; }
+  .mascots-tab .btn-group button {
+    padding: 4px 12px; border: 1px solid #30363d; border-radius: 6px; background: #0d1117; color: #c9d1d9;
+    cursor: pointer; font-size: 0.8em; transition: all 0.2s;
+  }
+  .mascots-tab .btn-group button:hover { background: #1c2333; }
+  .mascots-tab .btn-group button.active { background: #b84aff; color: #fff; border-color: #b84aff; }
+
+  .mascots-tab .slider-row { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+  .mascots-tab .slider-row span:first-child { font-size: 0.8em; color: #8b949e; width: 50px; }
+  .mascots-tab .slider-row input[type="range"] { flex: 1; accent-color: #b84aff; background: #21262d; height: 4px; border-radius: 4px; cursor: pointer; }
+  .mascots-tab .slider-row .slider-value { font-size: 0.7em; color: #8b949e; width: 40px; text-align: right; }
+
+  .mascots-tab .color-row { display: flex; align-items: center; gap: 8px; }
+  .mascots-tab .color-row > span { font-size: 0.8em; color: #8b949e; width: 50px; }
+  .mascots-tab .color-picker { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
+  .mascots-tab .color-swatch { width: 24px; height: 24px; border-radius: 6px; border: 2px solid transparent; cursor: pointer; transition: border 0.2s; position: relative; }
+  .mascots-tab .color-swatch:hover { border-color: #58a6ff; }
+  .mascots-tab .color-swatch.active { border-color: #b84aff; }
+  .mascots-tab .color-swatch.custom { background: transparent !important; border: 2px dashed #30363d; display: flex; align-items: center; justify-content: center; }
+  .mascots-tab .color-swatch.custom input[type="color"] { position: absolute; top: 0; left: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+  .mascots-tab .color-swatch.custom span { font-size: 12px; line-height: 1; }
+
+  .mascots-tab .profile-section { border-bottom: 1px solid #21262d; padding-bottom: 12px; }
+  .mascots-tab .profile-row { display: flex; gap: 4px; margin-bottom: 4px; flex-wrap: wrap; }
+  .mascots-tab .profile-row input[type="text"] { flex: 1; min-width: 100px; background: #0d1117; border: 1px solid #30363d; border-radius: 6px; color: #e6edf3; padding: 4px 8px; font-size: 0.85em; }
+  .mascots-tab .profile-row select { flex: 1; min-width: 100px; background: #0d1117; border: 1px solid #30363d; border-radius: 6px; color: #e6edf3; padding: 4px 8px; font-size: 0.85em; }
+
+  .mascots-tab .btn-save-profile { background: #238636; color: #fff; border: none; border-radius: 6px; padding: 4px 12px; cursor: pointer; font-size: 0.8em; }
+  .mascots-tab .btn-save-profile:hover { background: #2ea043; }
+  .mascots-tab .btn-save-profile:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .mascots-tab .btn-load-profile { background: #58a6ff; color: #fff; border: none; border-radius: 6px; padding: 4px 12px; cursor: pointer; font-size: 0.8em; }
+  .mascots-tab .btn-load-profile:hover { background: #79c0ff; }
+
+  .mascots-tab .btn-delete-profile { background: #da3633; color: #fff; border: none; border-radius: 6px; padding: 4px 12px; cursor: pointer; font-size: 0.8em; }
+  .mascots-tab .btn-delete-profile:hover { background: #f85149; }
+
+  .mascots-tab .action-row { display: flex; gap: 8px; flex-wrap: wrap; padding-top: 4px; }
+  .mascots-tab .btn-random { background: #b84aff; color: #fff; border: none; border-radius: 6px; padding: 6px 14px; cursor: pointer; font-size: 0.85em; font-weight: 600; }
+  .mascots-tab .btn-random:hover { background: #9a3ad9; }
+  .mascots-tab .btn-reset { background: #30363d; color: #c9d1d9; border: none; border-radius: 6px; padding: 6px 14px; cursor: pointer; font-size: 0.85em; }
+  .mascots-tab .btn-reset:hover { background: #484f58; }
+  .mascots-tab .btn-export { background: #30363d; color: #c9d1d9; border: none; border-radius: 6px; padding: 6px 14px; cursor: pointer; font-size: 0.85em; }
+  .mascots-tab .btn-export:hover { background: #484f58; }
+  .mascots-tab .btn-import { background: #30363d; color: #c9d1d9; border: none; border-radius: 6px; padding: 6px 14px; cursor: pointer; font-size: 0.85em; }
+  .mascots-tab .btn-import:hover { background: #484f58; }
+
+  .mascots-tab .export-area {
+    background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 8px;
+    font-family: monospace; font-size: 0.65em; max-height: 120px; overflow: auto;
+    white-space: pre-wrap; color: #8b949e; display: none; margin-top: 6px;
+  }
+  .mascots-tab .export-area.show { display: block; }
+
+  .mascots-tab .import-area {
+    background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 8px;
+    font-family: monospace; font-size: 0.65em; max-height: 120px; overflow: auto;
+    color: #8b949e; display: none; margin-top: 6px; width: 100%;
+    resize: vertical; min-height: 60px;
+  }
+  .mascots-tab .import-area.show { display: block; }
+
+  .mascots-tab .profile-count { color: #b84aff; font-size: 0.85em; }
 </style>
 <script src="/chart-4.4.0.min.js"></script>
 </head>
@@ -245,7 +447,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
     <div class="pixel sts" style="top:44px;left:28px"></div>
     <div class="pixel sts" style="top:44px;left:32px"></div>
     <div class="pixel sts" style="top:44px;left:36px"></div>
-</div>
+</div></div>
         <div style="flex:1;">
             <div style="display:flex;align-items:center;justify-content:space-between;">
                 <h1 style="margin:0;line-height:1.2;">GrowHub32</h1>
@@ -253,7 +455,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
             </div>
             <div class="status" id="connectionStatus" style="margin-top:2px;">Connecting...</div>
             <div id="warmupProgressContainer" style="display:none;margin-top:4px;width:100%;height:4px;background:#21262d;border-radius:4px;overflow:hidden;">
-                <div id="warmupProgressBar" style="width:0%;height:100%;background:linear-gradient(90deg,#58a6ff,#3fb950);transition:width 0.5s linear;"></div>
+                <div id="warmupProgressBar" style="width:0%;height:100%;background:linear-gradient(90deg,#58a6ff,#3fb950,#b84aff);transition:width 0.5s linear;"></div>
             </div>
         </div>
     </div>
@@ -269,10 +471,11 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   <button class="tab" onclick="switchTab(this, 'simulation')">Simulate</button>
   <button class="tab" onclick="switchTab(this, 'graphs')">Graphs</button>
   <button class="tab" onclick="switchTab(this, 'logs')">Logs</button>
+  <button class="tab" onclick="switchTab(this, 'mascots')">🎨 Mascots</button>
 </div>
 
-<!-- Warmup panel moved outside tab content for global visibility -->
-<div id="warmupPanel" style="display:block;background:linear-gradient(180deg,#161b22 0%,#0d1117 100%);border:1px solid #5a3a7a;border-radius:12px;padding:20px;margin:16px;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,0.35),0 0 16px rgba(184,74,255,0.12);">
+<!-- Warmup panel -->
+<div id="warmupPanel" style="display:block;background:linear-gradient(180deg,#161b22 0%,#0d1117 100%);border:1px solid #2a2a4a;border-radius:12px;padding:20px;margin:16px;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,0.35),0 0 20px rgba(184,74,255,0.08);">
     <h3 style="color:#58a6ff;margin-bottom:8px;">🔄 Compressor Warmup</h3>
     <p style="font-size:0.85em;color:#8b949e;margin-bottom:12px;">The air tank needs time to fill before Air Assist can work. How long should the compressor warm up?</p>
     <div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap;">
@@ -430,7 +633,157 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   </div>
 </div>
 
-<div class="footer">GrowHub32 v1.4.0 | Calven</div>
+<!-- ─── MASCOTS TAB ─── -->
+<div id="mascots" class="tab-content mascots-tab">
+  <h2 style="color:#58a6ff;margin-bottom:16px;">🍄 Mushroom Designer</h2>
+  <p style="color:#8b949e;font-size:0.85em;margin-bottom:16px;">
+    Design your own custom mushroom mascots. Adjust the sliders, pick colours, and save your favourites.
+    <span class="profile-count" id="profileCount">(0/8 profiles used)</span>
+  </p>
+
+  <div class="designer-grid">
+    <!-- Preview Column -->
+    <div class="designer-preview">
+      <h4>📺 Live Preview</h4>
+      <div class="preview-stage">
+        <div class="mushroom-sprite" id="designerSprite"></div>
+      </div>
+      <div class="preview-name" id="designerName">Amanita</div>
+    </div>
+
+    <!-- Controls Column -->
+    <div class="designer-controls">
+      <!-- Template -->
+      <div class="control-group">
+        <label>📋 Template</label>
+        <div class="btn-group" id="templateButtons">
+          <button class="active" data-template="amanita">Amanita</button>
+          <button data-template="chanterelle">Chanterelle</button>
+          <button data-template="shiitake">Shiitake</button>
+          <button data-template="magic">Magic</button>
+          <button data-template="morel">Morel</button>
+        </div>
+      </div>
+
+      <!-- Cap -->
+      <div class="control-group">
+        <label>🔴 Cap</label>
+        <div class="slider-row">
+          <span>Width</span>
+          <input type="range" id="capWidth" min="60" max="120" value="100">
+          <span class="slider-value" id="capWidthVal">100%</span>
+        </div>
+        <div class="slider-row">
+          <span>Height</span>
+          <input type="range" id="capHeight" min="60" max="120" value="100">
+          <span class="slider-value" id="capHeightVal">100%</span>
+        </div>
+        <div class="color-row">
+          <span>Color</span>
+          <div class="color-picker" id="capColorPicker">
+            <div class="color-swatch active" style="background:#e63946;" data-color="#e63946"></div>
+            <div class="color-swatch" style="background:#f4a261;" data-color="#f4a261"></div>
+            <div class="color-swatch" style="background:#795548;" data-color="#795548"></div>
+            <div class="color-swatch" style="background:#7b2cbf;" data-color="#7b2cbf"></div>
+            <div class="color-swatch" style="background:#40916c;" data-color="#40916c"></div>
+            <div class="color-swatch" style="background:#ff6b6b;" data-color="#ff6b6b"></div>
+            <div class="color-swatch" style="background:#ffd93d;" data-color="#ffd93d"></div>
+            <div class="color-swatch" style="background:#6bcbff;" data-color="#6bcbff"></div>
+            <div class="color-swatch" style="background:#a66cff;" data-color="#a66cff"></div>
+            <div class="color-swatch custom">
+              <input type="color" id="customCapColor" value="#e63946">
+              <span>🎨</span>
+            </div>
+          </div>
+        </div>
+        <div class="btn-group" id="spotButtons">
+          <button class="active" data-spots="2">2 Spots</button>
+          <button data-spots="4">4 Spots</button>
+          <button data-spots="6">6 Spots</button>
+          <button data-spots="0">None</button>
+        </div>
+      </div>
+
+      <!-- Stem -->
+      <div class="control-group">
+        <label>🌿 Stem</label>
+        <div class="slider-row">
+          <span>Height</span>
+          <input type="range" id="stemHeight" min="60" max="140" value="100">
+          <span class="slider-value" id="stemHeightVal">100%</span>
+        </div>
+        <div class="slider-row">
+          <span>Width</span>
+          <input type="range" id="stemWidth" min="50" max="120" value="100">
+          <span class="slider-value" id="stemWidthVal">100%</span>
+        </div>
+        <div class="color-row">
+          <span>Color</span>
+          <div class="color-picker" id="stemColorPicker">
+            <div class="color-swatch active" style="background:#fefae0;" data-color="#fefae0"></div>
+            <div class="color-swatch" style="background:#f5e6d0;" data-color="#f5e6d0"></div>
+            <div class="color-swatch" style="background:#efebe9;" data-color="#efebe9"></div>
+            <div class="color-swatch" style="background:#e8d5b8;" data-color="#e8d5b8"></div>
+            <div class="color-swatch" style="background:#f0e6d3;" data-color="#f0e6d3"></div>
+            <div class="color-swatch custom">
+              <input type="color" id="customStemColor" value="#fefae0">
+              <span>🎨</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Animation -->
+      <div class="control-group">
+        <label>🌀 Animation</label>
+        <div class="slider-row">
+          <span>Bounce</span>
+          <input type="range" id="bounceHeight" min="5" max="35" value="20">
+          <span class="slider-value" id="bounceHeightVal">20px</span>
+        </div>
+        <div class="slider-row">
+          <span>Speed</span>
+          <input type="range" id="animSpeed" min="12" max="35" value="22" step="1">
+          <span class="slider-value" id="animSpeedVal">2.2s</span>
+        </div>
+      </div>
+
+      <!-- Profile Management -->
+      <div class="control-group profile-section">
+        <label>💾 Profile</label>
+        <div class="profile-row">
+          <input type="text" id="profileNameInput" placeholder="Profile name..." maxlength="32">
+          <button class="btn-save-profile" id="saveProfileBtn">💾 Save</button>
+        </div>
+        <div class="profile-row">
+          <select id="profileLoadSelect">
+            <option value="">-- No saved profiles --</option>
+          </select>
+          <button class="btn-load-profile" id="loadProfileBtn">📂 Load</button>
+          <button class="btn-delete-profile" id="deleteProfileBtn">🗑 Delete</button>
+        </div>
+        <div style="font-size:0.7em;color:#8b949e;margin-top:4px;">
+          Max 8 profiles. Saved designs persist on the device.
+        </div>
+      </div>
+
+      <!-- Actions -->
+      <div class="action-row">
+        <button class="btn-random" id="randomizeBtn">🎲 Randomise</button>
+        <button class="btn-reset" id="resetBtn">↺ Reset</button>
+        <button class="btn-export" id="exportBtn">📋 Export JSON</button>
+        <button class="btn-import" id="importToggleBtn">📥 Import JSON</button>
+      </div>
+      <textarea class="import-area" id="importArea" placeholder="Paste JSON here to import..."></textarea>
+      <div class="export-area" id="exportArea"></div>
+    </div>
+  </div>
+</div>
+<!-- ─── END MASCOTS TAB ─── -->
+
+<!-- ─── MUSHROOM FAMILY FOOTER ─── -->
+<div class="mushroom-footer" id="mushroomFooter"></div>
+<!-- ─── END MUSHROOM FOOTER ─── -->
 
 <script>
 var ws;
@@ -461,6 +814,8 @@ function connectWS(){
     reconnectDelay = 3000;
     initGraph();
     requestHistorical();
+    // Initialise designer once WebSocket is ready
+    setTimeout(function() { initDesigner(); }, 200);
   };
   ws.onmessage = function(e){
     try{
@@ -498,6 +853,7 @@ function handleMessage(msg){
     case 3: updateConfig(msg); break;
     case 4: updateCalibration(msg); break;
     case 5: addLog(msg.message, msg.level || 'info'); break;
+    case 7: handleProfileResponse(msg); break;
     case 99:
       if(msg.simResult){
         document.getElementById('simResult').textContent = msg.simResult;
@@ -557,14 +913,11 @@ function updateSensors(msg){
   // Warmup state handling
   var panel = document.getElementById('warmupPanel');
   if (msg.warmupSelected) {
-    // Warmup is or was active
     if (msg.warmupDuration && msg.warmupDuration > 0) {
       warmupDuration = msg.warmupDuration;
       isWarmupComplete = false;
-      // Hide panel immediately
       if (panel) panel.style.display = 'none';
     } else {
-      // Warmup was SKIPPED (duration is 0)
       if (panel) panel.style.display = 'none';
       document.getElementById('warmupBadge').style.display = 'none';
       document.getElementById('warmupProgressContainer').style.display = 'none';
@@ -575,7 +928,6 @@ function updateSensors(msg){
       isWarmupComplete = true;
     }
   } else {
-    // Fresh boot - ensure panel is visible
     if (panel) panel.style.display = 'block';
     document.getElementById('warmupBadge').style.display = 'none';
     document.getElementById('warmupProgressContainer').style.display = 'none';
@@ -594,7 +946,6 @@ function updateWarmupUI(remainingSeconds) {
   var panel = document.getElementById('warmupPanel');
 
   if (remainingSeconds <= 0 || warmupDuration <= 0) {
-    // Warmup complete or invalid
     if (panel) panel.style.display = 'none';
     badge.style.display = 'none';
     progressContainer.style.display = 'none';
@@ -606,7 +957,6 @@ function updateWarmupUI(remainingSeconds) {
     return;
   }
 
-  // Warmup in progress
   isWarmupComplete = false;
   if (panel) panel.style.display = 'none';
   badge.style.display = 'inline-block';
@@ -634,7 +984,6 @@ function startWarmupClientCountdown(initialRemaining) {
   warmupRemaining = initialRemaining;
   updateWarmupUI(warmupRemaining);
 
-  // Start local countdown to keep UI smooth
   warmupInterval = setInterval(function() {
     warmupRemaining--;
     if (warmupRemaining <= 0) {
@@ -665,10 +1014,8 @@ function updateOverrideStatus(msg){
     panel.style.display = 'none';
   }
 
-  // Handle warmup remaining from this message (type 1)
   if (msg.warmupRemaining !== undefined) {
     var newRemaining = Math.max(0, msg.warmupRemaining);
-    // Infer warmupDuration from remaining if missing (reconnect race fix)
     if (warmupDuration <= 0 && newRemaining > 0) {
       warmupDuration = newRemaining;
     }
@@ -680,7 +1027,6 @@ function updateOverrideStatus(msg){
     }
   }
 
-  // Check compressor locked state
   if (msg.compressorLocked !== undefined) {
     document.getElementById('compLock').textContent = msg.compressorLocked ? '(COOLDOWN)' : '';
   }
@@ -710,8 +1056,6 @@ function updateRelays(msg){
   comp.className = 'state ' + (msg.compressor ? 'on' : 'off');
   var compCard = comp.parentElement;
   if (msg.compressor) compCard.classList.add('active'); else compCard.classList.remove('active');
-
-  // compressorLocked is now handled in updateOverrideStatus
 }
 
 function updateConfig(msg){
@@ -776,17 +1120,14 @@ function switchTab(element, tabId){
 }
 
 function startWarmup(seconds) {
-  // Disable buttons immediately for feedback
   document.querySelectorAll('#warmupPanel button').forEach(function(b) { b.disabled = true; });
 
   var success = sendWS({type: 6, cmd: 'warmup', duration: seconds});
   var panel = document.getElementById('warmupPanel');
 
-  // Hide panel immediately for all cases
   if (panel) panel.style.display = 'none';
 
   if (!success) {
-    // WebSocket is down - show error and re-enable buttons
     addLog('Failed to send warmup command - WebSocket disconnected', 'warn');
     document.querySelectorAll('#warmupPanel button').forEach(function(b) { b.disabled = false; });
     if (panel) panel.style.display = 'block';
@@ -794,7 +1135,6 @@ function startWarmup(seconds) {
   }
 
   if (seconds === 0) {
-    // Optional flash confirmation - but panel is already hidden
     addLog('Warmup skipped', 'info');
     return;
   }
@@ -809,8 +1149,6 @@ function identifyRelay(index) {
   if (identifyTimer) { clearInterval(identifyTimer); identifyTimer = null; }
   if (identifyTimeout) { clearTimeout(identifyTimeout); identifyTimeout = null; }
   var state = false;
-  // Use identify flag - this should be handled server-side as a dedicated operation
-  // that bypasses automation but respects safety interlocks
   sendWS({type: 6, cmd: 'relay', index: index, state: 1, force: false, confirmed: true, identify: true});
   addLog('Relay identification started - toggling for 5 seconds', 'info');
   identifyTimer = setInterval(function() {
@@ -845,14 +1183,12 @@ function saveThresholds(){
   var co2Emer = parseInt(document.getElementById('co2Emergency').value, 10);
   var exhaustOn = parseFloat(document.getElementById('humExhaustOn').value);
 
-  // Validate EMA first
   var emaWeight = parseFloat(document.getElementById('emaWeight').value);
   if (isNaN(emaWeight) || emaWeight < 0.10 || emaWeight > 0.50) {
     addLog('EMA Weight must be between 0.10 and 0.50', 'warn');
     return;
   }
 
-  // Validate thresholds
   if (isNaN(hohFloor) || isNaN(assistFloor) || isNaN(ceiling) || isNaN(exhaustOn)) {
     addLog('Invalid humidity threshold value', 'warn');
     return;
@@ -874,7 +1210,6 @@ function saveThresholds(){
     return;
   }
 
-  // Send thresholds and EMA atomically
   var thresholds = {
     humHoHFloor: hohFloor,
     humAssistFloor: assistFloor,
@@ -1033,7 +1368,6 @@ function switchGraphTab(btn, sensor) {
     graphChart.data.datasets[0].data = liveBuffers[sensor];
   }
   updateGraphLabels();
-  // Exempt tab changes from throttle
   requestHistorical();
 }
 
@@ -1047,7 +1381,6 @@ function setGraphRange(seconds, btn) {
 
 function requestHistorical() {
   var now = Date.now();
-  // Allow immediate requests for tab changes, throttle only repeated requests
   if (now - graphLastRequestTime < 5000 && graphSensor === lastRequestedSensor) return;
   graphLastRequestTime = now;
   graphRequestId = (graphRequestId + 1) & 0xFFFF;
@@ -1066,7 +1399,7 @@ function feedLiveGraph(sensor, value) {
   var epoch = Math.floor(now / 1000);
   liveBuffers[sensor].push({x: epoch, y: value});
   if (liveBuffers[sensor].length > GRAPH_MAX_LIVE) {
-    liveBuffers[sensor].shift(); // O(n) but simpler than slice
+    liveBuffers[sensor].shift();
   }
   if (graphChart && sensor === graphSensor) {
     graphChart.data.datasets[0].data = liveBuffers[sensor];
@@ -1082,6 +1415,855 @@ function handleGraphResponse(msg) {
   graphChart.data.datasets[1].data = points;
   graphChart.update('none');
 }
+
+// ============================================================
+// MASCOTS TAB — DESIGNER ENGINE
+// ============================================================
+
+// -------- Templates (12x12 grids) --------
+const DESIGNER_TEMPLATES = {
+  amanita: {
+    name: 'Amanita',
+    grid: [
+      [0,0,0,1,1,1,1,1,1,0,0,0],
+      [0,0,1,1,1,1,1,1,1,1,0,0],
+      [0,1,1,2,1,3,3,1,2,1,1,0],
+      [1,1,1,1,1,1,1,1,1,1,1,1],
+      [1,1,1,1,1,1,1,1,1,1,1,0],
+      [0,1,1,1,1,1,1,1,1,1,0,0],
+      [0,0,1,1,1,1,1,1,1,0,0,0],
+      [0,0,0,4,4,4,4,4,4,0,0,0],
+      [0,0,0,4,4,6,6,4,4,0,0,0],
+      [0,0,0,4,7,4,4,7,4,0,0,0],
+      [0,0,0,5,5,5,5,5,5,0,0,0],
+      [0,0,4,4,4,4,4,4,4,4,0,0],
+    ]
+  },
+  chanterelle: {
+    name: 'Chanterelle',
+    grid: [
+      [0,0,0,1,1,1,1,1,1,0,0,0],
+      [0,0,1,1,2,1,1,2,1,1,0,0],
+      [0,1,1,1,1,3,3,1,1,1,1,0],
+      [1,1,1,1,1,1,1,1,1,1,1,0],
+      [1,1,1,1,1,1,1,1,1,1,0,0],
+      [0,1,1,1,1,1,1,1,1,0,0,0],
+      [0,0,1,1,1,1,1,1,0,0,0,0],
+      [0,0,0,4,4,4,4,4,4,0,0,0],
+      [0,0,0,4,4,6,6,4,4,0,0,0],
+      [0,0,0,4,7,4,4,7,4,0,0,0],
+      [0,0,0,5,5,5,5,5,5,0,0,0],
+      [0,0,4,4,4,4,4,4,4,4,0,0],
+    ]
+  },
+  shiitake: {
+    name: 'Shiitake',
+    grid: [
+      [0,0,0,1,1,1,1,1,1,0,0,0],
+      [0,0,1,1,1,1,1,1,1,1,0,0],
+      [0,1,1,2,1,1,1,1,2,1,1,0],
+      [1,1,1,1,1,3,3,1,1,1,1,1],
+      [1,1,1,1,1,1,1,1,1,1,1,0],
+      [0,1,1,1,1,1,1,1,1,1,0,0],
+      [0,0,1,1,1,1,1,1,1,0,0,0],
+      [0,0,0,4,4,4,4,4,4,0,0,0],
+      [0,0,0,4,4,6,6,4,4,0,0,0],
+      [0,0,0,4,7,4,4,7,4,0,0,0],
+      [0,0,0,5,5,5,5,5,5,0,0,0],
+      [0,0,4,4,4,4,4,4,4,4,0,0],
+    ]
+  },
+  magic: {
+    name: 'Magic',
+    grid: [
+      [0,0,0,0,1,1,1,1,0,0,0,0],
+      [0,0,0,1,1,2,2,1,1,0,0,0],
+      [0,0,1,1,1,3,3,1,1,1,0,0],
+      [0,1,1,1,1,1,1,1,1,1,1,0],
+      [1,1,1,1,1,1,1,1,1,1,1,0],
+      [0,1,1,1,1,1,1,1,1,1,0,0],
+      [0,0,1,1,1,1,1,1,1,0,0,0],
+      [0,0,0,4,4,4,4,4,4,0,0,0],
+      [0,0,0,4,4,6,6,4,4,0,0,0],
+      [0,0,0,4,7,4,4,7,4,0,0,0],
+      [0,0,0,5,5,5,5,5,5,0,0,0],
+      [0,0,4,4,4,4,4,4,4,4,0,0],
+    ]
+  },
+  morel: {
+    name: 'Morel',
+    grid: [
+      [0,0,0,1,1,1,1,1,1,0,0,0],
+      [0,0,1,1,2,1,1,2,1,1,0,0],
+      [0,1,1,1,1,1,1,1,1,1,1,0],
+      [1,1,1,1,3,1,1,3,1,1,1,1],
+      [1,1,1,1,1,1,1,1,1,1,1,0],
+      [0,1,1,1,1,1,1,1,1,1,0,0],
+      [0,0,1,1,1,1,1,1,1,0,0,0],
+      [0,0,0,4,4,4,4,4,4,0,0,0],
+      [0,0,0,4,4,6,6,4,4,0,0,0],
+      [0,0,0,4,7,4,4,7,4,0,0,0],
+      [0,0,0,5,5,5,5,5,5,0,0,0],
+      [0,0,4,4,4,4,4,4,4,4,0,0],
+    ]
+  }
+};
+
+// -------- Spot Coordinates for Each Template --------
+const SPOT_COORDS = {
+  amanita: [{r:2,c:4}, {r:2,c:7}, {r:4,c:3}, {r:4,c:8}, {r:1,c:5}, {r:1,c:6}],
+  chanterelle: [{r:2,c:5}, {r:2,c:8}, {r:4,c:3}, {r:4,c:9}, {r:1,c:4}, {r:5,c:6}],
+  shiitake: [{r:2,c:5}, {r:2,c:8}, {r:4,c:3}, {r:4,c:9}, {r:1,c:4}, {r:5,c:6}],
+  magic: [{r:2,c:4}, {r:2,c:7}, {r:4,c:3}, {r:4,c:8}, {r:1,c:5}, {r:1,c:6}],
+  morel: [{r:2,c:5}, {r:2,c:8}, {r:4,c:3}, {r:4,c:9}, {r:1,c:4}, {r:5,c:6}]
+};
+
+// -------- Designer State --------
+const designerState = {
+  template: 'amanita',
+  capWidth: 100,
+  capHeight: 100,
+  capColor: '#e63946',
+  stemHeight: 100,
+  stemWidth: 100,
+  stemColor: '#fefae0',
+  spots: 2,
+  bounceHeight: 20,
+  animSpeed: 22
+};
+
+// -------- Color Helpers --------
+function lightenColor(hex, percent) {
+  const num = parseInt(hex.replace('#', ''), 16);
+  const r = Math.min(255, (num >> 16) + percent);
+  const g = Math.min(255, ((num >> 8) & 0x00FF) + percent);
+  const b = Math.min(255, (num & 0x0000FF) + percent);
+  return '#' + (1 << 24 | r << 16 | g << 8 | b).toString(16).slice(1);
+}
+
+function darkenColor(hex, percent) {
+  const num = parseInt(hex.replace('#', ''), 16);
+  const r = Math.max(0, (num >> 16) - percent);
+  const g = Math.max(0, ((num >> 8) & 0x00FF) - percent);
+  const b = Math.max(0, (num & 0x0000FF) - percent);
+  return '#' + (1 << 24 | r << 16 | g << 8 | b).toString(16).slice(1);
+}
+
+function hexToRgb(hex) {
+  const num = parseInt(hex.replace('#', ''), 16);
+  return { r: (num >> 16) & 255, g: (num >> 8) & 255, b: num & 255 };
+}
+
+function isHexColor(str) {
+  return /^#[0-9a-fA-F]{6}$/.test(str);
+}
+
+// -------- Render Function --------
+function renderDesignerSprite() {
+  const template = DESIGNER_TEMPLATES[designerState.template];
+  if (!template) return;
+
+  const sprite = document.getElementById('designerSprite');
+  if (!sprite) return;
+
+  const grid = template.grid;
+  const rows = grid.length;
+  const cols = grid[0].length;
+
+  sprite.innerHTML = '';
+
+  const capScaleX = designerState.capWidth / 100;
+  const capScaleY = designerState.capHeight / 100;
+  const stemScaleY = designerState.stemHeight / 100;
+  const stemScaleX = designerState.stemWidth / 100;
+
+  const capRows = 7;
+  const stemRows = rows - capRows;
+
+  const capColor = designerState.capColor;
+  const stemColor = designerState.stemColor;
+  const spotColor = '#ffffff';
+
+  const colorMap = {
+    1: capColor,
+    2: lightenColor(capColor, 30),
+    3: spotColor,
+    4: stemColor,
+    5: darkenColor(stemColor, 20),
+    6: '#1a1a1a',
+    7: '#ff99c8'
+  };
+
+  const pixelSize = 5;
+
+  const spots = SPOT_COORDS[designerState.template] || [];
+  const spotsToShow = designerState.spots;
+
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      let val = grid[r][c];
+
+      let isSpot = false;
+      for (let i = 0; i < spotsToShow && i < spots.length; i++) {
+        if (spots[i].r === r && spots[i].c === c) {
+          isSpot = true;
+          break;
+        }
+      }
+      if (isSpot) val = 3;
+
+      if (val === 0) continue;
+
+      let scaleX = 1, scaleY = 1;
+      let offsetX = 0, offsetY = 0;
+
+      if (r < capRows) {
+        scaleX = capScaleX;
+        scaleY = capScaleY;
+        offsetX = (cols * pixelSize * (1 - capScaleX)) / 2;
+        offsetY = (capRows * pixelSize * (1 - capScaleY)) / 2;
+      } else {
+        scaleX = stemScaleX;
+        scaleY = stemScaleY;
+        offsetX = (cols * pixelSize * (1 - stemScaleX)) / 2;
+        offsetY = (stemRows * pixelSize * (1 - stemScaleY)) / 2;
+      }
+
+      const px = (c * pixelSize * scaleX) + offsetX;
+      const py = (r * pixelSize * scaleY) + offsetY;
+
+      const pixel = document.createElement('div');
+      pixel.className = 'pixel';
+      pixel.style.left = px + 'px';
+      pixel.style.top = py + 'px';
+      pixel.style.width = (pixelSize * scaleX) + 'px';
+      pixel.style.height = (pixelSize * scaleY) + 'px';
+      pixel.style.borderRadius = '1px';
+      pixel.style.backgroundColor = colorMap[val] || '#ff00ff';
+
+      sprite.appendChild(pixel);
+    }
+  }
+
+  // Apply animation
+  const speedSec = designerState.animSpeed / 10;
+  sprite.style.animation = 'designerBounce ' + speedSec + 's ease-in-out infinite';
+
+  document.getElementById('designerName').textContent = template.name;
+}
+
+// -------- Profile Management --------
+var profileList = [];
+
+function loadProfileList() {
+  sendWS({type: 6, cmd: 'profile_list'});
+}
+
+function updateProfileDropdown() {
+  const select = document.getElementById('profileLoadSelect');
+  if (!select) return;
+
+  const currentVal = select.value;
+  select.innerHTML = '';
+
+  if (profileList.length === 0) {
+    select.innerHTML = '<option value="">-- No saved profiles --</option>';
+  } else {
+    profileList.forEach(function(name) {
+      const opt = document.createElement('option');
+      opt.value = name;
+      opt.textContent = name;
+      select.appendChild(opt);
+    });
+  }
+
+  if (currentVal && profileList.indexOf(currentVal) !== -1) {
+    select.value = currentVal;
+  }
+
+  const countEl = document.getElementById('profileCount');
+  if (countEl) {
+    countEl.textContent = '(' + profileList.length + '/8 profiles used)';
+  }
+
+  const saveBtn = document.getElementById('saveProfileBtn');
+  if (saveBtn) {
+    const nameInput = document.getElementById('profileNameInput');
+    const name = nameInput ? nameInput.value.trim() : '';
+    saveBtn.disabled = (profileList.length >= 8 && profileList.indexOf(name) === -1);
+  }
+}
+
+function saveCurrentProfile() {
+  const nameInput = document.getElementById('profileNameInput');
+  const name = nameInput.value.trim();
+
+  if (!name) {
+    addLog('Please enter a profile name', 'warn');
+    return;
+  }
+
+  if (profileList.length >= 8 && profileList.indexOf(name) === -1) {
+    addLog('Maximum 8 profiles reached', 'warn');
+    return;
+  }
+
+  const template = DESIGNER_TEMPLATES[designerState.template];
+  const data = {
+    version: 1,
+    template: designerState.template,
+    capWidth: designerState.capWidth,
+    capHeight: designerState.capHeight,
+    capColor: designerState.capColor,
+    stemHeight: designerState.stemHeight,
+    stemWidth: designerState.stemWidth,
+    stemColor: designerState.stemColor,
+    spots: designerState.spots,
+    bounceHeight: designerState.bounceHeight,
+    animSpeed: designerState.animSpeed
+  };
+
+  const saveBtn = document.getElementById('saveProfileBtn');
+  saveBtn.disabled = true;
+  saveBtn.textContent = '💾 Saving...';
+
+  sendWS({type: 6, cmd: 'profile_save', name: name, data: data});
+}
+
+function loadSelectedProfile() {
+  const select = document.getElementById('profileLoadSelect');
+  const name = select.value;
+
+  if (!name) {
+    addLog('No profile selected', 'warn');
+    return;
+  }
+
+  sendWS({type: 6, cmd: 'profile_load', name: name});
+  addLog('Loading profile: ' + name, 'info');
+}
+
+function deleteSelectedProfile() {
+  const select = document.getElementById('profileLoadSelect');
+  const name = select.value;
+
+  if (!name) {
+    addLog('No profile selected', 'warn');
+    return;
+  }
+
+  if (!confirm('Delete profile "' + name + '"?')) return;
+
+  const deleteBtn = document.getElementById('deleteProfileBtn');
+  deleteBtn.disabled = true;
+  deleteBtn.textContent = '🗑 Deleting...';
+
+  sendWS({type: 6, cmd: 'profile_delete', name: name});
+}
+
+// -------- Export --------
+function exportDesignerJSON() {
+  const template = DESIGNER_TEMPLATES[designerState.template];
+  const exportData = {
+    name: template.name,
+    template: designerState.template,
+    capColor: designerState.capColor,
+    stemColor: designerState.stemColor,
+    capWidth: designerState.capWidth,
+    capHeight: designerState.capHeight,
+    stemHeight: designerState.stemHeight,
+    stemWidth: designerState.stemWidth,
+    spots: designerState.spots,
+    bounceHeight: designerState.bounceHeight,
+    animSpeed: designerState.animSpeed / 10,
+    grid: template.grid
+  };
+
+  const json = JSON.stringify(exportData, null, 2);
+  const area = document.getElementById('exportArea');
+  area.textContent = json;
+  area.classList.add('show');
+
+  const range = document.createRange();
+  range.selectNodeContents(area);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+
+  // Also try clipboard API
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(json).then(function() {
+      addLog('JSON copied to clipboard!', 'info');
+    }).catch(function() {});
+  }
+}
+
+// -------- Import --------
+var importVisible = false;
+
+function toggleImport() {
+  const area = document.getElementById('importArea');
+  importVisible = !importVisible;
+  area.classList.toggle('show', importVisible);
+  if (importVisible) {
+    area.focus();
+  }
+}
+
+function importDesignerJSON() {
+  const area = document.getElementById('importArea');
+  const text = area.value.trim();
+  if (!text) {
+    addLog('Paste JSON to import', 'warn');
+    return;
+  }
+
+  try {
+    const data = JSON.parse(text);
+    if (!data.template || !DESIGNER_TEMPLATES[data.template]) {
+      addLog('Invalid template in JSON', 'warn');
+      return;
+    }
+    if (!data.capColor || !isHexColor(data.capColor)) {
+      addLog('Invalid capColor in JSON', 'warn');
+      return;
+    }
+    if (!data.stemColor || !isHexColor(data.stemColor)) {
+      addLog('Invalid stemColor in JSON', 'warn');
+      return;
+    }
+
+    designerState.template = data.template || 'amanita';
+    designerState.capWidth = data.capWidth || 100;
+    designerState.capHeight = data.capHeight || 100;
+    designerState.capColor = data.capColor || '#e63946';
+    designerState.stemHeight = data.stemHeight || 100;
+    designerState.stemWidth = data.stemWidth || 100;
+    designerState.stemColor = data.stemColor || '#fefae0';
+    designerState.spots = (data.spots !== undefined && data.spots !== null) ? data.spots : 2;
+    designerState.bounceHeight = data.bounceHeight || 20;
+    designerState.animSpeed = data.animSpeed ? data.animSpeed * 10 : 22;
+
+    // If grid is provided, override the template's grid
+    if (data.grid && Array.isArray(data.grid) && data.grid.length === 12) {
+      DESIGNER_TEMPLATES[designerState.template].grid = data.grid;
+    }
+
+    updateDesignerUI();
+    addLog('JSON imported successfully!', 'info');
+    area.value = '';
+    area.classList.remove('show');
+    importVisible = false;
+  } catch (e) {
+    addLog('Invalid JSON: ' + e.message, 'warn');
+  }
+}
+
+// -------- Randomise --------
+function randomiseDesigner() {
+  const templates = ['amanita', 'chanterelle', 'shiitake', 'magic', 'morel'];
+  const capColors = ['#e63946', '#f4a261', '#795548', '#7b2cbf', '#40916c', '#ff6b6b', '#ffd93d', '#6bcbff', '#a66cff'];
+  const stemColors = ['#fefae0', '#f5e6d0', '#efebe9', '#e8d5b8', '#f0e6d3', '#e0d5c0'];
+
+  designerState.template = templates[Math.floor(Math.random() * templates.length)];
+  designerState.capColor = capColors[Math.floor(Math.random() * capColors.length)];
+  designerState.stemColor = stemColors[Math.floor(Math.random() * stemColors.length)];
+  designerState.capWidth = 70 + Math.floor(Math.random() * 50);
+  designerState.capHeight = 70 + Math.floor(Math.random() * 50);
+  designerState.stemHeight = 70 + Math.floor(Math.random() * 60);
+  designerState.stemWidth = 60 + Math.floor(Math.random() * 50);
+  designerState.bounceHeight = 10 + Math.floor(Math.random() * 25);
+  designerState.animSpeed = 15 + Math.floor(Math.random() * 18);
+  designerState.spots = [0, 2, 4, 6][Math.floor(Math.random() * 4)];
+
+  updateDesignerUI();
+  addLog('Randomised!', 'info');
+}
+
+// -------- Reset --------
+function resetDesigner() {
+  designerState.template = 'amanita';
+  designerState.capWidth = 100;
+  designerState.capHeight = 100;
+  designerState.capColor = '#e63946';
+  designerState.stemHeight = 100;
+  designerState.stemWidth = 100;
+  designerState.stemColor = '#fefae0';
+  designerState.spots = 2;
+  designerState.bounceHeight = 20;
+  designerState.animSpeed = 22;
+
+  updateDesignerUI();
+  addLog('Reset to default', 'info');
+}
+
+// -------- Update UI --------
+function updateDesignerUI() {
+  document.getElementById('capWidth').value = designerState.capWidth;
+  document.getElementById('capHeight').value = designerState.capHeight;
+  document.getElementById('stemHeight').value = designerState.stemHeight;
+  document.getElementById('stemWidth').value = designerState.stemWidth;
+  document.getElementById('bounceHeight').value = designerState.bounceHeight;
+  document.getElementById('animSpeed').value = designerState.animSpeed;
+
+  document.getElementById('capWidthVal').textContent = designerState.capWidth + '%';
+  document.getElementById('capHeightVal').textContent = designerState.capHeight + '%';
+  document.getElementById('stemHeightVal').textContent = designerState.stemHeight + '%';
+  document.getElementById('stemWidthVal').textContent = designerState.stemWidth + '%';
+  document.getElementById('bounceHeightVal').textContent = designerState.bounceHeight + 'px';
+  document.getElementById('animSpeedVal').textContent = (designerState.animSpeed / 10) + 's';
+
+  document.querySelectorAll('#templateButtons button').forEach(function(b) {
+    b.classList.toggle('active', b.dataset.template === designerState.template);
+  });
+
+  document.querySelectorAll('[data-spots]').forEach(function(b) {
+    b.classList.toggle('active', parseInt(b.dataset.spots) === designerState.spots);
+  });
+
+  document.querySelectorAll('#capColorPicker .color-swatch[data-color]').forEach(function(s) {
+    s.classList.toggle('active', s.dataset.color === designerState.capColor);
+  });
+
+  document.querySelectorAll('#stemColorPicker .color-swatch[data-color]').forEach(function(s) {
+    s.classList.toggle('active', s.dataset.color === designerState.stemColor);
+  });
+
+  document.getElementById('customCapColor').value = designerState.capColor;
+  document.getElementById('customStemColor').value = designerState.stemColor;
+
+  renderDesignerSprite();
+}
+
+// -------- WebSocket Response Handler --------
+function handleProfileResponse(msg) {
+  if (msg.cmd === 'profile_list') {
+    profileList = msg.names || [];
+    updateProfileDropdown();
+  } else if (msg.cmd === 'profile_load') {
+    if (msg.data) {
+      const data = msg.data;
+      designerState.template = data.template || 'amanita';
+      designerState.capWidth = data.capWidth || 100;
+      designerState.capHeight = data.capHeight || 100;
+      designerState.capColor = data.capColor || '#e63946';
+      designerState.stemHeight = data.stemHeight || 100;
+      designerState.stemWidth = data.stemWidth || 100;
+      designerState.stemColor = data.stemColor || '#fefae0';
+      designerState.spots = (data.spots !== undefined && data.spots !== null) ? data.spots : 2;
+      designerState.bounceHeight = data.bounceHeight || 20;
+      designerState.animSpeed = data.animSpeed || 22;
+
+      updateDesignerUI();
+      addLog('Profile loaded: ' + msg.name, 'info');
+      document.getElementById('profileNameInput').value = msg.name;
+    }
+  } else if (msg.cmd === 'profile_save') {
+    const saveBtn = document.getElementById('saveProfileBtn');
+    saveBtn.disabled = false;
+    saveBtn.textContent = '💾 Save';
+    if (msg.status === 'ok') {
+      addLog('Profile saved successfully', 'info');
+      loadProfileList();
+      document.getElementById('profileNameInput').value = '';
+    } else {
+      addLog('Save failed: ' + (msg.message || 'unknown error'), 'warn');
+    }
+  } else if (msg.cmd === 'profile_delete') {
+    const deleteBtn = document.getElementById('deleteProfileBtn');
+    deleteBtn.disabled = false;
+    deleteBtn.textContent = '🗑 Delete';
+    if (msg.status === 'ok') {
+      addLog('Profile deleted', 'info');
+      loadProfileList();
+    } else {
+      addLog('Delete failed: ' + (msg.message || 'unknown error'), 'warn');
+    }
+  } else if (msg.status === 'error') {
+    addLog('Profile error: ' + (msg.message || 'unknown error'), 'warn');
+    const saveBtn = document.getElementById('saveProfileBtn');
+    if (saveBtn) {
+      saveBtn.disabled = false;
+      saveBtn.textContent = '💾 Save';
+    }
+    const deleteBtn = document.getElementById('deleteProfileBtn');
+    if (deleteBtn) {
+      deleteBtn.disabled = false;
+      deleteBtn.textContent = '🗑 Delete';
+    }
+  }
+}
+
+// -------- Event Bindings --------
+function initDesigner() {
+  if (!document.getElementById('mascots')) return;
+
+  // Template buttons
+  document.querySelectorAll('#templateButtons button').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      designerState.template = this.dataset.template;
+      updateDesignerUI();
+    });
+  });
+
+  // Sliders
+  ['capWidth', 'capHeight', 'stemHeight', 'stemWidth', 'bounceHeight', 'animSpeed'].forEach(function(id) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener('input', function() {
+      const val = parseInt(this.value);
+      designerState[id] = val;
+      const label = document.getElementById(id + 'Val');
+      if (label) {
+        if (id === 'bounceHeight') label.textContent = val + 'px';
+        else if (id === 'animSpeed') label.textContent = (val / 10) + 's';
+        else label.textContent = val + '%';
+      }
+      renderDesignerSprite();
+    });
+  });
+
+  // Cap color swatches
+  document.querySelectorAll('#capColorPicker .color-swatch[data-color]').forEach(function(sw) {
+    sw.addEventListener('click', function() {
+      designerState.capColor = this.dataset.color;
+      updateDesignerUI();
+    });
+  });
+  document.getElementById('customCapColor').addEventListener('input', function() {
+    designerState.capColor = this.value;
+    updateDesignerUI();
+  });
+
+  // Stem color swatches
+  document.querySelectorAll('#stemColorPicker .color-swatch[data-color]').forEach(function(sw) {
+    sw.addEventListener('click', function() {
+      designerState.stemColor = this.dataset.color;
+      updateDesignerUI();
+    });
+  });
+  document.getElementById('customStemColor').addEventListener('input', function() {
+    designerState.stemColor = this.value;
+    updateDesignerUI();
+  });
+
+  // Spot buttons
+  document.querySelectorAll('[data-spots]').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      designerState.spots = parseInt(this.dataset.spots);
+      updateDesignerUI();
+    });
+  });
+
+  // Profile buttons
+  document.getElementById('saveProfileBtn').addEventListener('click', saveCurrentProfile);
+  document.getElementById('loadProfileBtn').addEventListener('click', loadSelectedProfile);
+  document.getElementById('deleteProfileBtn').addEventListener('click', deleteSelectedProfile);
+
+  // Profile name input - auto-save on Enter
+  document.getElementById('profileNameInput').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') saveCurrentProfile();
+  });
+  // Also update save button state when name changes
+  document.getElementById('profileNameInput').addEventListener('input', function() {
+    updateProfileDropdown();
+  });
+
+  // Action buttons
+  document.getElementById('randomizeBtn').addEventListener('click', randomiseDesigner);
+  document.getElementById('resetBtn').addEventListener('click', resetDesigner);
+  document.getElementById('exportBtn').addEventListener('click', exportDesignerJSON);
+
+  // Import
+  document.getElementById('importToggleBtn').addEventListener('click', toggleImport);
+  document.getElementById('importArea').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter' && e.ctrlKey) {
+      importDesignerJSON();
+    }
+  });
+  // Add an import button inside the import area
+  const importBtn = document.createElement('button');
+  importBtn.textContent = '📥 Import';
+  importBtn.className = 'btn-import';
+  importBtn.style.marginTop = '6px';
+  importBtn.addEventListener('click', importDesignerJSON);
+  document.getElementById('importArea').parentNode.appendChild(importBtn);
+
+  // Initial render
+  updateDesignerUI();
+  loadProfileList();
+}
+
+// ============================================================
+// MUSHROOM FAMILY FOOTER RENDERER
+// ============================================================
+const mushroomContainer = document.getElementById('mushroomFooter');
+const PIXEL_SIZE = 4;
+
+const mushroomData = [
+  {
+    name: 'Toadstool',
+    colors: {
+      1: '#5c1a1a', 2: '#e63946', 3: '#ff7b89', 4: '#ffffff',
+      5: '#a98467', 6: '#fefae0', 7: '#ffffff',
+      8: '#1d1d1d', 9: '#ff99c8'
+    },
+    grid: [
+      [0,0,0,0,0,1,1,1,1,1,1,0,0,0,0,0],
+      [0,0,0,1,1,2,2,2,2,2,2,1,1,0,0,0],
+      [0,0,1,2,2,4,4,2,2,4,4,2,2,1,0,0],
+      [0,1,2,2,2,2,2,2,2,2,2,2,2,2,1,0],
+      [1,2,2,4,4,2,2,2,2,2,2,4,4,2,2,1],
+      [1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1],
+      [1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1],
+      [1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1],
+      [0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0],
+      [0,0,0,0,0,5,5,5,5,5,5,0,0,0,0,0],
+      [0,0,0,0,5,6,6,6,6,6,6,5,0,0,0,0],
+      [0,0,0,0,5,6,8,6,6,8,6,5,0,0,0,0],
+      [0,0,0,0,5,6,6,6,6,6,6,5,0,0,0,0],
+      [0,0,0,0,5,6,9,6,6,9,6,5,0,0,0,0],
+      [0,0,0,0,5,6,6,6,6,6,6,5,0,0,0,0],
+      [0,0,0,0,0,5,5,5,5,5,5,0,0,0,0,0]
+    ]
+  },
+  {
+    name: 'Chanterelle',
+    colors: {
+      1: '#8a5a19', 2: '#f4a261', 3: '#e9c46a', 4: '#ffffff',
+      5: '#8a5a19', 6: '#fefae0', 7: '#ffffff',
+      8: '#1d1d1d', 9: '#ff99c8'
+    },
+    grid: [
+      [0,0,0,0,1,1,1,1,1,1,1,1,0,0,0,0],
+      [0,0,0,1,2,2,3,3,3,3,2,2,1,0,0,0],
+      [0,0,1,2,2,2,2,2,2,2,2,2,2,1,0,0],
+      [0,1,2,4,2,2,2,4,2,2,2,4,2,2,1,0],
+      [1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1],
+      [1,2,2,2,4,2,2,2,2,2,4,2,2,2,2,1],
+      [1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1],
+      [0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0],
+      [0,0,0,0,5,5,5,5,5,5,5,5,0,0,0,0],
+      [0,0,0,5,6,6,6,6,6,6,6,6,5,0,0,0],
+      [0,0,0,5,6,8,6,6,6,6,8,6,5,0,0,0],
+      [0,0,0,5,6,6,6,6,6,6,6,6,5,0,0,0],
+      [0,0,0,5,6,6,9,6,6,9,6,6,5,0,0,0],
+      [0,0,0,5,6,6,6,6,6,6,6,6,5,0,0,0],
+      [0,0,0,0,5,5,5,5,5,5,5,5,0,0,0,0],
+      [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]
+    ]
+  },
+  {
+    name: 'Shiitake',
+    colors: {
+      1: '#3e2723', 2: '#795548', 3: '#a1887f', 4: '#d7ccc8',
+      5: '#3e2723', 6: '#efebe9', 7: '#ffffff',
+      8: '#1d1d1d', 9: '#ff99c8'
+    },
+    grid: [
+      [0,0,0,1,1,1,1,1,1,1,1,1,1,0,0,0],
+      [0,0,1,2,2,2,2,2,2,2,2,2,2,1,0,0],
+      [0,1,2,2,3,2,2,2,2,2,2,3,2,2,1,0],
+      [1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1],
+      [1,2,4,2,2,2,2,2,2,2,2,2,2,4,2,1],
+      [1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1],
+      [1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1],
+      [0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0],
+      [0,0,0,0,0,5,5,5,5,5,5,0,0,0,0,0],
+      [0,0,0,0,5,6,6,6,6,6,6,5,0,0,0,0],
+      [0,0,0,0,5,6,8,6,6,8,6,5,0,0,0,0],
+      [0,0,0,0,5,6,6,6,6,6,6,5,0,0,0,0],
+      [0,0,0,0,5,6,9,6,6,9,6,5,0,0,0,0],
+      [0,0,0,0,5,6,6,6,6,6,6,5,0,0,0,0],
+      [0,0,0,0,0,5,5,5,5,5,5,0,0,0,0,0],
+      [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]
+    ]
+  },
+  {
+    name: 'Magic',
+    colors: {
+      1: '#2a1b38', 2: '#7b2cbf', 3: '#c77dff', 4: '#e0aaff',
+      5: '#2a1b38', 6: '#f8edeb', 7: '#ffffff',
+      8: '#1d1d1d', 9: '#ff99c8'
+    },
+    grid: [
+      [0,0,0,0,0,0,1,1,1,1,0,0,0,0,0,0],
+      [0,0,0,0,0,1,2,3,3,2,1,0,0,0,0,0],
+      [0,0,0,0,1,2,2,2,2,2,2,1,0,0,0,0],
+      [0,0,0,1,2,2,4,2,2,4,2,2,1,0,0,0],
+      [0,0,1,2,2,2,2,2,2,2,2,2,2,1,0,0],
+      [0,1,2,2,4,2,2,2,2,2,2,4,2,2,1,0],
+      [1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1],
+      [0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0],
+      [0,0,0,0,0,5,5,5,5,5,5,0,0,0,0,0],
+      [0,0,0,0,5,6,6,6,6,6,6,5,0,0,0,0],
+      [0,0,0,0,5,6,8,6,6,8,6,5,0,0,0,0],
+      [0,0,0,0,5,6,6,6,6,6,6,5,0,0,0,0],
+      [0,0,0,0,5,6,9,6,6,9,6,5,0,0,0,0],
+      [0,0,0,0,5,6,6,6,6,6,6,5,0,0,0,0],
+      [0,0,0,0,0,5,5,5,5,5,5,0,0,0,0,0],
+      [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]
+    ]
+  },
+  {
+    name: 'Morel',
+    colors: {
+      1: '#1b4332', 2: '#40916c', 3: '#74c69d', 4: '#b7e4c7',
+      5: '#1b4332', 6: '#f8edeb', 7: '#ffffff',
+      8: '#1d1d1d', 9: '#ff99c8'
+    },
+    grid: [
+      [0,0,0,0,1,1,1,1,1,1,1,1,0,0,0,0],
+      [0,0,0,1,2,3,2,3,2,3,2,2,1,0,0,0],
+      [0,0,1,2,2,2,3,2,2,2,3,2,2,1,0,0],
+      [0,1,2,3,2,2,2,3,2,2,2,3,2,2,1,0],
+      [1,2,2,2,3,2,2,2,3,2,2,2,3,2,2,1],
+      [1,2,3,2,2,3,2,2,2,3,2,2,2,3,2,1],
+      [1,2,2,3,2,2,3,2,2,2,3,2,2,2,2,1],
+      [0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0],
+      [0,0,0,0,0,5,5,5,5,5,5,0,0,0,0,0],
+      [0,0,0,0,5,6,6,6,6,6,6,5,0,0,0,0],
+      [0,0,0,0,5,6,8,6,6,8,6,5,0,0,0,0],
+      [0,0,0,0,5,6,6,6,6,6,6,5,0,0,0,0],
+      [0,0,0,0,5,6,9,6,6,9,6,5,0,0,0,0],
+      [0,0,0,0,5,6,6,6,6,6,6,5,0,0,0,0],
+      [0,0,0,0,0,5,5,5,5,5,5,0,0,0,0,0],
+      [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]
+    ]
+  }
+];
+
+function renderMushroom(data) {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'mushroom-wrapper';
+
+  const sprite = document.createElement('div');
+  sprite.className = 'mushroom-sprite';
+
+  for (let r = 0; r < 16; r++) {
+    for (let c = 0; c < 16; c++) {
+      const val = data.grid[r][c];
+      if (val === 0) continue;
+      const pixel = document.createElement('div');
+      pixel.className = 'pixel';
+      pixel.style.backgroundColor = data.colors[val];
+      pixel.style.top = (r * PIXEL_SIZE) + 'px';
+      pixel.style.left = (c * PIXEL_SIZE) + 'px';
+      sprite.appendChild(pixel);
+    }
+  }
+  wrapper.appendChild(sprite);
+
+  const shadow = document.createElement('div');
+  shadow.className = 'mushroom-shadow';
+  wrapper.appendChild(shadow);
+
+  return wrapper;
+}
+
+mushroomData.forEach(function(data) {
+  mushroomContainer.appendChild(renderMushroom(data));
+});
 
 connectWS();
 </script>
@@ -1192,9 +2374,7 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
           return;
         }
 
-        // If this is an identification request, handle it separately
         if (identify) {
-          // Bypass automation but respect hardware interlocks
           relayManager_identifyRelay(index);
           return;
         }
@@ -1258,7 +2438,6 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
         AutomationThresholds* thresholds = automation_getThresholds();
         AutomationThresholds newThresholds = *thresholds;
 
-        // Clamp all threshold values server-side
         newThresholds.humHoHFloor = constrain(doc["data"]["humHoHFloor"] | thresholds->humHoHFloor, 0, 100);
         newThresholds.humAssistFloor = constrain(doc["data"]["humAssistFloor"] | thresholds->humAssistFloor, 0, 100);
         newThresholds.humCeiling = constrain(doc["data"]["humCeiling"] | thresholds->humCeiling, 0, 100);
@@ -1294,7 +2473,6 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
           Serial.println(datetime);
           return;
         }
-        // Basic calendar validation
         int daysInMonth[] = {0,31,28,31,30,31,30,31,31,30,31,30,31};
         if ((year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)) {
           daysInMonth[2] = 29;
@@ -1340,7 +2518,6 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
 
         bool alreadySelected = false;
 
-        // Read current state
         portENTER_CRITICAL(&g_stateMux);
         alreadySelected = g_warmupSelected;
         portEXIT_CRITICAL(&g_stateMux);
@@ -1350,18 +2527,16 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
           return;
         }
 
-        // Heavy I/O outside spinlock
         relayManager_setRelay(RELAY_COMPRESSOR, true);
 
-        // Atomic state commit - all or nothing
         unsigned long start = (duration > 0) ? millis() : 0;
         unsigned long durMs = duration * 1000UL;
 
         portENTER_CRITICAL(&g_stateMux);
-        if (!g_warmupSelected) {  // Re-check inside lock
+        if (!g_warmupSelected) {
           g_compressorWarmupStart = start;
           g_compressorWarmupDuration = durMs;
-          g_warmupSelected = true;  // Set LAST, atomically with the others
+          g_warmupSelected = true;
         }
         portEXIT_CRITICAL(&g_stateMux);
 
@@ -1431,6 +2606,24 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
         }
         g_webSocket.sendTXT(num, (const uint8_t*)response, responseLen);
       }
+
+      // ============================================================
+      // Mascots Profile Commands
+      // ============================================================
+
+      else if (msgType == WS_COMMAND && strcmp(cmd, "profile_list") == 0) {
+        handleProfileList(num);
+      }
+      else if (msgType == WS_COMMAND && strcmp(cmd, "profile_save") == 0) {
+        handleProfileSave(num, doc);
+      }
+      else if (msgType == WS_COMMAND && strcmp(cmd, "profile_load") == 0) {
+        handleProfileLoad(num, doc);
+      }
+      else if (msgType == WS_COMMAND && strcmp(cmd, "profile_delete") == 0) {
+        handleProfileDelete(num, doc);
+      }
+
       break;
     }
 
@@ -1461,7 +2654,6 @@ static void sendSensorUpdate() {
   calibrationActive = g_systemState.calibrationActive;
   portEXIT_CRITICAL(&g_stateMux);
 
-  // Warmup variables - read atomically
   bool warmupSelected;
   unsigned long warmupDuration;
   portENTER_CRITICAL(&g_stateMux);
@@ -1532,10 +2724,9 @@ static void sendSystemStatus() {
   compressor = g_systemState.compressorActive;
   portEXIT_CRITICAL(&g_stateMux);
 
-  // Warmup variables - read atomically
   bool warmupSelected;
   unsigned long warmupStart, warmupDuration;
-  unsigned long now = millis();  // Capture before critical section
+  unsigned long now = millis();
   portENTER_CRITICAL(&g_stateMux);
   warmupSelected = g_warmupSelected;
   warmupStart = g_compressorWarmupStart;
@@ -1630,11 +2821,452 @@ static void sendCalibrationUpdate() {
 }
 
 // ============================================================
+// Mascots Tab — Profile Helper Functions
+// ============================================================
+
+static LoadResult loadProfilesJson(JsonDocument& doc, bool& wasRecovered) {
+  wasRecovered = false;
+
+  if (!SPIFFS.exists(PROFILES_FILE)) {
+    doc.to<JsonObject>();
+    return LoadResult::Empty;
+  }
+
+  File file = SPIFFS.open(PROFILES_FILE, "r");
+  if (!file) {
+    Serial.println(F("[PROFILES] Failed to open file for reading"));
+    return LoadResult::Failed;
+  }
+
+  DeserializationError error = deserializeJson(doc, file);
+  file.close();
+
+  if (error) {
+    Serial.println(F("[PROFILES] JSON parse error — recovering..."));
+    Serial.print(F("[PROFILES] Error: "));
+    Serial.println(error.c_str());
+
+    wasRecovered = true;
+
+    // Move corrupt file to backup
+    if (SPIFFS.exists(PROFILES_BACKUP)) {
+      SPIFFS.remove(PROFILES_BACKUP);
+    }
+    SPIFFS.rename(PROFILES_FILE, PROFILES_BACKUP);
+
+    // Create fresh empty file
+    File fresh = SPIFFS.open(PROFILES_FILE, "w");
+    if (fresh) {
+      fresh.print("{}");
+      fresh.close();
+      Serial.println(F("[PROFILES] Created fresh empty file"));
+    }
+
+    doc.to<JsonObject>();
+    return LoadResult::Recovered;
+  }
+
+  return LoadResult::OK;
+}
+
+static bool saveProfilesJson(const JsonDocument& doc) {
+  // Write to temp file
+  File file = SPIFFS.open(PROFILES_TEMP, "w");
+  if (!file) {
+    Serial.println(F("[PROFILES] Failed to open temp file for writing"));
+    return false;
+  }
+
+  // Measure JSON size first
+  size_t jsonSize = measureJson(doc);
+  size_t bytesWritten = serializeJson(doc, file);
+  file.close();
+
+  if (bytesWritten == 0 || bytesWritten != jsonSize) {
+    Serial.print(F("[PROFILES] Write mismatch: expected "));
+    Serial.print(jsonSize);
+    Serial.print(F(", got "));
+    Serial.println(bytesWritten);
+    SPIFFS.remove(PROFILES_TEMP);
+    return false;
+  }
+
+  // Verify with same-sized buffer
+  DynamicJsonDocument verifyDoc(8192);
+  File verifyFile = SPIFFS.open(PROFILES_TEMP, "r");
+  if (!verifyFile) {
+    Serial.println(F("[PROFILES] Failed to open temp file for verification"));
+    SPIFFS.remove(PROFILES_TEMP);
+    return false;
+  }
+
+  DeserializationError error = deserializeJson(verifyDoc, verifyFile);
+  verifyFile.close();
+
+  if (error) {
+    Serial.println(F("[PROFILES] Temp file verification failed — corrupt write"));
+    SPIFFS.remove(PROFILES_TEMP);
+    return false;
+  }
+
+  // Atomic rename — ESP32 rename OVERWRITES destination, no remove needed!
+  if (!SPIFFS.rename(PROFILES_TEMP, PROFILES_FILE)) {
+    Serial.println(F("[PROFILES] Atomic rename failed"));
+    SPIFFS.remove(PROFILES_TEMP);
+    return false;
+  }
+
+  return true;
+}
+
+static void getProfileNames(JsonArray& names) {
+  bool wasRecovered;
+  DynamicJsonDocument doc(8192);
+  LoadResult result = loadProfilesJson(doc, wasRecovered);
+
+  if (result == LoadResult::Failed) return;
+
+  JsonObject obj = doc.as<JsonObject>();
+  for (JsonPair kv : obj) {
+    names.add(kv.key().c_str());
+  }
+}
+
+static bool isValidTemplate(const char* name) {
+  static const char* validTemplates[] = {
+    "amanita", "chanterelle", "shiitake", "magic", "morel"
+  };
+  for (size_t i = 0; i < 5; i++) {
+    if (strcmp(name, validTemplates[i]) == 0) return true;
+  }
+  return false;
+}
+
+static bool validateProfileData(const JsonObject& data) {
+  // Check required fields
+  if (!data.containsKey("template")) return false;
+  if (!data.containsKey("capWidth")) return false;
+  if (!data.containsKey("capHeight")) return false;
+  if (!data.containsKey("capColor")) return false;
+  if (!data.containsKey("stemHeight")) return false;
+  if (!data.containsKey("stemWidth")) return false;
+  if (!data.containsKey("stemColor")) return false;
+  if (!data.containsKey("spots")) return false;
+  if (!data.containsKey("bounceHeight")) return false;
+  if (!data.containsKey("animSpeed")) return false;
+
+  // Validate template name
+  const char* templateName = data["template"] | "";
+  if (!isValidTemplate(templateName)) return false;
+
+  // Validate numeric ranges
+  int capWidth = data["capWidth"] | 0;
+  if (capWidth < 60 || capWidth > 120) return false;
+
+  int capHeight = data["capHeight"] | 0;
+  if (capHeight < 60 || capHeight > 120) return false;
+
+  int stemHeight = data["stemHeight"] | 0;
+  if (stemHeight < 60 || stemHeight > 140) return false;
+
+  int stemWidth = data["stemWidth"] | 0;
+  if (stemWidth < 50 || stemWidth > 120) return false;
+
+  int spots = data["spots"] | -1;
+  if (spots != 0 && spots != 2 && spots != 4 && spots != 6) return false;
+
+  int bounceHeight = data["bounceHeight"] | 0;
+  if (bounceHeight < 5 || bounceHeight > 35) return false;
+
+  int animSpeed = data["animSpeed"] | 0;
+  if (animSpeed < 12 || animSpeed > 35) return false;
+
+  // Validate colors (hex format)
+  const char* capColor = data["capColor"] | "";
+  if (strlen(capColor) != 7 || capColor[0] != '#') return false;
+  for (int i = 1; i < 7; i++) {
+    if (!isxdigit((unsigned char)capColor[i])) return false;
+  }
+
+  const char* stemColor = data["stemColor"] | "";
+  if (strlen(stemColor) != 7 || stemColor[0] != '#') return false;
+  for (int i = 1; i < 7; i++) {
+    if (!isxdigit((unsigned char)stemColor[i])) return false;
+  }
+
+  return true;
+}
+
+static void sendProfileResponse(uint8_t num, const char* cmd, const char* status, const char* message) {
+  DynamicJsonDocument resp(256);
+  resp["type"] = WS_PROFILE_RESPONSE;
+  resp["cmd"] = cmd;
+  resp["status"] = status;
+  resp["message"] = message;
+
+  String output;
+  serializeJson(resp, output);
+  g_webSocket.sendTXT(num, (const uint8_t*)output.c_str(), output.length());
+}
+
+// ============================================================
+// Mascots Tab — WebSocket Command Handlers
+// ============================================================
+
+static void handleProfileList(uint8_t num) {
+  DynamicJsonDocument response(1024);
+  response["type"] = WS_PROFILE_RESPONSE;
+  response["cmd"] = "profile_list";
+
+  JsonArray names = response.createNestedArray("names");
+  getProfileNames(names);
+
+  String output;
+  serializeJson(response, output);
+  g_webSocket.sendTXT(num, (const uint8_t*)output.c_str(), output.length());
+}
+
+static void handleProfileSave(uint8_t num, const JsonDocument& req) {
+  const char* name = req["name"] | "";
+  size_t nameLen = strlen(name);
+
+  if (nameLen == 0 || nameLen > 32) {
+    sendProfileResponse(num, "profile_save", "error", "Name must be 1-32 chars");
+    return;
+  }
+
+  // Validate name (alphanumeric, spaces, hyphens, underscores, dots)
+  for (size_t i = 0; i < nameLen; i++) {
+    char c = name[i];
+    if (!isalnum((unsigned char)c) && c != ' ' && c != '-' && c != '_' && c != '.') {
+      sendProfileResponse(num, "profile_save", "error", "Invalid name (use letters, numbers, spaces, - _ .)");
+      return;
+    }
+  }
+
+  JsonObject data = req["data"].as<JsonObject>();
+  if (data.isNull()) {
+    sendProfileResponse(num, "profile_save", "error", "Missing profile data");
+    return;
+  }
+
+  if (!validateProfileData(data)) {
+    sendProfileResponse(num, "profile_save", "error", "Invalid profile data");
+    return;
+  }
+
+  // Check free space before write
+  size_t totalBytes = SPIFFS.totalBytes();
+  size_t usedBytes = SPIFFS.usedBytes();
+  size_t freeBytes = totalBytes - usedBytes;
+  if (freeBytes < 2048) {  // Need at least 2KB free
+    sendProfileResponse(num, "profile_save", "error", "Storage full (need 2KB free)");
+    return;
+  }
+
+  // Use FreeRTOS mutex, not spinlock!
+  if (g_profileMutex == NULL) {
+    sendProfileResponse(num, "profile_save", "error", "Storage not initialized");
+    return;
+  }
+
+  if (xSemaphoreTake(g_profileMutex, pdMS_TO_TICKS(5000)) != pdTRUE) {
+    sendProfileResponse(num, "profile_save", "error", "Storage busy, try again");
+    return;
+  }
+
+  bool wasRecovered;
+  DynamicJsonDocument doc(8192);
+  LoadResult result = loadProfilesJson(doc, wasRecovered);
+
+  if (result == LoadResult::Failed) {
+    xSemaphoreGive(g_profileMutex);
+    sendProfileResponse(num, "profile_save", "error", "Storage read error");
+    return;
+  }
+
+  JsonObject obj = doc.as<JsonObject>();
+
+  if (!obj.containsKey(name) && obj.size() >= MAX_PROFILES) {
+    xSemaphoreGive(g_profileMutex);
+    sendProfileResponse(num, "profile_save", "error", "Profile limit reached (8 max)");
+    return;
+  }
+
+  // Save data (grid is regenerated from template on client)
+  obj[name] = data;
+
+  bool success = saveProfilesJson(doc);
+
+  xSemaphoreGive(g_profileMutex);
+
+  if (success) {
+    if (wasRecovered) {
+      sendProfileResponse(num, "profile_save", "ok", "Profile saved (recovered from corruption)");
+    } else {
+      sendProfileResponse(num, "profile_save", "ok", "Profile saved");
+    }
+  } else {
+    sendProfileResponse(num, "profile_save", "error", "Disk write failed");
+  }
+}
+
+static void handleProfileLoad(uint8_t num, const JsonDocument& req) {
+  const char* name = req["name"] | "";
+  if (strlen(name) == 0) {
+    sendProfileResponse(num, "profile_load", "error", "Name is required");
+    return;
+  }
+
+  if (g_profileMutex == NULL) {
+    sendProfileResponse(num, "profile_load", "error", "Storage not initialized");
+    return;
+  }
+
+  if (xSemaphoreTake(g_profileMutex, pdMS_TO_TICKS(5000)) != pdTRUE) {
+    sendProfileResponse(num, "profile_load", "error", "Storage busy, try again");
+    return;
+  }
+
+  bool wasRecovered;
+  DynamicJsonDocument doc(8192);
+  LoadResult result = loadProfilesJson(doc, wasRecovered);
+
+  if (result == LoadResult::Failed) {
+    xSemaphoreGive(g_profileMutex);
+    sendProfileResponse(num, "profile_load", "error", "Storage read error");
+    return;
+  }
+
+  JsonObject obj = doc.as<JsonObject>();
+  if (!obj.containsKey(name)) {
+    xSemaphoreGive(g_profileMutex);
+    sendProfileResponse(num, "profile_load", "error", "Profile not found");
+    return;
+  }
+
+  // Deep copy using .set() — fixes dangling reference bug
+  DynamicJsonDocument response(4096);
+  response["type"] = WS_PROFILE_RESPONSE;
+  response["cmd"] = "profile_load";
+  response["name"] = name;
+  response["data"].set(obj[name]);  // Deep copy!
+
+  xSemaphoreGive(g_profileMutex);
+
+  String output;
+  serializeJson(response, output);
+  g_webSocket.sendTXT(num, (const uint8_t*)output.c_str(), output.length());
+
+  // If corruption was recovered, log it
+  if (wasRecovered) {
+    sendProfileResponse(num, "profile_save", "ok", "Profile loaded (recovered from corruption)");
+  }
+}
+
+static void handleProfileDelete(uint8_t num, const JsonDocument& req) {
+  const char* name = req["name"] | "";
+  if (strlen(name) == 0) {
+    sendProfileResponse(num, "profile_delete", "error", "Name is required");
+    return;
+  }
+
+  if (g_profileMutex == NULL) {
+    sendProfileResponse(num, "profile_delete", "error", "Storage not initialized");
+    return;
+  }
+
+  if (xSemaphoreTake(g_profileMutex, pdMS_TO_TICKS(5000)) != pdTRUE) {
+    sendProfileResponse(num, "profile_delete", "error", "Storage busy, try again");
+    return;
+  }
+
+  bool wasRecovered;
+  DynamicJsonDocument doc(8192);
+  LoadResult result = loadProfilesJson(doc, wasRecovered);
+
+  if (result == LoadResult::Failed) {
+    xSemaphoreGive(g_profileMutex);
+    sendProfileResponse(num, "profile_delete", "error", "Storage read error");
+    return;
+  }
+
+  JsonObject obj = doc.as<JsonObject>();
+  if (!obj.containsKey(name)) {
+    xSemaphoreGive(g_profileMutex);
+    sendProfileResponse(num, "profile_delete", "error", "Profile not found");
+    return;
+  }
+
+  obj.remove(name);
+  bool success = saveProfilesJson(doc);
+
+  xSemaphoreGive(g_profileMutex);
+
+  if (success) {
+    sendProfileResponse(num, "profile_delete", "ok", "Profile deleted");
+  } else {
+    sendProfileResponse(num, "profile_delete", "error", "Disk write failed");
+  }
+}
+
+// ============================================================
+// Startup Recovery for Orphaned Temp/Backup Files
+// ============================================================
+
+static void recoverProfiles() {
+  // Scenario 1: Temp file exists, main doesn't → rename temp to main
+  if (SPIFFS.exists(PROFILES_TEMP) && !SPIFFS.exists(PROFILES_FILE)) {
+    SPIFFS.rename(PROFILES_TEMP, PROFILES_FILE);
+    Serial.println(F("[PROFILES] Recovered from temp file"));
+  }
+
+  // Scenario 2: Backup exists, main doesn't → restore backup
+  if (SPIFFS.exists(PROFILES_BACKUP) && !SPIFFS.exists(PROFILES_FILE)) {
+    SPIFFS.rename(PROFILES_BACKUP, PROFILES_FILE);
+    Serial.println(F("[PROFILES] Recovered from backup file"));
+  }
+
+  // Clean up orphaned temp (if main already exists)
+  if (SPIFFS.exists(PROFILES_TEMP)) {
+    SPIFFS.remove(PROFILES_TEMP);
+  }
+}
+
+// ============================================================
 // Public API
 // ============================================================
 
 bool webUI_init() {
   Serial.println(F("[WEB] Initializing web server..."));
+
+  // Mount SPIFFS (required for chart serving and profiles)
+  if (!SPIFFS.begin(true)) {
+    Serial.println(F("[WEB] SPIFFS mount failed"));
+    return false;
+  }
+
+  // Create mutex for profile operations
+  g_profileMutex = xSemaphoreCreateMutex();
+  if (g_profileMutex == NULL) {
+    Serial.println(F("[PROFILES] Failed to create mutex"));
+    // Continue anyway — profile ops will error gracefully
+  }
+
+  // Recover orphaned profile files
+  recoverProfiles();
+
+  // Create empty profiles file if it doesn't exist
+  if (!SPIFFS.exists(PROFILES_FILE)) {
+    File file = SPIFFS.open(PROFILES_FILE, "w");
+    if (file) {
+      file.print("{}");
+      file.close();
+      Serial.println(F("[PROFILES] Created empty profiles file"));
+    } else {
+      Serial.println(F("[PROFILES] Failed to create profiles file"));
+    }
+  }
 
   g_server.on("/chart-4.4.0.min.js", []() {
     if (SPIFFS.exists("/chart-4.4.0.min.js")) {
@@ -1720,3 +3352,4 @@ void webUI_pushUpdates() {
     wasActive = isActive;
   }
 }
+```
