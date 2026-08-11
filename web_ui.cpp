@@ -8,6 +8,16 @@
              Fixed g_systemState.calibrationActive read outside mutex in sendSensorUpdate().
              Updated UI text for manual override description.
              Updated default values for 88% ceiling and 20-min calibration.
+             Fixed spinlock I/O violation in warmup handler.
+             Fixed warmup globals race conditions.
+             Fixed warmup panel visibility on reconnect.
+             Added client-side countdown interval for UI smoothness.
+             Fixed reconnect race: infer warmupDuration from warmupRemaining.
+             Fixed panel visibility in updateSensors() and startWarmup().
+             Added aria-hidden to mascot.
+             identifyRelay now uses dedicated identify flag (not force bypass).
+             Fixed lastRequestedSensor hoisting.
+             Fixed millis() capture in sendSystemStatus().
 
    This serves a single-page application from program memory.
    Chart.js is served from LittleFS for cache efficiency (v1.4).
@@ -60,7 +70,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-<title>GrowHub32 v1.5</title>
+<title>GrowHub32 v1.4.0</title>
 <style>
   *{margin:0;padding:0;box-sizing:border-box;}
   body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:linear-gradient(180deg,#0d1117 0%,#111827 100%);color:#c9d1d9;min-height:100vh;}
@@ -70,14 +80,14 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   .warning-banner{color:#fff;text-align:center;padding:10px 16px;font-weight:600;display:none;border-bottom:1px solid #f85149;}
   .warning-banner.active{display:flex;align-items:center;justify-content:center;gap:8px;animation:pulse-danger 2s infinite;}
   @keyframes pulse-danger{0%{background-color:#da3633;}50%{background-color:#8e1519;}100%{background-color:#da3633;}}
-@keyframes pulse-blue{0%{opacity:1;background:#58a6ff;}50%{opacity:0.7;background:#1f6feb;}100%{opacity:1;background:#58a6ff;}}
-    .tabs{display:flex;background:rgba(22,27,34,0.95);backdrop-filter:blur(5px);border-bottom:1px solid #5a3a7a;overflow-x:auto;box-shadow:0 2px 12px rgba(184,74,255,0.06);}
+  @keyframes pulse-blue{0%{opacity:1;background:#58a6ff;}50%{opacity:0.7;background:#1f6feb;}100%{opacity:1;background:#58a6ff;}}
+  .tabs{display:flex;background:rgba(22,27,34,0.95);backdrop-filter:blur(5px);border-bottom:1px solid #5a3a7a;overflow-x:auto;box-shadow:0 2px 12px rgba(184,74,255,0.06);}
   .tab{padding:14px 20px;font-size:0.9em;color:#8b949e;border:none;background:none;cursor:pointer;white-space:nowrap;border-bottom:2px solid transparent;transition:all 0.2s;}
   .tab.active{color:#b84aff;border-bottom-color:#b84aff;}
   .tab-content{display:none;padding:16px;}
   .tab-content.active{display:block;}
   .sensor-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin-bottom:18px;}
-    .sensor-card{background:#161b22;border:1px solid #5a3a7a;border-radius:12px;padding:18px;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,0.5),0 0 12px rgba(184,74,255,0.08);}
+  .sensor-card{background:#161b22;border:1px solid #5a3a7a;border-radius:12px;padding:18px;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,0.5),0 0 12px rgba(184,74,255,0.08);}
   .sensor-card .label{font-size:0.7em;color:#8b949e;text-transform:uppercase;letter-spacing:0.5px;}
   .sensor-card .value{font-size:2.2em;font-weight:700;margin:8px 0;color:#ffffff;line-height:1;font-variant-numeric:tabular-nums;min-height:1.2em;}
   .sensor-card .unit{font-size:0.6em;color:#8b949e;font-weight:500;text-transform:uppercase;letter-spacing:0.5px;}
@@ -85,7 +95,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   .sensor-card .status-dot.ok{background:#3fb950;box-shadow:0 0 6px rgba(63,185,80,0.4);}
   .sensor-card .status-dot.fault{background:#da3633;box-shadow:0 0 6px rgba(218,54,51,0.4);}
   .relay-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:18px;}
-   .relay-card{background:#161b22;border:1px solid #5a3a7a;border-radius:12px;padding:14px;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,0.5),0 0 12px rgba(184,74,255,0.08);}
+  .relay-card{background:#161b22;border:1px solid #5a3a7a;border-radius:12px;padding:14px;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,0.5),0 0 12px rgba(184,74,255,0.08);}
   .relay-card.active{border-color:#3fb950;box-shadow:0 0 16px rgba(63,185,80,0.25),0 0 12px rgba(184,74,255,0.08);}
   .relay-card .name{font-size:0.7em;color:#8b949e;text-transform:uppercase;letter-spacing:0.5px;}
   .relay-card .state{font-size:1.1em;font-weight:bold;margin:6px 0;}
@@ -101,7 +111,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   .btn-off:hover{background:#30363d;}
   .btn-neutral{background:#30363d;color:#c9d1d9;}
   .btn-neutral:hover{background:#484f58;}
-    .config-group{margin-bottom:18px;background:#161b22;border:1px solid #5a3a7a;border-radius:12px;padding:16px;box-shadow:0 0 16px rgba(184,74,255,0.12);}
+  .config-group{margin-bottom:18px;background:#161b22;border:1px solid #5a3a7a;border-radius:12px;padding:16px;box-shadow:0 0 16px rgba(184,74,255,0.12);}
   .config-group h3{font-size:0.95em;color:#58a6ff;margin-bottom:12px;border-left:4px solid #58a6ff;padding-left:10px;}
   .config-row{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid #21262d;}
   .config-row:last-child{border-bottom:none;}
@@ -110,47 +120,145 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   .config-row input:focus{outline:2px solid #58a6ff;outline-offset:2px;}
   .config-row input:invalid{border-color:#da3633;color:#da3633;box-shadow:0 0 8px rgba(218,54,51,0.4);}
   .config-row select{width:160px;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#e6edf3;padding:8px 12px;font-size:0.95em;}
-    .log-area{background:#0d1117;border:1px solid #5a3a7a;border-radius:12px;padding:14px;max-height:300px;overflow-y:auto;font-family:monospace;font-size:0.75em;line-height:1.6;box-shadow:0 0 12px rgba(184,74,255,0.08);}
+  .log-area{background:#0d1117;border:1px solid #5a3a7a;border-radius:12px;padding:14px;max-height:300px;overflow-y:auto;font-family:monospace;font-size:0.75em;line-height:1.6;box-shadow:0 0 12px rgba(184,74,255,0.08);}
   .log-entry{padding:3px 0;}
   .log-entry.warn{color:#d29922;}
   .log-entry.error{color:#da3633;}
   .calibration-panel{text-align:center;padding:24px;}
   .countdown{font-size:3em;font-weight:bold;color:#58a6ff;}
-   .sim-result{background:#161b22;border:1px solid #5a3a7a;border-radius:12px;padding:16px;margin-top:12px;text-align:center;box-shadow:0 0 12px rgba(184,74,255,0.08);}
+  .sim-result{background:#161b22;border:1px solid #5a3a7a;border-radius:12px;padding:16px;margin-top:12px;text-align:center;box-shadow:0 0 12px rgba(184,74,255,0.08);}
   .sim-result .time{font-size:1.5em;color:#3fb950;}
   .footer{text-align:center;padding:18px;font-size:0.7em;color:#484f58;}
   .override-panel{display:none;background:#3a2a1a;color:#d29922;padding:10px;border-radius:8px;margin-bottom:14px;text-align:center;font-weight:bold;border:1px solid #d29922;}
-    .sticky-save-container{position:sticky;bottom:16px;background:rgba(13,17,23,0.95);padding:12px;border-radius:8px;border:1px solid #5a3a7a;text-align:center;margin-top:16px;box-shadow:0 -4px 12px rgba(0,0,0,0.4),0 0 16px rgba(184,74,255,0.12);}
+  .sticky-save-container{position:sticky;bottom:16px;background:rgba(13,17,23,0.95);padding:12px;border-radius:8px;border:1px solid #5a3a7a;text-align:center;margin-top:16px;box-shadow:0 -4px 12px rgba(0,0,0,0.4),0 0 16px rgba(184,74,255,0.12);}
   ::-webkit-scrollbar{width:6px;height:6px;}
   ::-webkit-scrollbar-track{background:transparent;}
   ::-webkit-scrollbar-thumb{background:#3d444d;border-radius:10px;}
   ::-webkit-scrollbar-thumb:hover{background:#58a6ff;}
-.mascot-stage{width:64px;height:56px;flex-shrink:0;}
-.mushroom{position:relative;width:64px;height:56px;image-rendering:pixelated;animation:idleBounce 2s ease-in-out infinite;}
-.pixel{position:absolute;width:4px;height:4px;}
-.c1{background:#b02020;}.c2{background:#c83838;}.c3{background:#d85555;}.c4{background:#b84860;}.c5{background:#9a4a70;}.c6{background:#8a3030;}
-.cs{background:#a02020;}.w{background:#fff;}.st{background:#f5e6d0;}.sts{background:#e8d5b8;}.bk{background:#1a1a1a;}.bl{background:#f0a0a0;}.co{background:#5bc0eb;}.cp{background:#b84aff;}
-@keyframes idleBounce{0%,15%{transform:translateY(0);}20%{transform:translateY(-2px) scaleY(0.95) scaleX(1.05);}25%{transform:translateY(-4px) scaleY(1.05) scaleX(0.95);}30%{transform:translateY(-2px) scaleY(1.02) scaleX(0.98);}35%{transform:translateY(0) scaleY(0.98) scaleX(1.02);}38%,100%{transform:translateY(0) scaleY(1.0) scaleX(1.0);}}
-@media (prefers-reduced-motion:reduce){.mushroom{animation:none;}}
+  .mascot-stage{width:64px;height:56px;flex-shrink:0;}
+  .mushroom{position:relative;width:64px;height:56px;image-rendering:pixelated;animation:idleBounce 2s ease-in-out infinite;}
+  .pixel{position:absolute;width:4px;height:4px;}
+  .c1{background:#b02020;}.c2{background:#c83838;}.c3{background:#d85555;}.c4{background:#b84860;}.c5{background:#9a4a70;}.c6{background:#8a3030;}
+  .cs{background:#a02020;}.w{background:#fff;}.st{background:#f5e6d0;}.sts{background:#e8d5b8;}.bk{background:#1a1a1a;}.bl{background:#f0a0a0;}.co{background:#5bc0eb;}.cp{background:#8a6aaa;}.cb{background:#5a7ad8;}
+  @keyframes idleBounce{0%,15%{transform:translateY(0);}20%{transform:translateY(-2px) scaleY(0.95) scaleX(1.05);}25%{transform:translateY(-4px) scaleY(1.05) scaleX(0.95);}30%{transform:translateY(-2px) scaleY(1.02) scaleX(0.98);}35%{transform:translateY(0) scaleY(0.98) scaleX(1.02);}38%,100%{transform:translateY(0) scaleY(1.0) scaleX(1.0);}}
+  @media (prefers-reduced-motion:reduce){.mushroom{animation:none;}}
 </style>
 <script src="/chart-4.4.0.min.js"></script>
 </head>
 <body>
 <div class="header" style="overflow-x:hidden;">
     <div style="display:flex;align-items:center;gap:12px;">
-<div class="mascot-stage"><div class="mushroom"><div class="pixel co" style="top:0;left:24px"></div><div class="pixel co" style="top:4px;left:16px"></div><div class="pixel co" style="top:4px;left:20px"></div><div class="pixel co" style="top:4px;left:24px"></div><div class="pixel c6" style="top:4px;left:28px"></div><div class="pixel c3" style="top:4px;left:32px"></div><div class="pixel co" style="top:4px;left:36px"></div><div class="pixel co" style="top:4px;left:40px"></div><div class="pixel co" style="top:4px;left:44px"></div><div class="pixel c6" style="top:8px;left:12px"></div><div class="pixel c2" style="top:8px;left:16px"></div><div class="pixel c3" style="top:8px;left:20px"></div><div class="pixel c6" style="top:8px;left:24px"></div><div class="pixel c3" style="top:8px;left:28px"></div><div class="pixel c2" style="top:8px;left:32px"></div><div class="pixel c3" style="top:8px;left:36px"></div><div class="pixel c6" style="top:8px;left:40px"></div><div class="pixel c3" style="top:8px;left:44px"></div><div class="pixel c6" style="top:8px;left:48px"></div><div class="pixel c4" style="top:12px;left:8px"></div><div class="pixel c6" style="top:12px;left:12px"></div><div class="pixel w" style="top:12px;left:16px"></div><div class="pixel c3" style="top:12px;left:20px"></div><div class="pixel c6" style="top:12px;left:24px"></div><div class="pixel c3" style="top:12px;left:28px"></div><div class="pixel w" style="top:12px;left:32px"></div><div class="pixel c6" style="top:12px;left:36px"></div><div class="pixel c3" style="top:12px;left:40px"></div><div class="pixel c6" style="top:12px;left:44px"></div><div class="pixel c4" style="top:12px;left:48px"></div><div class="pixel c4" style="top:12px;left:52px"></div><div class="pixel c6" style="top:16px;left:8px"></div><div class="pixel c3" style="top:16px;left:12px"></div><div class="pixel w" style="top:16px;left:16px"></div><div class="pixel c6" style="top:16px;left:20px"></div><div class="pixel w" style="top:16px;left:24px"></div><div class="pixel c3" style="top:16px;left:28px"></div><div class="pixel c6" style="top:16px;left:32px"></div><div class="pixel w" style="top:16px;left:36px"></div><div class="pixel c3" style="top:16px;left:40px"></div><div class="pixel c6" style="top:16px;left:44px"></div><div class="pixel c3" style="top:16px;left:48px"></div><div class="pixel c4" style="top:16px;left:52px"></div><div class="pixel cp" style="top:20px;left:4px"></div><div class="pixel c6" style="top:20px;left:8px"></div><div class="pixel c3" style="top:20px;left:12px"></div><div class="pixel c6" style="top:20px;left:16px"></div><div class="pixel c3" style="top:20px;left:20px"></div><div class="pixel c6" style="top:20px;left:24px"></div><div class="pixel c3" style="top:20px;left:28px"></div><div class="pixel c6" style="top:20px;left:32px"></div><div class="pixel c3" style="top:20px;left:36px"></div><div class="pixel c6" style="top:20px;left:40px"></div><div class="pixel c3" style="top:20px;left:44px"></div><div class="pixel c6" style="top:20px;left:48px"></div><div class="pixel c3" style="top:20px;left:52px"></div><div class="pixel cp" style="top:20px;left:56px"></div><div class="pixel cp" style="top:24px;left:4px"></div><div class="pixel cp" style="top:24px;left:8px"></div><div class="pixel cp" style="top:24px;left:12px"></div><div class="pixel cp" style="top:24px;left:16px"></div><div class="pixel cp" style="top:24px;left:20px"></div><div class="pixel cp" style="top:24px;left:24px"></div><div class="pixel cp" style="top:24px;left:28px"></div><div class="pixel cp" style="top:24px;left:32px"></div><div class="pixel cp" style="top:24px;left:36px"></div><div class="pixel cp" style="top:24px;left:40px"></div><div class="pixel cp" style="top:24px;left:44px"></div><div class="pixel cp" style="top:24px;left:48px"></div><div class="pixel cp" style="top:24px;left:52px"></div><div class="pixel cp" style="top:24px;left:56px"></div><div class="pixel st" style="top:28px;left:24px"></div><div class="pixel st" style="top:28px;left:28px"></div><div class="pixel st" style="top:28px;left:32px"></div><div class="pixel st" style="top:28px;left:36px"></div><div class="pixel sts" style="top:32px;left:24px"></div><div class="pixel bk" style="top:32px;left:28px"></div><div class="pixel st" style="top:32px;left:32px"></div><div class="pixel bk" style="top:32px;left:36px"></div><div class="pixel sts" style="top:32px;left:40px"></div><div class="pixel sts" style="top:36px;left:20px"></div><div class="pixel st" style="top:36px;left:24px"></div><div class="pixel bl" style="top:36px;left:28px"></div><div class="pixel st" style="top:36px;left:32px"></div><div class="pixel bl" style="top:36px;left:36px"></div><div class="pixel st" style="top:36px;left:40px"></div><div class="pixel sts" style="top:36px;left:44px"></div><div class="pixel sts" style="top:40px;left:22px"></div><div class="pixel sts" style="top:40px;left:26px"></div><div class="pixel st" style="top:40px;left:30px"></div><div class="pixel st" style="top:40px;left:34px"></div><div class="pixel sts" style="top:40px;left:38px"></div><div class="pixel sts" style="top:44px;left:24px"></div><div class="pixel sts" style="top:44px;left:28px"></div><div class="pixel sts" style="top:44px;left:32px"></div><div class="pixel sts" style="top:44px;left:36px"></div></div></div>      <div style="display:flex;align-items:center;justify-content:space-between;">
-        <h1 style="margin:0;line-height:1.2;">GrowHub32</h1>
-        <div id="warmupBadge" style="display:none;background:#58a6ff;color:#0d1117;padding:4px 12px;border-radius:20px;font-size:0.7em;font-weight:bold;animation:pulse-blue 1.5s infinite;">
-          ⚙️ Warming Up
+        <div class="mascot-stage" aria-hidden="true"><div class="mushroom" aria-hidden="true">
+            <div class="pixel co" style="top:0;left:24px"></div>
+            <div class="pixel co" style="top:4px;left:16px"></div>
+            <div class="pixel co" style="top:4px;left:20px"></div>
+            <div class="pixel co" style="top:4px;left:24px"></div>
+            <div class="pixel c6" style="top:4px;left:28px"></div>
+            <div class="pixel c3" style="top:4px;left:32px"></div>
+            <div class="pixel co" style="top:4px;left:36px"></div>
+            <div class="pixel co" style="top:4px;left:40px"></div>
+            <div class="pixel co" style="top:4px;left:44px"></div>
+            <div class="pixel c6" style="top:8px;left:12px"></div>
+            <div class="pixel c2" style="top:8px;left:16px"></div>
+            <div class="pixel c3" style="top:8px;left:20px"></div>
+            <div class="pixel c6" style="top:8px;left:24px"></div>
+            <div class="pixel c3" style="top:8px;left:28px"></div>
+            <div class="pixel c2" style="top:8px;left:32px"></div>
+            <div class="pixel c3" style="top:8px;left:36px"></div>
+            <div class="pixel c6" style="top:8px;left:40px"></div>
+            <div class="pixel c3" style="top:8px;left:44px"></div>
+            <div class="pixel c6" style="top:8px;left:48px"></div>
+            <div class="pixel c4" style="top:12px;left:8px"></div>
+            <div class="pixel c6" style="top:12px;left:12px"></div>
+            <div class="pixel w" style="top:12px;left:16px"></div>
+            <div class="pixel c3" style="top:12px;left:20px"></div>
+            <div class="pixel c6" style="top:12px;left:24px"></div>
+            <div class="pixel c3" style="top:12px;left:28px"></div>
+            <div class="pixel w" style="top:12px;left:32px"></div>
+            <div class="pixel c6" style="top:12px;left:36px"></div>
+            <div class="pixel c3" style="top:12px;left:40px"></div>
+            <div class="pixel c6" style="top:12px;left:44px"></div>
+            <div class="pixel c4" style="top:12px;left:48px"></div>
+            <div class="pixel c4" style="top:12px;left:52px"></div>
+            <div class="pixel c6" style="top:16px;left:8px"></div>
+            <div class="pixel c3" style="top:16px;left:12px"></div>
+            <div class="pixel w" style="top:16px;left:16px"></div>
+            <div class="pixel c6" style="top:16px;left:20px"></div>
+            <div class="pixel w" style="top:16px;left:24px"></div>
+            <div class="pixel c3" style="top:16px;left:28px"></div>
+            <div class="pixel c6" style="top:16px;left:32px"></div>
+            <div class="pixel w" style="top:16px;left:36px"></div>
+            <div class="pixel c3" style="top:16px;left:40px"></div>
+            <div class="pixel c6" style="top:16px;left:44px"></div>
+            <div class="pixel c3" style="top:16px;left:48px"></div>
+            <div class="pixel c4" style="top:16px;left:52px"></div>
+            <div class="pixel cb" style="top:20px;left:4px"></div>
+            <div class="pixel c6" style="top:20px;left:8px"></div>
+            <div class="pixel c3" style="top:20px;left:12px"></div>
+            <div class="pixel c6" style="top:20px;left:16px"></div>
+            <div class="pixel c3" style="top:20px;left:20px"></div>
+            <div class="pixel c6" style="top:20px;left:24px"></div>
+            <div class="pixel c3" style="top:20px;left:28px"></div>
+            <div class="pixel c6" style="top:20px;left:32px"></div>
+            <div class="pixel c3" style="top:20px;left:36px"></div>
+            <div class="pixel c6" style="top:20px;left:40px"></div>
+            <div class="pixel c3" style="top:20px;left:44px"></div>
+            <div class="pixel c6" style="top:20px;left:48px"></div>
+            <div class="pixel c3" style="top:20px;left:52px"></div>
+            <div class="pixel cb" style="top:20px;left:56px"></div>
+            <div class="pixel cb" style="top:24px;left:4px"></div>
+            <div class="pixel cb" style="top:24px;left:8px"></div>
+            <div class="pixel cb" style="top:24px;left:12px"></div>
+            <div class="pixel cb" style="top:24px;left:16px"></div>
+            <div class="pixel cb" style="top:24px;left:20px"></div>
+            <div class="pixel cb" style="top:24px;left:24px"></div>
+            <div class="pixel cb" style="top:24px;left:28px"></div>
+            <div class="pixel cb" style="top:24px;left:32px"></div>
+            <div class="pixel cb" style="top:24px;left:36px"></div>
+            <div class="pixel cb" style="top:24px;left:40px"></div>
+            <div class="pixel cb" style="top:24px;left:44px"></div>
+            <div class="pixel cb" style="top:24px;left:48px"></div>
+            <div class="pixel cb" style="top:24px;left:52px"></div>
+            <div class="pixel cb" style="top:24px;left:56px"></div>
+            <div class="pixel st" style="top:28px;left:24px"></div>
+            <div class="pixel st" style="top:28px;left:28px"></div>
+            <div class="pixel st" style="top:28px;left:32px"></div>
+            <div class="pixel st" style="top:28px;left:36px"></div>
+            <div class="pixel sts" style="top:32px;left:24px"></div>
+            <div class="pixel bk" style="top:32px;left:28px"></div>
+            <div class="pixel st" style="top:32px;left:32px"></div>
+            <div class="pixel bk" style="top:32px;left:36px"></div>
+            <div class="pixel sts" style="top:32px;left:40px"></div>
+            <div class="pixel sts" style="top:36px;left:20px"></div>
+            <div class="pixel st" style="top:36px;left:24px"></div>
+            <div class="pixel bl" style="top:36px;left:28px"></div>
+            <div class="pixel st" style="top:36px;left:32px"></div>
+            <div class="pixel bl" style="top:36px;left:36px"></div>
+            <div class="pixel st" style="top:36px;left:40px"></div>
+            <div class="pixel sts" style="top:36px;left:44px"></div>
+            <div class="pixel sts" style="top:40px;left:22px"></div>
+            <div class="pixel sts" style="top:40px;left:26px"></div>
+            <div class="pixel st" style="top:40px;left:30px"></div>
+            <div class="pixel st" style="top:40px;left:34px"></div>
+            <div class="pixel sts" style="top:40px;left:38px"></div>
+            <div class="pixel sts" style="top:44px;left:24px"></div>
+            <div class="pixel sts" style="top:44px;left:28px"></div>
+            <div class="pixel sts" style="top:44px;left:32px"></div>
+            <div class="pixel sts" style="top:44px;left:36px"></div>
+        </div></div>
+        <div style="flex:1;">
+            <div style="display:flex;align-items:center;justify-content:space-between;">
+                <h1 style="margin:0;line-height:1.2;">GrowHub32</h1>
+                <div id="warmupBadge" style="display:none;background:#58a6ff;color:#0d1117;padding:4px 12px;border-radius:20px;font-size:0.7em;font-weight:bold;animation:pulse-blue 1.5s infinite;">⚙️ Warming Up</div>
+            </div>
+            <div class="status" id="connectionStatus" style="margin-top:2px;">Connecting...</div>
+            <div id="warmupProgressContainer" style="display:none;margin-top:4px;width:100%;height:4px;background:#21262d;border-radius:4px;overflow:hidden;">
+                <div id="warmupProgressBar" style="width:0%;height:100%;background:linear-gradient(90deg,#58a6ff,#3fb950);transition:width 0.5s linear;"></div>
+            </div>
         </div>
-      </div>
-      <div class="status" id="connectionStatus" style="margin-top:2px;">Connecting...</div>
-      <div id="warmupProgressContainer" style="display:none;margin-top:4px;width:100%;height:4px;background:#21262d;border-radius:4px;overflow:hidden;">
-        <div id="warmupProgressBar" style="width:0%;height:100%;background:linear-gradient(90deg,#58a6ff,#3fb950);transition:width 0.5s linear;"></div>
-      </div>
     </div>
-  </div>
 </div>
+
 <div class="warning-banner" id="warningBanner">Warning: Sensor Fault - System Running Last Known Values</div>
 
 <div class="tabs">
@@ -163,19 +271,20 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   <button class="tab" onclick="switchTab(this, 'logs')">Logs</button>
 </div>
 
-<div id="dashboard" class="tab-content active">
-  <div id="warmupPanel" style="display:none;background:linear-gradient(180deg,#161b22 0%,#0d1117 100%);border:1px solid #5a3a7a;border-radius:12px;padding:20px;margin-bottom:16px;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,0.35),0 0 16px rgba(184,74,255,0.12);">
+<!-- Warmup panel moved outside tab content for global visibility -->
+<div id="warmupPanel" style="display:block;background:linear-gradient(180deg,#161b22 0%,#0d1117 100%);border:1px solid #5a3a7a;border-radius:12px;padding:20px;margin:16px;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,0.35),0 0 16px rgba(184,74,255,0.12);">
     <h3 style="color:#58a6ff;margin-bottom:8px;">🔄 Compressor Warmup</h3>
     <p style="font-size:0.85em;color:#8b949e;margin-bottom:12px;">The air tank needs time to fill before Air Assist can work. How long should the compressor warm up?</p>
     <div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap;">
-      <button class="btn btn-neutral" onclick="startWarmup(0)">Skip</button>
-      <button class="btn btn-neutral" onclick="startWarmup(30)">30 sec</button>
-      <button class="btn btn-neutral" onclick="startWarmup(60)">1 min</button>
-      <button class="btn btn-neutral" onclick="startWarmup(120)">2 min</button>
-      <button class="btn btn-neutral" onclick="startWarmup(300)">5 min</button>
+        <button class="btn btn-neutral" onclick="startWarmup(0)">Skip</button>
+        <button class="btn btn-neutral" onclick="startWarmup(30)">30 sec</button>
+        <button class="btn btn-neutral" onclick="startWarmup(60)">1 min</button>
+        <button class="btn btn-neutral" onclick="startWarmup(120)">2 min</button>
+        <button class="btn btn-neutral" onclick="startWarmup(300)">5 min</button>
     </div>
-    <p id="warmupStatus" style="font-size:0.8em;color:#3fb950;margin-top:10px;display:none;"></p>
-  </div>
+</div>
+
+<div id="dashboard" class="tab-content active">
   <div class="sensor-grid">
     <div class="sensor-card">
       <div class="label"><span class="status-dot ok" id="tempDot"></span>Temperature</div>
@@ -259,7 +368,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
     <h3>Adaptive Learning</h3>
     <div class="config-row"><label>EMA Weight (0.10-0.50)</label><input type="number" id="emaWeight" value="0.30" step="0.05" min="0.10" max="0.50"></div>
   </div>
-   <div class="config-group">
+  <div class="config-group">
     <h3>Relay Mapping</h3>
     <p style="font-size:0.7em;color:#8b949e;margin-bottom:8px;">Assign functions to physical relay positions 1-4. Use the ID button next to each position to identify which relay is which. Each function must be assigned exactly once.</p>
     <div class="config-row"><label>Position 1</label><div style="display:flex;align-items:center;gap:8px;"><button class="btn btn-neutral" onclick="identifyRelay(0)" style="padding:4px 10px;font-size:0.75em;">ID</button><select id="funcPos1"><option value="0" selected>HOH Humidifier</option><option value="1">Air Assist</option><option value="2">Exhaust Fan</option><option value="3">Compressor</option></select></div></div>
@@ -321,16 +430,27 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   </div>
 </div>
 
-<div class="footer">GrowHub32 v1.5 | Calven</div>
+<div class="footer">GrowHub32 v1.4.0 | Calven</div>
 
 <script>
 var ws;
 var reconnectDelay = 3000;
 
+// Warmup state
+var warmupRemaining = 0;
+var warmupDuration = 0;
+var warmupInterval = null;
+var isWarmupComplete = false;
+
+// Graph globals
+var lastRequestedSensor = 0;
+
 function sendWS(data){
   if(ws && ws.readyState === WebSocket.OPEN){
     ws.send(JSON.stringify(data));
+    return true;
   }
+  return false;
 }
 
 function connectWS(){
@@ -433,25 +553,136 @@ function updateSensors(msg){
   if (typeof msg.hum === 'number') feedLiveGraph(1, msg.hum);
   if (typeof msg.co2 === 'number') feedLiveGraph(2, msg.co2);
   if (typeof msg.fridge === 'number') feedLiveGraph(3, msg.fridge);
-  
-  // Handle warmup status in header
-  if (msg.warmupSelected && msg.warmupDuration && msg.warmupStartTime) {
-    var startTime = msg.warmupStartTime * 1000;
-    var duration = msg.warmupDuration;
-    startWarmupCountdown(duration, startTime);
-    var panel = document.getElementById('warmupPanel');
-    if (panel) panel.style.display = 'none';
-  } else if (!msg.warmupSelected) {
+
+  // Warmup state handling
+  var panel = document.getElementById('warmupPanel');
+  if (msg.warmupSelected) {
+    // Warmup is or was active
+    if (msg.warmupDuration && msg.warmupDuration > 0) {
+      warmupDuration = msg.warmupDuration;
+      isWarmupComplete = false;
+      // Hide panel immediately
+      if (panel) panel.style.display = 'none';
+    } else {
+      // Warmup was SKIPPED (duration is 0)
+      if (panel) panel.style.display = 'none';
+      document.getElementById('warmupBadge').style.display = 'none';
+      document.getElementById('warmupProgressContainer').style.display = 'none';
+      if (warmupInterval) {
+        clearInterval(warmupInterval);
+        warmupInterval = null;
+      }
+      isWarmupComplete = true;
+    }
+  } else {
+    // Fresh boot - ensure panel is visible
+    if (panel) panel.style.display = 'block';
+    document.getElementById('warmupBadge').style.display = 'none';
+    document.getElementById('warmupProgressContainer').style.display = 'none';
     if (warmupInterval) {
       clearInterval(warmupInterval);
       warmupInterval = null;
     }
-    document.getElementById('warmupBadge').style.display = 'none';
-    document.getElementById('warmupProgressContainer').style.display = 'none';
-    var panel = document.getElementById('warmupPanel');
-    if (panel && panel.style.display === 'none') {
-      panel.style.display = 'block';
+    isWarmupComplete = false;
+  }
+}
+
+function updateWarmupUI(remainingSeconds) {
+  var badge = document.getElementById('warmupBadge');
+  var progressContainer = document.getElementById('warmupProgressContainer');
+  var progressBar = document.getElementById('warmupProgressBar');
+  var panel = document.getElementById('warmupPanel');
+
+  if (remainingSeconds <= 0 || warmupDuration <= 0) {
+    // Warmup complete or invalid
+    if (panel) panel.style.display = 'none';
+    badge.style.display = 'none';
+    progressContainer.style.display = 'none';
+    if (warmupInterval) {
+      clearInterval(warmupInterval);
+      warmupInterval = null;
     }
+    isWarmupComplete = true;
+    return;
+  }
+
+  // Warmup in progress
+  isWarmupComplete = false;
+  if (panel) panel.style.display = 'none';
+  badge.style.display = 'inline-block';
+  progressContainer.style.display = 'block';
+
+  var elapsed = warmupDuration - remainingSeconds;
+  var percent = Math.min(100, (elapsed / warmupDuration) * 100);
+  progressBar.style.width = percent + '%';
+
+  if (remainingSeconds >= 60) {
+    badge.textContent = '⏱️ ' + Math.ceil(remainingSeconds / 60) + 'm remaining';
+  } else {
+    badge.textContent = '⏱️ ' + Math.ceil(remainingSeconds) + 's remaining';
+  }
+  badge.style.background = '#58a6ff';
+  badge.style.animation = 'pulse-blue 1.5s infinite';
+}
+
+function startWarmupClientCountdown(initialRemaining) {
+  if (warmupInterval) {
+    clearInterval(warmupInterval);
+    warmupInterval = null;
+  }
+
+  warmupRemaining = initialRemaining;
+  updateWarmupUI(warmupRemaining);
+
+  // Start local countdown to keep UI smooth
+  warmupInterval = setInterval(function() {
+    warmupRemaining--;
+    if (warmupRemaining <= 0) {
+      warmupRemaining = 0;
+      updateWarmupUI(0);
+      if (warmupInterval) {
+        clearInterval(warmupInterval);
+        warmupInterval = null;
+      }
+    } else {
+      updateWarmupUI(warmupRemaining);
+    }
+  }, 1000);
+}
+
+function updateOverrideStatus(msg){
+  var panel = document.getElementById('overridePanel');
+  var timeDisplay = document.getElementById('overrideTime');
+  var active = msg.humOverride || msg.co2Override;
+  var remaining = Math.max(msg.humOverrideRemaining || 0, msg.co2OverrideRemaining || 0);
+
+  if(active && remaining > 0){
+    panel.style.display = 'block';
+    var min = Math.floor(remaining / 60);
+    var sec = remaining % 60;
+    timeDisplay.textContent = min + ':' + (sec < 10 ? '0' : '') + sec;
+  } else {
+    panel.style.display = 'none';
+  }
+
+  // Handle warmup remaining from this message (type 1)
+  if (msg.warmupRemaining !== undefined) {
+    var newRemaining = Math.max(0, msg.warmupRemaining);
+    // Infer warmupDuration from remaining if missing (reconnect race fix)
+    if (warmupDuration <= 0 && newRemaining > 0) {
+      warmupDuration = newRemaining;
+    }
+    if (warmupDuration > 0 && (!warmupInterval || isWarmupComplete)) {
+      startWarmupClientCountdown(newRemaining);
+    } else if (warmupDuration > 0) {
+      warmupRemaining = newRemaining;
+      updateWarmupUI(warmupRemaining);
+    }
+  }
+
+  // Check compressor locked state
+  if (msg.compressorLocked !== undefined) {
+    document.getElementById('compLock').textContent = msg.compressorLocked ? '(COOLDOWN)' : '';
   }
 }
 
@@ -480,7 +711,7 @@ function updateRelays(msg){
   var compCard = comp.parentElement;
   if (msg.compressor) compCard.classList.add('active'); else compCard.classList.remove('active');
 
-  document.getElementById('compLock').textContent = msg.compressorLocked ? '(COOLDOWN)' : '';
+  // compressorLocked is now handled in updateOverrideStatus
 }
 
 function updateConfig(msg){
@@ -498,22 +729,6 @@ function updateConfig(msg){
   document.getElementById('funcPos2').value = msg.funcPos2;
   document.getElementById('funcPos3').value = msg.funcPos3;
   document.getElementById('funcPos4').value = msg.funcPos4;
-}
-
-function updateOverrideStatus(msg){
-  var panel = document.getElementById('overridePanel');
-  var timeDisplay = document.getElementById('overrideTime');
-  var active = msg.humOverride || msg.co2Override;
-  var remaining = Math.max(msg.humOverrideRemaining || 0, msg.co2OverrideRemaining || 0);
-
-  if(active && remaining > 0){
-    panel.style.display = 'block';
-    var min = Math.floor(remaining / 60);
-    var sec = remaining % 60;
-    timeDisplay.textContent = min + ':' + (sec < 10 ? '0' : '') + sec;
-  } else {
-    panel.style.display = 'none';
-  }
 }
 
 function updateCalibration(msg){
@@ -560,85 +775,33 @@ function switchTab(element, tabId){
   document.getElementById(tabId).classList.add('active');
 }
 
-var warmupCountdown = null;
-var warmupInterval = null;
-
-function updateWarmupStatus(duration, elapsed) {
-  var badge = document.getElementById('warmupBadge');
-  var progressContainer = document.getElementById('warmupProgressContainer');
-  var progressBar = document.getElementById('warmupProgressBar');
-  
-  if (!duration || duration <= 0) {
-    badge.style.display = 'none';
-    progressContainer.style.display = 'none';
-    if (warmupInterval) {
-      clearInterval(warmupInterval);
-      warmupInterval = null;
-    }
-    return;
-  }
-  
-  badge.style.display = 'inline-block';
-  progressContainer.style.display = 'block';
-  
-  var elapsedSeconds = elapsed / 1000;
-  var percent = Math.min(100, (elapsedSeconds / duration) * 100);
-  progressBar.style.width = percent + '%';
-  
-  var remaining = Math.max(0, duration - elapsedSeconds);
-  if (remaining > 0) {
-    if (remaining >= 60) {
-      badge.textContent = '⏱️ ' + Math.ceil(remaining / 60) + 'm remaining';
-    } else {
-      badge.textContent = '⏱️ ' + Math.ceil(remaining) + 's remaining';
-    }
-  } else {
-    badge.textContent = '✅ Ready!';
-    badge.style.background = '#3fb950';
-    badge.style.animation = 'none';
-    setTimeout(function() {
-      badge.style.display = 'none';
-      progressContainer.style.display = 'none';
-    }, 3000);
-    if (warmupInterval) {
-      clearInterval(warmupInterval);
-      warmupInterval = null;
-    }
-  }
-}
-
-function startWarmupCountdown(duration, startTime) {
-  if (warmupInterval) {
-    clearInterval(warmupInterval);
-    warmupInterval = null;
-  }
-  
-  var now = Date.now();
-  var elapsed = now - startTime;
-  updateWarmupStatus(duration, elapsed);
-  
-  warmupInterval = setInterval(function() {
-    var now = Date.now();
-    var elapsed = now - startTime;
-    updateWarmupStatus(duration, elapsed);
-  }, 1000);
-}
-
 function startWarmup(seconds) {
-  if (warmupCountdown) { clearInterval(warmupCountdown); warmupCountdown = null; }
+  // Disable buttons immediately for feedback
   document.querySelectorAll('#warmupPanel button').forEach(function(b) { b.disabled = true; });
-  
-  sendWS({type: 6, cmd: 'warmup', duration: seconds});
+
+  var success = sendWS({type: 6, cmd: 'warmup', duration: seconds});
   var panel = document.getElementById('warmupPanel');
-  
-  if (seconds === 0) {
-    panel.innerHTML = '<h3 style="color:#3fb950;margin-bottom:8px;">✅ Warmup Skipped</h3><p style="font-size:0.9em;color:#8b949e;">Automation starting immediately.</p>';
-    setTimeout(function() { panel.style.display = 'none'; }, 3000);
+
+  // Hide panel immediately for all cases
+  if (panel) panel.style.display = 'none';
+
+  if (!success) {
+    // WebSocket is down - show error and re-enable buttons
+    addLog('Failed to send warmup command - WebSocket disconnected', 'warn');
+    document.querySelectorAll('#warmupPanel button').forEach(function(b) { b.disabled = false; });
+    if (panel) panel.style.display = 'block';
     return;
   }
 
-  panel.innerHTML = '<h3 style="color:#3fb950;margin-bottom:8px;">⚙️ Compressor Warming Up</h3><p style="font-size:0.9em;color:#8b949e;">Air Assist will be available shortly...</p>';
+  if (seconds === 0) {
+    // Optional flash confirmation - but panel is already hidden
+    addLog('Warmup skipped', 'info');
+    return;
+  }
+
+  addLog('Warmup started - ' + seconds + ' seconds', 'info');
 }
+
 var identifyTimer = null;
 var identifyTimeout = null;
 
@@ -646,17 +809,19 @@ function identifyRelay(index) {
   if (identifyTimer) { clearInterval(identifyTimer); identifyTimer = null; }
   if (identifyTimeout) { clearTimeout(identifyTimeout); identifyTimeout = null; }
   var state = false;
-  sendWS({type: 6, cmd: 'relay', index: index, state: 1, force: true, confirmed: true});
+  // Use identify flag - this should be handled server-side as a dedicated operation
+  // that bypasses automation but respects safety interlocks
+  sendWS({type: 6, cmd: 'relay', index: index, state: 1, force: false, confirmed: true, identify: true});
   addLog('Relay identification started - toggling for 5 seconds', 'info');
   identifyTimer = setInterval(function() {
     state = !state;
-    sendWS({type: 6, cmd: 'relay', index: index, state: state ? 1 : 0, force: true, confirmed: true});
+    sendWS({type: 6, cmd: 'relay', index: index, state: state ? 1 : 0, force: false, confirmed: true, identify: true});
   }, 500);
   identifyTimeout = setTimeout(function() {
     clearInterval(identifyTimer);
     identifyTimer = null;
     identifyTimeout = null;
-    sendWS({type: 6, cmd: 'relay', index: index, state: 0, force: true, confirmed: true});
+    sendWS({type: 6, cmd: 'relay', index: index, state: 0, force: false, confirmed: true, identify: true});
     addLog('Relay identification complete', 'info');
   }, 5000);
 }
@@ -680,23 +845,36 @@ function saveThresholds(){
   var co2Emer = parseInt(document.getElementById('co2Emergency').value, 10);
   var exhaustOn = parseFloat(document.getElementById('humExhaustOn').value);
 
+  // Validate EMA first
+  var emaWeight = parseFloat(document.getElementById('emaWeight').value);
+  if (isNaN(emaWeight) || emaWeight < 0.10 || emaWeight > 0.50) {
+    addLog('EMA Weight must be between 0.10 and 0.50', 'warn');
+    return;
+  }
+
+  // Validate thresholds
   if (isNaN(hohFloor) || isNaN(assistFloor) || isNaN(ceiling) || isNaN(exhaustOn)) {
     addLog('Invalid humidity threshold value', 'warn');
     return;
   }
-  if (isNaN(assistOn) || assistOn < 0) {
-    addLog('Assist ON time cannot be negative', 'warn');
+  if (hohFloor < 0 || hohFloor > 100 || assistFloor < 0 || assistFloor > 100 || ceiling < 0 || ceiling > 100 || exhaustOn < 0 || exhaustOn > 100) {
+    addLog('Humidity values must be between 0 and 100', 'warn');
     return;
   }
-  if (isNaN(assistOff) || assistOff < 0) {
-    addLog('Assist OFF time cannot be negative', 'warn');
+  if (assistOn < 0 || assistOff < 0) {
+    addLog('Assist times cannot be negative', 'warn');
     return;
   }
   if (isNaN(co2High) || isNaN(co2Low) || isNaN(co2Emer)) {
     addLog('Invalid CO2 threshold value', 'warn');
     return;
   }
+  if (co2High < 0 || co2Low < 0 || co2Emer < 0) {
+    addLog('CO2 values must be positive', 'warn');
+    return;
+  }
 
+  // Send thresholds and EMA atomically
   var thresholds = {
     humHoHFloor: hohFloor,
     humAssistFloor: assistFloor,
@@ -706,17 +884,10 @@ function saveThresholds(){
     assistOffSec: assistOff,
     co2HighLimit: co2High,
     co2LowTarget: co2Low,
-    co2Emergency: co2Emer
+    co2Emergency: co2Emer,
+    emaWeight: emaWeight
   };
-  sendWS({type: 6, cmd: 'thresholds', data: thresholds});
-
-  var emaWeight = parseFloat(document.getElementById('emaWeight').value);
-  if (isNaN(emaWeight) || emaWeight < 0.10 || emaWeight > 0.50) {
-    addLog('EMA Weight must be between 0.10 and 0.50', 'warn');
-    return;
-  }
-  sendWS({type: 6, cmd: 'ema', weight: emaWeight});
-
+  sendWS({type: 6, cmd: 'thresholds_and_ema', data: thresholds});
   addLog('Settings saved!', 'info');
 }
 
@@ -774,6 +945,7 @@ function saveRelayMapping(){
   sendWS({type: 6, cmd: 'relay_mapping', data: data});
   addLog('Relay mapping update sent', 'info');
 }
+
 function resumeAutomation(){
   sendWS({type: 6, cmd: 'resume_automation'});
   addLog('Automation resumed', 'info');
@@ -861,6 +1033,7 @@ function switchGraphTab(btn, sensor) {
     graphChart.data.datasets[0].data = liveBuffers[sensor];
   }
   updateGraphLabels();
+  // Exempt tab changes from throttle
   requestHistorical();
 }
 
@@ -874,25 +1047,26 @@ function setGraphRange(seconds, btn) {
 
 function requestHistorical() {
   var now = Date.now();
-  if (now - graphLastRequestTime < 5000) return;
+  // Allow immediate requests for tab changes, throttle only repeated requests
+  if (now - graphLastRequestTime < 5000 && graphSensor === lastRequestedSensor) return;
   graphLastRequestTime = now;
   graphRequestId = (graphRequestId + 1) & 0xFFFF;
   var start = Math.floor(now / 1000) - graphRange;
   sendWS({type: 100, sensor: graphSensor, start: start, end: Math.floor(now / 1000), max: 350, rid: graphRequestId});
+  lastRequestedSensor = graphSensor;
 }
 
 var lastLiveFeedTime = [0, 0, 0, 0];
 
 function feedLiveGraph(sensor, value) {
   var now = Date.now();
-  // Record one point every 5 seconds
   if (now - lastLiveFeedTime[sensor] < 5000) return;
   lastLiveFeedTime[sensor] = now;
 
   var epoch = Math.floor(now / 1000);
   liveBuffers[sensor].push({x: epoch, y: value});
   if (liveBuffers[sensor].length > GRAPH_MAX_LIVE) {
-    liveBuffers[sensor] = liveBuffers[sensor].slice(-GRAPH_MAX_LIVE);
+    liveBuffers[sensor].shift(); // O(n) but simpler than slice
   }
   if (graphChart && sensor === graphSensor) {
     graphChart.data.datasets[0].data = liveBuffers[sensor];
@@ -914,6 +1088,7 @@ connectWS();
 </body>
 </html>
 )rawliteral";
+
 // ============================================================
 // Web Server Handlers
 // ============================================================
@@ -976,7 +1151,6 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
         req.requestId = doc["rid"] | 0;
 
         if (req.sensorType > 3) return;
-        // Sanity: reject epochs before 2020 to prevent 1970 DoS loop
         if (req.startEpoch < 1577836800) req.startEpoch = 1577836800;
         if (req.endEpoch > 0 && req.startEpoch >= req.endEpoch) return;
         if (req.maxPoints == 0 || req.maxPoints > GRAPH_MAX_RESPONSE_POINTS) req.maxPoints = GRAPH_MAX_RESPONSE_POINTS;
@@ -1010,10 +1184,18 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
         bool state = (doc["state"].as<int>() != 0);
         bool force = (doc["force"].as<int>() != 0);
         bool confirmed = (doc["confirmed"].as<int>() != 0);
+        bool identify = (doc["identify"].as<int>() != 0);
 
         if (index >= RELAY_COUNT) {
           Serial.print(F("[WS] Invalid relay index: "));
           Serial.println(index);
+          return;
+        }
+
+        // If this is an identification request, handle it separately
+        if (identify) {
+          // Bypass automation but respect hardware interlocks
+          relayManager_identifyRelay(index);
           return;
         }
 
@@ -1051,7 +1233,7 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
         calibrationActive = g_systemState.calibrationActive;
         portEXIT_CRITICAL(&g_stateMux);
 
-             if (!calibrationActive) {
+        if (!calibrationActive) {
           if (index == RELAY_HOH || index == RELAY_AIR_ASSIST) {
             if (!automation_isHumidityOverrideActive()) {
               automation_activateHumidityOverride();
@@ -1072,24 +1254,24 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
           }
         }
       }
-      else if (msgType == WS_COMMAND && strcmp(cmd, "thresholds") == 0) {
+      else if (msgType == WS_COMMAND && strcmp(cmd, "thresholds_and_ema") == 0) {
         AutomationThresholds* thresholds = automation_getThresholds();
         AutomationThresholds newThresholds = *thresholds;
 
-        newThresholds.humHoHFloor = doc["data"]["humHoHFloor"] | thresholds->humHoHFloor;
-        newThresholds.humAssistFloor = doc["data"]["humAssistFloor"] | thresholds->humAssistFloor;
-        newThresholds.humCeiling = doc["data"]["humCeiling"] | thresholds->humCeiling;
-        newThresholds.humExhaustOn = doc["data"]["humExhaustOn"] | thresholds->humExhaustOn;
-        newThresholds.assistOnSec = doc["data"]["assistOnSec"] | thresholds->assistOnSec;
-        newThresholds.assistOffSec = doc["data"]["assistOffSec"] | thresholds->assistOffSec;
-        newThresholds.co2HighLimit = doc["data"]["co2HighLimit"] | thresholds->co2HighLimit;
-        newThresholds.co2LowTarget = doc["data"]["co2LowTarget"] | thresholds->co2LowTarget;
-        newThresholds.co2Emergency = doc["data"]["co2Emergency"] | thresholds->co2Emergency;
+        // Clamp all threshold values server-side
+        newThresholds.humHoHFloor = constrain(doc["data"]["humHoHFloor"] | thresholds->humHoHFloor, 0, 100);
+        newThresholds.humAssistFloor = constrain(doc["data"]["humAssistFloor"] | thresholds->humAssistFloor, 0, 100);
+        newThresholds.humCeiling = constrain(doc["data"]["humCeiling"] | thresholds->humCeiling, 0, 100);
+        newThresholds.humExhaustOn = constrain(doc["data"]["humExhaustOn"] | thresholds->humExhaustOn, 0, 100);
+        newThresholds.assistOnSec = max(doc["data"]["assistOnSec"] | thresholds->assistOnSec, 0);
+        newThresholds.assistOffSec = max(doc["data"]["assistOffSec"] | thresholds->assistOffSec, 0);
+        newThresholds.co2HighLimit = max(doc["data"]["co2HighLimit"] | thresholds->co2HighLimit, 0);
+        newThresholds.co2LowTarget = max(doc["data"]["co2LowTarget"] | thresholds->co2LowTarget, 0);
+        newThresholds.co2Emergency = max(doc["data"]["co2Emergency"] | thresholds->co2Emergency, 0);
 
         automation_updateThresholds(&newThresholds);
-      }
-      else if (msgType == WS_COMMAND && strcmp(cmd, "ema") == 0) {
-        float weight = doc["weight"] | DEFAULT_EMA_WEIGHT;
+
+        float weight = doc["data"]["emaWeight"] | DEFAULT_EMA_WEIGHT;
         if (weight < EMA_WEIGHT_MIN) weight = EMA_WEIGHT_MIN;
         if (weight > EMA_WEIGHT_MAX) weight = EMA_WEIGHT_MAX;
         adaptive_setEMAWeight(weight);
@@ -1109,6 +1291,16 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
         if (year < 2000 || year > 2099 || month < 1 || month > 12 ||
             day < 1 || day > 31 || hour < 0 || hour > 23 || minute < 0 || minute > 59) {
           Serial.print(F("[WS] RTC datetime out of range: "));
+          Serial.println(datetime);
+          return;
+        }
+        // Basic calendar validation
+        int daysInMonth[] = {0,31,28,31,30,31,30,31,31,30,31,30,31};
+        if ((year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)) {
+          daysInMonth[2] = 29;
+        }
+        if (day > daysInMonth[month]) {
+          Serial.print(F("[WS] Invalid day for month: "));
           Serial.println(datetime);
           return;
         }
@@ -1139,37 +1331,56 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
       else if (msgType == WS_COMMAND && strcmp(cmd, "calibrate_cancel") == 0) {
         adaptive_cancelCalibration();
       }
-         else if (msgType == WS_COMMAND && strcmp(cmd, "resume_automation") == 0) {
+      else if (msgType == WS_COMMAND && strcmp(cmd, "resume_automation") == 0) {
         automation_deactivateAllOverrides();
       }
       else if (msgType == WS_COMMAND && strcmp(cmd, "warmup") == 0) {
-        if (g_warmupSelected) return;  // First decision wins
         unsigned long duration = doc["duration"] | 0;
         if (duration > 600) duration = 600;
-        
+
+        bool alreadySelected = false;
+
+        // Read current state
+        portENTER_CRITICAL(&g_stateMux);
+        alreadySelected = g_warmupSelected;
+        portEXIT_CRITICAL(&g_stateMux);
+
+        if (alreadySelected) {
+          Serial.println(F("[WS] Warmup already selected, ignoring"));
+          return;
+        }
+
+        // Heavy I/O outside spinlock
         relayManager_setRelay(RELAY_COMPRESSOR, true);
-        
+
+        // Atomic state commit - all or nothing
+        unsigned long start = (duration > 0) ? millis() : 0;
+        unsigned long durMs = duration * 1000UL;
+
+        portENTER_CRITICAL(&g_stateMux);
+        if (!g_warmupSelected) {  // Re-check inside lock
+          g_compressorWarmupStart = start;
+          g_compressorWarmupDuration = durMs;
+          g_warmupSelected = true;  // Set LAST, atomically with the others
+        }
+        portEXIT_CRITICAL(&g_stateMux);
+
         if (duration > 0) {
-          g_compressorWarmupStart = millis();
-          g_compressorWarmupDuration = duration * 1000UL;
           Serial.print(F("[BOOT] Compressor warmup: "));
           Serial.print(duration);
           Serial.println(F(" seconds"));
         } else {
           Serial.println(F("[BOOT] Compressor warmup skipped"));
         }
-        g_warmupSelected = true;
       }
-           else if (msgType == WS_COMMAND && strcmp(cmd, "relay_mapping") == 0) {
+      else if (msgType == WS_COMMAND && strcmp(cmd, "relay_mapping") == 0) {
         const RelayMapping* current = relayManager_getMapping();
         RelayMapping newMapping;
         newMapping.magic = RELAY_MAPPING_MAGIC;
-        // Keep existing pins (hardcoded)
-        newMapping.pinPos1 = current->pinPos1;  // 13
-        newMapping.pinPos2 = current->pinPos2;  // 26
-        newMapping.pinPos3 = current->pinPos3;  // 14
-        newMapping.pinPos4 = current->pinPos4;  // 27
-        // Only update functions from UI
+        newMapping.pinPos1 = current->pinPos1;
+        newMapping.pinPos2 = current->pinPos2;
+        newMapping.pinPos3 = current->pinPos3;
+        newMapping.pinPos4 = current->pinPos4;
         newMapping.functionForPos[0] = doc["data"]["funcPos1"] | current->functionForPos[0];
         newMapping.functionForPos[1] = doc["data"]["funcPos2"] | current->functionForPos[1];
         newMapping.functionForPos[2] = doc["data"]["funcPos3"] | current->functionForPos[2];
@@ -1250,6 +1461,14 @@ static void sendSensorUpdate() {
   calibrationActive = g_systemState.calibrationActive;
   portEXIT_CRITICAL(&g_stateMux);
 
+  // Warmup variables - read atomically
+  bool warmupSelected;
+  unsigned long warmupDuration;
+  portENTER_CRITICAL(&g_stateMux);
+  warmupSelected = g_warmupSelected;
+  warmupDuration = g_compressorWarmupDuration;
+  portEXIT_CRITICAL(&g_stateMux);
+
   fridgeTemp = network_getFridgeTemp();
   bool fridgeLost = network_isFridgeHeartbeatLost();
   bool wifiConnected = network_isWiFiConnected();
@@ -1289,15 +1508,9 @@ static void sendSensorUpdate() {
   doc["confidence"] = confidence;
   doc["controlMode"] = controlMode;
 
-  // Add warmup status
-  extern unsigned long g_compressorWarmupStart;
-  extern unsigned long g_compressorWarmupDuration;
-  extern bool g_warmupSelected;
-
-  doc["warmupSelected"] = g_warmupSelected;
-  if (g_warmupSelected && g_compressorWarmupDuration > 0) {
-    doc["warmupDuration"] = g_compressorWarmupDuration / 1000;
-    doc["warmupStartTime"] = g_compressorWarmupStart / 1000;
+  doc["warmupSelected"] = warmupSelected;
+  if (warmupSelected && warmupDuration > 0) {
+    doc["warmupDuration"] = warmupDuration / 1000;
   }
 
   char output[768];
@@ -1319,6 +1532,16 @@ static void sendSystemStatus() {
   compressor = g_systemState.compressorActive;
   portEXIT_CRITICAL(&g_stateMux);
 
+  // Warmup variables - read atomically
+  bool warmupSelected;
+  unsigned long warmupStart, warmupDuration;
+  unsigned long now = millis();  // Capture before critical section
+  portENTER_CRITICAL(&g_stateMux);
+  warmupSelected = g_warmupSelected;
+  warmupStart = g_compressorWarmupStart;
+  warmupDuration = g_compressorWarmupDuration;
+  portEXIT_CRITICAL(&g_stateMux);
+
   StaticJsonDocument<256> doc;
   doc["type"] = WS_RELAY_STATE;
   doc["hoh"] = hoh;
@@ -1328,14 +1551,15 @@ static void sendSystemStatus() {
   doc["humOverride"] = automation_isHumidityOverrideActive();
   doc["humOverrideRemaining"] = automation_getHumidityOverrideRemaining() / 1000;
   doc["co2Override"] = automation_isCO2OverrideActive();
-   doc["co2OverrideRemaining"] = automation_getCO2OverrideRemaining() / 1000;
-  doc["warmupSelected"] = g_warmupSelected;
-  if (g_warmupSelected && g_compressorWarmupDuration > 0) {
-    unsigned long elapsed = millis() - g_compressorWarmupStart;
-    doc["warmupRemaining"] = (elapsed < g_compressorWarmupDuration) ? 
-        (g_compressorWarmupDuration - elapsed) / 1000 : 0;
+  doc["co2OverrideRemaining"] = automation_getCO2OverrideRemaining() / 1000;
+  doc["warmupSelected"] = warmupSelected;
+  if (warmupSelected && warmupDuration > 0) {
+    unsigned long elapsed = now - warmupStart;
+    doc["warmupRemaining"] = (elapsed < warmupDuration) ?
+        (warmupDuration - elapsed) / 1000 : 0;
   }
-   
+  doc["compressorLocked"] = relayManager_isCompressorLocked();
+
   char output[256];
   size_t len = serializeJson(doc, output, sizeof(output));
   if (len >= sizeof(output)) {
