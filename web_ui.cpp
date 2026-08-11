@@ -1139,6 +1139,7 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
           size_t responseLen = serializeJson(responseDoc, response, sizeof(response));
           g_webSocket.sendTXT(num, (const uint8_t*)response, responseLen);
         }
+      }
       else if (msgType == WS_COMMAND && strcmp(cmd, "simulate") == 0) {
         float current = doc["current"] | 0.0f;
         float target = doc["target"] | 88.0f;
