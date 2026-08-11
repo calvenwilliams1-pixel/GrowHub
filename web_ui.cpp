@@ -62,21 +62,22 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <title>GrowHub32 v1.5</title>
 <style>
-  *{rgin:0;padding:0;box-sizing:border-box;}
+  *{margin:0;padding:0;box-sizing:border-box;}
   body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:linear-gradient(180deg,#0d1117 0%,#111827 100%);color:#c9d1d9;min-height:100vh;}
-  .header{padding:14px 18px;border-bottom:1px solid #30363d;}
+  .header{padding:14px 18px;border-bottom:1px solid #5a3a7a;box-shadow:0 2px 12px rgba(184,74,255,0.06);}
   .header h1{font-size:1.3em;color:#58a6ff;}
   .header .status{font-size:0.75em;color:#8b949e;margin-top:3px;}
   .warning-banner{color:#fff;text-align:center;padding:10px 16px;font-weight:600;display:none;border-bottom:1px solid #f85149;}
   .warning-banner.active{display:flex;align-items:center;justify-content:center;gap:8px;animation:pulse-danger 2s infinite;}
   @keyframes pulse-danger{0%{background-color:#da3633;}50%{background-color:#8e1519;}100%{background-color:#da3633;}}
-  .tabs{display:flex;background:rgba(22,27,34,0.95);backdrop-filter:blur(5px);border-bottom:1px solid #30363d;overflow-x:auto;}
+@keyframes pulse-blue{0%{opacity:1;background:#58a6ff;}50%{opacity:0.7;background:#1f6feb;}100%{opacity:1;background:#58a6ff;}}
+    .tabs{display:flex;background:rgba(22,27,34,0.95);backdrop-filter:blur(5px);border-bottom:1px solid #5a3a7a;overflow-x:auto;box-shadow:0 2px 12px rgba(184,74,255,0.06);}
   .tab{padding:14px 20px;font-size:0.9em;color:#8b949e;border:none;background:none;cursor:pointer;white-space:nowrap;border-bottom:2px solid transparent;transition:all 0.2s;}
-  .tab.active{color:#58a6ff;border-bottom-color:#58a6ff;}
+  .tab.active{color:#b84aff;border-bottom-color:#b84aff;}
   .tab-content{display:none;padding:16px;}
   .tab-content.active{display:block;}
   .sensor-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin-bottom:18px;}
-  .sensor-card{background:#161b22;border:1px solid #3d444d;border-radius:12px;padding:18px;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,0.5);}
+    .sensor-card{background:#161b22;border:1px solid #5a3a7a;border-radius:12px;padding:18px;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,0.5),0 0 12px rgba(184,74,255,0.08);}
   .sensor-card .label{font-size:0.7em;color:#8b949e;text-transform:uppercase;letter-spacing:0.5px;}
   .sensor-card .value{font-size:2.2em;font-weight:700;margin:8px 0;color:#ffffff;line-height:1;font-variant-numeric:tabular-nums;min-height:1.2em;}
   .sensor-card .unit{font-size:0.6em;color:#8b949e;font-weight:500;text-transform:uppercase;letter-spacing:0.5px;}
@@ -84,8 +85,8 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   .sensor-card .status-dot.ok{background:#3fb950;box-shadow:0 0 6px rgba(63,185,80,0.4);}
   .sensor-card .status-dot.fault{background:#da3633;box-shadow:0 0 6px rgba(218,54,51,0.4);}
   .relay-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:18px;}
-  .relay-card{background:#161b22;border:1px solid #3d444d;border-radius:12px;padding:14px;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,0.5);}
-  .relay-card.active{border-color:#3fb950;box-shadow:0 0 16px rgba(63,185,80,0.25);}
+   .relay-card{background:#161b22;border:1px solid #5a3a7a;border-radius:12px;padding:14px;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,0.5),0 0 12px rgba(184,74,255,0.08);}
+  .relay-card.active{border-color:#3fb950;box-shadow:0 0 16px rgba(63,185,80,0.25),0 0 12px rgba(184,74,255,0.08);}
   .relay-card .name{font-size:0.7em;color:#8b949e;text-transform:uppercase;letter-spacing:0.5px;}
   .relay-card .state{font-size:1.1em;font-weight:bold;margin:6px 0;}
   .relay-card .state.on{color:#3fb950;}
@@ -93,14 +94,14 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   .relay-card .locked{color:#d29922;font-size:0.7em;margin-top:4px;}
   .btn{padding:12px 20px;border:none;border-radius:8px;font-size:0.95em;cursor:pointer;margin:4px;transition:all 0.15s ease-in-out;font-weight:500;}
   .btn:active{transform:scale(0.96);filter:brightness(0.9);}
-  .btn:focus{outline:2px solid #58a6ff;outline-offset:2px;}
+  .btn:focus{outline:2px solid #b84aff;outline-offset:2px;}
   .btn-on{background:#238636;color:#fff;}
   .btn-on:hover{background:#2ea043;}
   .btn-off{background:#21262d;border:1px solid #30363d;color:#c9d1d9;}
   .btn-off:hover{background:#30363d;}
   .btn-neutral{background:#30363d;color:#c9d1d9;}
   .btn-neutral:hover{background:#484f58;}
-  .config-group{margin-bottom:18px;background:#161b22;border:1px solid #3d444d;border-radius:12px;padding:16px;}
+    .config-group{margin-bottom:18px;background:#161b22;border:1px solid #5a3a7a;border-radius:12px;padding:16px;box-shadow:0 0 16px rgba(184,74,255,0.12);}
   .config-group h3{font-size:0.95em;color:#58a6ff;margin-bottom:12px;border-left:4px solid #58a6ff;padding-left:10px;}
   .config-row{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid #21262d;}
   .config-row:last-child{border-bottom:none;}
@@ -109,17 +110,17 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   .config-row input:focus{outline:2px solid #58a6ff;outline-offset:2px;}
   .config-row input:invalid{border-color:#da3633;color:#da3633;box-shadow:0 0 8px rgba(218,54,51,0.4);}
   .config-row select{width:160px;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#e6edf3;padding:8px 12px;font-size:0.95em;}
-  .log-area{background:#0d1117;border:1px solid #3d444d;border-radius:12px;padding:14px;max-height:300px;overflow-y:auto;font-family:monospace;font-size:0.75em;line-height:1.6;}
+    .log-area{background:#0d1117;border:1px solid #5a3a7a;border-radius:12px;padding:14px;max-height:300px;overflow-y:auto;font-family:monospace;font-size:0.75em;line-height:1.6;box-shadow:0 0 12px rgba(184,74,255,0.08);}
   .log-entry{padding:3px 0;}
   .log-entry.warn{color:#d29922;}
   .log-entry.error{color:#da3633;}
   .calibration-panel{text-align:center;padding:24px;}
   .countdown{font-size:3em;font-weight:bold;color:#58a6ff;}
-  .sim-result{background:#161b22;border:1px solid #3d444d;border-radius:12px;padding:16px;margin-top:12px;text-align:center;}
+   .sim-result{background:#161b22;border:1px solid #5a3a7a;border-radius:12px;padding:16px;margin-top:12px;text-align:center;box-shadow:0 0 12px rgba(184,74,255,0.08);}
   .sim-result .time{font-size:1.5em;color:#3fb950;}
   .footer{text-align:center;padding:18px;font-size:0.7em;color:#484f58;}
   .override-panel{display:none;background:#3a2a1a;color:#d29922;padding:10px;border-radius:8px;margin-bottom:14px;text-align:center;font-weight:bold;border:1px solid #d29922;}
-  .sticky-save-container{position:sticky;bottom:16px;background:rgba(13,17,23,0.95);padding:12px;border-radius:8px;border:1px solid #30363d;text-align:center;margin-top:16px;box-shadow:0 -4px 12px rgba(0,0,0,0.4);}
+    .sticky-save-container{position:sticky;bottom:16px;background:rgba(13,17,23,0.95);padding:12px;border-radius:8px;border:1px solid #5a3a7a;text-align:center;margin-top:16px;box-shadow:0 -4px 12px rgba(0,0,0,0.4),0 0 16px rgba(184,74,255,0.12);}
   ::-webkit-scrollbar{width:6px;height:6px;}
   ::-webkit-scrollbar-track{background:transparent;}
   ::-webkit-scrollbar-thumb{background:#3d444d;border-radius:10px;}
@@ -128,7 +129,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
 .mushroom{position:relative;width:64px;height:56px;image-rendering:pixelated;animation:idleBounce 2s ease-in-out infinite;}
 .pixel{position:absolute;width:4px;height:4px;}
 .c1{background:#b02020;}.c2{background:#c83838;}.c3{background:#d85555;}.c4{background:#b84860;}.c5{background:#9a4a70;}
-.cs{background:#a02020;}.w{background:#fff;}.st{background:#f5e6d0;}.sts{background:#e8d5b8;}.bk{background:#1a1a1a;}.bl{background:#f0a0a0;}
+.cs{background:#a02020;}.w{background:#fff;}.st{background:#f5e6d0;}.sts{background:#e8d5b8;}.bk{background:#1a1a1a;}.bl{background:#f0a0a0;}.co{background:#5bc0eb;}.cp{background:#b84aff;}
 @keyframes idleBounce{0%,15%{transform:translateY(0);}20%{transform:translateY(-2px) scaleY(0.95) scaleX(1.05);}25%{transform:translateY(-4px) scaleY(1.05) scaleX(0.95);}30%{transform:translateY(-2px) scaleY(1.02) scaleX(0.98);}35%{transform:translateY(0) scaleY(0.98) scaleX(1.02);}38%,100%{transform:translateY(0) scaleY(1.0) scaleX(1.0);}}
 @media (prefers-reduced-motion:reduce){.mushroom{animation:none;}}
 </style>
@@ -136,11 +137,18 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
 </head>
 <body>
 <div class="header" style="overflow-x:hidden;">
-  <div style="display:flex;align-items:center;gap:12px;">
-    <div class="mascot-stage"><div class="mushroom"><div class="pixel c2" style="top:0;left:24px"></div><div class="pixel c2" style="top:4px;left:16px"></div><div class="pixel c2" style="top:4px;left:20px"></div><div class="pixel c2" style="top:4px;left:24px"></div><div class="pixel c3" style="top:4px;left:28px"></div><div class="pixel c3" style="top:4px;left:32px"></div><div class="pixel c2" style="top:4px;left:36px"></div><div class="pixel c2" style="top:4px;left:40px"></div><div class="pixel c2" style="top:4px;left:44px"></div><div class="pixel c2" style="top:8px;left:12px"></div><div class="pixel c3" style="top:8px;left:16px"></div><div class="pixel c3" style="top:8px;left:20px"></div><div class="pixel c3" style="top:8px;left:24px"></div><div class="pixel c3" style="top:8px;left:28px"></div><div class="pixel c3" style="top:8px;left:32px"></div><div class="pixel c3" style="top:8px;left:36px"></div><div class="pixel c3" style="top:8px;left:40px"></div><div class="pixel c3" style="top:8px;left:44px"></div><div class="pixel c2" style="top:8px;left:48px"></div><div class="pixel c4" style="top:12px;left:8px"></div><div class="pixel c3" style="top:12px;left:12px"></div><div class="pixel w" style="top:12px;left:16px"></div><div class="pixel c3" style="top:12px;left:20px"></div><div class="pixel c3" style="top:12px;left:24px"></div><div class="pixel c3" style="top:12px;left:28px"></div><div class="pixel w" style="top:12px;left:32px"></div><div class="pixel c3" style="top:12px;left:36px"></div><div class="pixel c3" style="top:12px;left:40px"></div><div class="pixel c3" style="top:12px;left:44px"></div><div class="pixel c4" style="top:12px;left:48px"></div><div class="pixel c4" style="top:12px;left:52px"></div><div class="pixel c4" style="top:16px;left:8px"></div><div class="pixel c3" style="top:16px;left:12px"></div><div class="pixel w" style="top:16px;left:16px"></div><div class="pixel c3" style="top:16px;left:20px"></div><div class="pixel w" style="top:16px;left:24px"></div><div class="pixel c3" style="top:16px;left:28px"></div><div class="pixel c3" style="top:16px;left:32px"></div><div class="pixel w" style="top:16px;left:36px"></div><div class="pixel c3" style="top:16px;left:40px"></div><div class="pixel c3" style="top:16px;left:44px"></div><div class="pixel c3" style="top:16px;left:48px"></div><div class="pixel c4" style="top:16px;left:52px"></div><div class="pixel c5" style="top:20px;left:4px"></div><div class="pixel c3" style="top:20px;left:8px"></div><div class="pixel c3" style="top:20px;left:12px"></div><div class="pixel c3" style="top:20px;left:16px"></div><div class="pixel c3" style="top:20px;left:20px"></div><div class="pixel c3" style="top:20px;left:24px"></div><div class="pixel c3" style="top:20px;left:28px"></div><div class="pixel c3" style="top:20px;left:32px"></div><div class="pixel c3" style="top:20px;left:36px"></div><div class="pixel c3" style="top:20px;left:40px"></div><div class="pixel c3" style="top:20px;left:44px"></div><div class="pixel c3" style="top:20px;left:48px"></div><div class="pixel c3" style="top:20px;left:52px"></div><div class="pixel c5" style="top:20px;left:56px"></div><div class="pixel c5" style="top:24px;left:4px"></div><div class="pixel c5" style="top:24px;left:8px"></div><div class="pixel c5" style="top:24px;left:12px"></div><div class="pixel c5" style="top:24px;left:16px"></div><div class="pixel c5" style="top:24px;left:20px"></div><div class="pixel c5" style="top:24px;left:24px"></div><div class="pixel c5" style="top:24px;left:28px"></div><div class="pixel c5" style="top:24px;left:32px"></div><div class="pixel c5" style="top:24px;left:36px"></div><div class="pixel c5" style="top:24px;left:40px"></div><div class="pixel c5" style="top:24px;left:44px"></div><div class="pixel c5" style="top:24px;left:48px"></div><div class="pixel c5" style="top:24px;left:52px"></div><div class="pixel c5" style="top:24px;left:56px"></div><div class="pixel st" style="top:28px;left:24px"></div><div class="pixel st" style="top:28px;left:28px"></div><div class="pixel st" style="top:28px;left:32px"></div><div class="pixel st" style="top:28px;left:36px"></div><div class="pixel st" style="top:32px;left:24px"></div><div class="pixel bk" style="top:32px;left:28px"></div><div class="pixel st" style="top:32px;left:32px"></div><div class="pixel bk" style="top:32px;left:36px"></div><div class="pixel st" style="top:32px;left:40px"></div><div class="pixel st" style="top:36px;left:20px"></div><div class="pixel st" style="top:36px;left:24px"></div><div class="pixel bl" style="top:36px;left:28px"></div><div class="pixel st" style="top:36px;left:32px"></div><div class="pixel bl" style="top:36px;left:36px"></div><div class="pixel st" style="top:36px;left:40px"></div><div class="pixel st" style="top:36px;left:44px"></div><div class="pixel st" style="top:40px;left:22px"></div><div class="pixel st" style="top:40px;left:26px"></div><div class="pixel st" style="top:40px;left:30px"></div><div class="pixel st" style="top:40px;left:34px"></div><div class="pixel st" style="top:40px;left:38px"></div><div class="pixel sts" style="top:44px;left:24px"></div><div class="pixel sts" style="top:44px;left:28px"></div><div class="pixel sts" style="top:44px;left:32px"></div><div class="pixel sts" style="top:44px;left:36px"></div></div></div>
-    <div>
-      <h1 style="margin:0;line-height:1.2;">GrowHub32</h1>
+    <div style="display:flex;align-items:center;gap:12px;">
+<div class="pixel cp" style="top:20px;left:4px"></div><div class="pixel c3" style="top:20px;left:8px"></div><div class="pixel c3" style="top:20px;left:12px"></div><div class="pixel c3" style="top:20px;left:16px"></div><div class="pixel c3" style="top:20px;left:20px"></div><div class="pixel c3" style="top:20px;left:24px"></div><div class="pixel c3" style="top:20px;left:28px"></div><div class="pixel c3" style="top:20px;left:32px"></div><div class="pixel c3" style="top:20px;left:36px"></div><div class="pixel c3" style="top:20px;left:40px"></div><div class="pixel c3" style="top:20px;left:44px"></div><div class="pixel c3" style="top:20px;left:48px"></div><div class="pixel c3" style="top:20px;left:52px"></div><div class="pixel cp" style="top:20px;left:56px"></div><div class="pixel cp" style="top:24px;left:4px"></div><div class="pixel cp" style="top:24px;left:8px"></div><div class="pixel cp" style="top:24px;left:12px"></div><div class="pixel cp" style="top:24px;left:16px"></div><div class="pixel cp" style="top:24px;left:20px"></div><div class="pixel cp" style="top:24px;left:24px"></div><div class="pixel cp" style="top:24px;left:28px"></div><div class="pixel cp" style="top:24px;left:32px"></div><div class="pixel cp" style="top:24px;left:36px"></div><div class="pixel cp" style="top:24px;left:40px"></div><div class="pixel cp" style="top:24px;left:44px"></div><div class="pixel cp" style="top:24px;left:48px"></div><div class="pixel cp" style="top:24px;left:52px"></div><div class="pixel cp" style="top:24px;left:56px"></div>    <div style="flex:1;">
+      <div style="display:flex;align-items:center;justify-content:space-between;">
+        <h1 style="margin:0;line-height:1.2;">GrowHub32</h1>
+        <div id="warmupBadge" style="display:none;background:#58a6ff;color:#0d1117;padding:4px 12px;border-radius:20px;font-size:0.7em;font-weight:bold;animation:pulse-blue 1.5s infinite;">
+          ⚙️ Warming Up
+        </div>
+      </div>
       <div class="status" id="connectionStatus" style="margin-top:2px;">Connecting...</div>
+      <div id="warmupProgressContainer" style="display:none;margin-top:4px;width:100%;height:4px;background:#21262d;border-radius:4px;overflow:hidden;">
+        <div id="warmupProgressBar" style="width:0%;height:100%;background:linear-gradient(90deg,#58a6ff,#3fb950);transition:width 0.5s linear;"></div>
+      </div>
     </div>
   </div>
 </div>
@@ -157,7 +165,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
 </div>
 
 <div id="dashboard" class="tab-content active">
-  <div id="warmupPanel" style="display:none;background:linear-gradient(180deg,#161b22 0%,#0d1117 100%);border:1px solid #58a6ff;border-radius:12px;padding:20px;margin-bottom:16px;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,0.35);">
+  <div id="warmupPanel" style="display:none;background:linear-gradient(180deg,#161b22 0%,#0d1117 100%);border:1px solid #5a3a7a;border-radius:12px;padding:20px;margin-bottom:16px;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,0.35),0 0 16px rgba(184,74,255,0.12);">
     <h3 style="color:#58a6ff;margin-bottom:8px;">🔄 Compressor Warmup</h3>
     <p style="font-size:0.85em;color:#8b949e;margin-bottom:12px;">The air tank needs time to fill before Air Assist can work. How long should the compressor warm up?</p>
     <div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap;">
@@ -220,10 +228,10 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
     <br><button class="btn btn-off" style="margin-top:6px;" onclick="resumeAutomation()">Resume Automation Now</button>
   </div>
   <div class="config-group">
-    <div class="config-row"><label>Humidifier</label><div><button class="btn btn-neutral" onclick="identifyRelay(0)">ID</button><button class="btn btn-on" onclick="relayCmd(0,1)">ON</button><button class="btn btn-off" onclick="relayCmd(0,0)">OFF</button></div></div>
-    <div class="config-row"><label>Air Assist</label><div><button class="btn btn-neutral" onclick="identifyRelay(1)">ID</button><button class="btn btn-on" onclick="relayCmd(1,1)">ON</button><button class="btn btn-off" onclick="relayCmd(1,0)">OFF</button></div></div>
-    <div class="config-row"><label>Exhaust Fan</label><div><button class="btn btn-neutral" onclick="identifyRelay(2)">ID</button><button class="btn btn-on" onclick="relayCmd(2,1)">ON</button><button class="btn btn-off" onclick="relayCmd(2,0)">OFF</button></div></div>
-    <div class="config-row"><label>Compressor</label><div><button class="btn btn-neutral" onclick="identifyRelay(3)">ID</button><button class="btn btn-on" onclick="relayCmd(3,1)">ON</button><button class="btn btn-off" onclick="relayCmd(3,0)">OFF</button></div></div>
+    <div class="config-row"><label>Humidifier</label><div><button class="btn btn-on" onclick="relayCmd(0,1)">ON</button><button class="btn btn-off" onclick="relayCmd(0,0)">OFF</button></div></div>
+    <div class="config-row"><label>Air Assist</label><div><button class="btn btn-on" onclick="relayCmd(1,1)">ON</button><button class="btn btn-off" onclick="relayCmd(1,0)">OFF</button></div></div>
+    <div class="config-row"><label>Exhaust Fan</label><div><button class="btn btn-on" onclick="relayCmd(2,1)">ON</button><button class="btn btn-off" onclick="relayCmd(2,0)">OFF</button></div></div>
+    <div class="config-row"><label>Compressor</label><div><button class="btn btn-on" onclick="relayCmd(3,1)">ON</button><button class="btn btn-off" onclick="relayCmd(3,0)">OFF</button></div></div>
   </div>
 </div>
 
@@ -252,17 +260,13 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
     <h3>Adaptive Learning</h3>
     <div class="config-row"><label>EMA Weight (0.10-0.50)</label><input type="number" id="emaWeight" value="0.30" step="0.05" min="0.10" max="0.50"></div>
   </div>
-  <div class="config-group">
+   <div class="config-group">
     <h3>Relay Mapping</h3>
-    <p style="font-size:0.7em;color:#8b949e;margin-bottom:8px;">Assign GPIO pins and functions to physical relay positions 1-4. Use the ID button on the Controls tab to identify which position is which. Each function must be assigned exactly once.</p>
-    <div class="config-row"><label>Position 1 — GPIO</label><input type="number" id="pinPos1" value="13" min="0" max="39"></div>
-    <div class="config-row"><label>Position 1 — Function</label><select id="funcPos1"><option value="0" selected>HOH Humidifier</option><option value="1">Air Assist</option><option value="2">Exhaust Fan</option><option value="3">Compressor</option></select></div>
-    <div class="config-row"><label>Position 2 — GPIO</label><input type="number" id="pinPos2" value="26" min="0" max="39"></div>
-    <div class="config-row"><label>Position 2 — Function</label><select id="funcPos2"><option value="0">HOH Humidifier</option><option value="1" selected>Air Assist</option><option value="2">Exhaust Fan</option><option value="3">Compressor</option></select></div>
-    <div class="config-row"><label>Position 3 — GPIO</label><input type="number" id="pinPos3" value="14" min="0" max="39"></div>
-    <div class="config-row"><label>Position 3 — Function</label><select id="funcPos3"><option value="0">HOH Humidifier</option><option value="1">Air Assist</option><option value="2" selected>Exhaust Fan</option><option value="3">Compressor</option></select></div>
-    <div class="config-row"><label>Position 4 — GPIO</label><input type="number" id="pinPos4" value="27" min="0" max="39"></div>
-    <div class="config-row"><label>Position 4 — Function</label><select id="funcPos4"><option value="0">HOH Humidifier</option><option value="1">Air Assist</option><option value="2">Exhaust Fan</option><option value="3" selected>Compressor</option></select></div>
+    <p style="font-size:0.7em;color:#8b949e;margin-bottom:8px;">Assign functions to physical relay positions 1-4. Use the ID button next to each position to identify which relay is which. Each function must be assigned exactly once.</p>
+    <div class="config-row"><label>Position 1</label><div style="display:flex;align-items:center;gap:8px;"><button class="btn btn-neutral" onclick="identifyRelay(0)" style="padding:4px 10px;font-size:0.75em;">ID</button><select id="funcPos1"><option value="0" selected>HOH Humidifier</option><option value="1">Air Assist</option><option value="2">Exhaust Fan</option><option value="3">Compressor</option></select></div></div>
+    <div class="config-row"><label>Position 2</label><div style="display:flex;align-items:center;gap:8px;"><button class="btn btn-neutral" onclick="identifyRelay(1)" style="padding:4px 10px;font-size:0.75em;">ID</button><select id="funcPos2"><option value="0">HOH Humidifier</option><option value="1" selected>Air Assist</option><option value="2">Exhaust Fan</option><option value="3">Compressor</option></select></div></div>
+    <div class="config-row"><label>Position 3</label><div style="display:flex;align-items:center;gap:8px;"><button class="btn btn-neutral" onclick="identifyRelay(2)" style="padding:4px 10px;font-size:0.75em;">ID</button><select id="funcPos3"><option value="0">HOH Humidifier</option><option value="1">Air Assist</option><option value="2" selected>Exhaust Fan</option><option value="3">Compressor</option></select></div></div>
+    <div class="config-row"><label>Position 4</label><div style="display:flex;align-items:center;gap:8px;"><button class="btn btn-neutral" onclick="identifyRelay(3)" style="padding:4px 10px;font-size:0.75em;">ID</button><select id="funcPos4"><option value="0">HOH Humidifier</option><option value="1">Air Assist</option><option value="2">Exhaust Fan</option><option value="3" selected>Compressor</option></select></div></div>
     <button class="btn btn-on" onclick="saveRelayMapping()">Apply Relay Mapping</button>
   </div>
   <div class="sticky-save-container">
@@ -430,10 +434,21 @@ function updateSensors(msg){
   if (typeof msg.hum === 'number') feedLiveGraph(1, msg.hum);
   if (typeof msg.co2 === 'number') feedLiveGraph(2, msg.co2);
   if (typeof msg.fridge === 'number') feedLiveGraph(3, msg.fridge);
-  if (msg.warmupSelected) {
+  
+  // Handle warmup status in header
+  if (msg.warmupSelected && msg.warmupDuration && msg.warmupStartTime) {
+    var startTime = msg.warmupStartTime * 1000;
+    var duration = msg.warmupDuration;
+    startWarmupCountdown(duration, startTime);
     var panel = document.getElementById('warmupPanel');
     if (panel) panel.style.display = 'none';
-  } else {
+  } else if (!msg.warmupSelected) {
+    if (warmupInterval) {
+      clearInterval(warmupInterval);
+      warmupInterval = null;
+    }
+    document.getElementById('warmupBadge').style.display = 'none';
+    document.getElementById('warmupProgressContainer').style.display = 'none';
     var panel = document.getElementById('warmupPanel');
     if (panel && panel.style.display === 'none') {
       panel.style.display = 'block';
@@ -480,10 +495,6 @@ function updateConfig(msg){
   document.getElementById('co2Low').value = msg.co2LowTarget;
   document.getElementById('co2Emergency').value = msg.co2Emergency;
   document.getElementById('emaWeight').value = msg.emaWeight;
-  document.getElementById('pinPos1').value = msg.pinPos1;
-  document.getElementById('pinPos2').value = msg.pinPos2;
-  document.getElementById('pinPos3').value = msg.pinPos3;
-  document.getElementById('pinPos4').value = msg.pinPos4;
   document.getElementById('funcPos1').value = msg.funcPos1;
   document.getElementById('funcPos2').value = msg.funcPos2;
   document.getElementById('funcPos3').value = msg.funcPos3;
@@ -551,6 +562,68 @@ function switchTab(element, tabId){
 }
 
 var warmupCountdown = null;
+var warmupInterval = null;
+
+function updateWarmupStatus(duration, elapsed) {
+  var badge = document.getElementById('warmupBadge');
+  var progressContainer = document.getElementById('warmupProgressContainer');
+  var progressBar = document.getElementById('warmupProgressBar');
+  
+  if (!duration || duration <= 0) {
+    badge.style.display = 'none';
+    progressContainer.style.display = 'none';
+    if (warmupInterval) {
+      clearInterval(warmupInterval);
+      warmupInterval = null;
+    }
+    return;
+  }
+  
+  badge.style.display = 'inline-block';
+  progressContainer.style.display = 'block';
+  
+  var elapsedSeconds = elapsed / 1000;
+  var percent = Math.min(100, (elapsedSeconds / duration) * 100);
+  progressBar.style.width = percent + '%';
+  
+  var remaining = Math.max(0, duration - elapsedSeconds);
+  if (remaining > 0) {
+    if (remaining >= 60) {
+      badge.textContent = '⏱️ ' + Math.ceil(remaining / 60) + 'm remaining';
+    } else {
+      badge.textContent = '⏱️ ' + Math.ceil(remaining) + 's remaining';
+    }
+  } else {
+    badge.textContent = '✅ Ready!';
+    badge.style.background = '#3fb950';
+    badge.style.animation = 'none';
+    setTimeout(function() {
+      badge.style.display = 'none';
+      progressContainer.style.display = 'none';
+    }, 3000);
+    if (warmupInterval) {
+      clearInterval(warmupInterval);
+      warmupInterval = null;
+    }
+  }
+}
+
+function startWarmupCountdown(duration, startTime) {
+  if (warmupInterval) {
+    clearInterval(warmupInterval);
+    warmupInterval = null;
+  }
+  
+  var now = Date.now();
+  var elapsed = now - startTime;
+  updateWarmupStatus(duration, elapsed);
+  
+  warmupInterval = setInterval(function() {
+    var now = Date.now();
+    var elapsed = now - startTime;
+    updateWarmupStatus(duration, elapsed);
+  }, 1000);
+}
 
 function startWarmup(seconds) {
   if (warmupCountdown) { clearInterval(warmupCountdown); warmupCountdown = null; }
@@ -567,7 +640,6 @@ function startWarmup(seconds) {
 
   panel.innerHTML = '<h3 style="color:#3fb950;margin-bottom:8px;">⚙️ Compressor Warming Up</h3><p style="font-size:0.9em;color:#8b949e;">Air Assist will be available shortly...</p>';
 }
-
 var identifyTimer = null;
 var identifyTimeout = null;
 
@@ -684,19 +756,7 @@ function setRTCTime(){
 }
 
 function saveRelayMapping(){
-  var pinPos1 = parseInt(document.getElementById('pinPos1').value, 10);
-  var pinPos2 = parseInt(document.getElementById('pinPos2').value, 10);
-  var pinPos3 = parseInt(document.getElementById('pinPos3').value, 10);
-  var pinPos4 = parseInt(document.getElementById('pinPos4').value, 10);
-
-  if (isNaN(pinPos1) || isNaN(pinPos2) || isNaN(pinPos3) || isNaN(pinPos4) ||
-      pinPos1 < 0 || pinPos1 > 39 || pinPos2 < 0 || pinPos2 > 39 ||
-      pinPos3 < 0 || pinPos3 > 39 || pinPos4 < 0 || pinPos4 > 39) {
-    addLog('Invalid GPIO pin entered', 'warn');
-    return;
-  }
-
-    var f1 = parseInt(document.getElementById('funcPos1').value, 10);
+  var f1 = parseInt(document.getElementById('funcPos1').value, 10);
   var f2 = parseInt(document.getElementById('funcPos2').value, 10);
   var f3 = parseInt(document.getElementById('funcPos3').value, 10);
   var f4 = parseInt(document.getElementById('funcPos4').value, 10);
@@ -707,10 +767,6 @@ function saveRelayMapping(){
   }
 
   var data = {
-    pinPos1: pinPos1,
-    pinPos2: pinPos2,
-    pinPos3: pinPos3,
-    pinPos4: pinPos4,
     funcPos1: f1,
     funcPos2: f2,
     funcPos3: f3,
@@ -719,7 +775,6 @@ function saveRelayMapping(){
   sendWS({type: 6, cmd: 'relay_mapping', data: data});
   addLog('Relay mapping update sent', 'info');
 }
-
 function resumeAutomation(){
   sendWS({type: 6, cmd: 'resume_automation'});
   addLog('Automation resumed', 'info');
@@ -1106,14 +1161,16 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
         }
         g_warmupSelected = true;
       }
-      else if (msgType == WS_COMMAND && strcmp(cmd, "relay_mapping") == 0) {
-              const RelayMapping* current = relayManager_getMapping();
+           else if (msgType == WS_COMMAND && strcmp(cmd, "relay_mapping") == 0) {
+        const RelayMapping* current = relayManager_getMapping();
         RelayMapping newMapping;
         newMapping.magic = RELAY_MAPPING_MAGIC;
-        newMapping.pinPos1 = doc["data"]["pinPos1"] | current->pinPos1;
-        newMapping.pinPos2 = doc["data"]["pinPos2"] | current->pinPos2;
-        newMapping.pinPos3 = doc["data"]["pinPos3"] | current->pinPos3;
-        newMapping.pinPos4 = doc["data"]["pinPos4"] | current->pinPos4;
+        // Keep existing pins (hardcoded)
+        newMapping.pinPos1 = current->pinPos1;  // 13
+        newMapping.pinPos2 = current->pinPos2;  // 26
+        newMapping.pinPos3 = current->pinPos3;  // 14
+        newMapping.pinPos4 = current->pinPos4;  // 27
+        // Only update functions from UI
         newMapping.functionForPos[0] = doc["data"]["funcPos1"] | current->functionForPos[0];
         newMapping.functionForPos[1] = doc["data"]["funcPos2"] | current->functionForPos[1];
         newMapping.functionForPos[2] = doc["data"]["funcPos3"] | current->functionForPos[2];
@@ -1133,7 +1190,7 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
         } else {
           StaticJsonDocument<128> responseDoc;
           responseDoc["type"] = 2;
-          responseDoc["message"] = "Invalid relay mapping — check pins";
+          responseDoc["message"] = "Invalid relay mapping — check functions";
           responseDoc["level"] = "warn";
           char response[128];
           size_t responseLen = serializeJson(responseDoc, response, sizeof(response));
@@ -1233,6 +1290,17 @@ static void sendSensorUpdate() {
   doc["confidence"] = confidence;
   doc["controlMode"] = controlMode;
 
+  // Add warmup status
+  extern unsigned long g_compressorWarmupStart;
+  extern unsigned long g_compressorWarmupDuration;
+  extern bool g_warmupSelected;
+
+  doc["warmupSelected"] = g_warmupSelected;
+  if (g_warmupSelected && g_compressorWarmupDuration > 0) {
+    doc["warmupDuration"] = g_compressorWarmupDuration / 1000;
+    doc["warmupStartTime"] = g_compressorWarmupStart / 1000;
+  }
+
   char output[768];
   size_t len = serializeJson(doc, output, sizeof(output));
   if (len >= sizeof(output)) {
@@ -1261,8 +1329,13 @@ static void sendSystemStatus() {
   doc["humOverride"] = automation_isHumidityOverrideActive();
   doc["humOverrideRemaining"] = automation_getHumidityOverrideRemaining() / 1000;
   doc["co2Override"] = automation_isCO2OverrideActive();
-  doc["co2OverrideRemaining"] = automation_getCO2OverrideRemaining() / 1000;
+   doc["co2OverrideRemaining"] = automation_getCO2OverrideRemaining() / 1000;
   doc["warmupSelected"] = g_warmupSelected;
+  if (g_warmupSelected && g_compressorWarmupDuration > 0) {
+    unsigned long elapsed = millis() - g_compressorWarmupStart;
+    doc["warmupRemaining"] = (elapsed < g_compressorWarmupDuration) ? 
+        (g_compressorWarmupDuration - elapsed) / 1000 : 0;
+  }
    
   char output[256];
   size_t len = serializeJson(doc, output, sizeof(output));
@@ -1289,10 +1362,6 @@ static void sendConfigUpdate(uint8_t clientNum) {
   doc["co2Emergency"] = t->co2Emergency;
   doc["emaWeight"] = adaptive_getEMAWeight();
   const RelayMapping* mapping = relayManager_getMapping();
-  doc["pinPos1"] = mapping->pinPos1;
-  doc["pinPos2"] = mapping->pinPos2;
-  doc["pinPos3"] = mapping->pinPos3;
-  doc["pinPos4"] = mapping->pinPos4;
   doc["funcPos1"] = mapping->functionForPos[0];
   doc["funcPos2"] = mapping->functionForPos[1];
   doc["funcPos3"] = mapping->functionForPos[2];
