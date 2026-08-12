@@ -729,6 +729,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
       </div>
 
       <!-- Animation -->
+         <!-- Animation -->
       <div class="control-group">
         <label>🌀 Animation</label>
         <div class="slider-row">
@@ -740,6 +741,54 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
           <span>Speed</span>
           <input type="range" id="animSpeed" min="12" max="35" value="22" step="1">
           <span class="slider-value" id="animSpeedVal">2.2s</span>
+        </div>
+      </div>
+
+      <!-- ─── Face Customization ─── -->
+      <div class="control-group">
+        <label>😊 Face</label>
+
+        <div style="margin-bottom:4px;">
+          <span style="font-size:0.7em;color:#8b949e;">Eyes</span>
+          <div class="btn-group">
+            <button data-eye="normal" class="active">Normal</button>
+            <button data-eye="happy">😄</button>
+            <button data-eye="sleepy">😴</button>
+            <button data-eye="closed">😌</button>
+            <button data-eye="big">👀</button>
+            <button data-eye="none">✖</button>
+          </div>
+        </div>
+
+        <div style="margin-bottom:4px;">
+          <span style="font-size:0.7em;color:#8b949e;">Mouth</span>
+          <div class="btn-group">
+            <button data-mouth="smile" class="active">Smile</button>
+            <button data-mouth="happy">😁</button>
+            <button data-mouth="neutral">😐</button>
+            <button data-mouth="surprised">😮</button>
+            <button data-mouth="none">✖</button>
+          </div>
+        </div>
+
+        <div class="slider-row">
+          <span style="font-size:0.7em;color:#8b949e;width:50px;">Blush</span>
+          <input type="checkbox" id="blushEnable" checked>
+          <label style="font-size:0.7em;color:#8b949e;margin-left:4px;">On</label>
+          <input type="color" id="blushColor" value="#ff99c8" style="width:30px;height:24px;border:none;background:transparent;cursor:pointer;margin-left:8px;">
+          <span style="font-size:0.7em;color:#8b949e;margin-left:8px;">Size</span>
+          <input type="range" id="blushSize" min="5" max="20" value="10" step="1" style="flex:0.5;">
+          <span class="slider-value" id="blushSizeVal">1.0</span>
+        </div>
+
+        <div style="margin-top:4px;">
+          <span style="font-size:0.7em;color:#8b949e;">Cap Texture</span>
+          <div class="btn-group">
+            <button data-texture="smooth" class="active">Smooth</button>
+            <button data-texture="textured">Textured</button>
+            <button data-texture="striped">Striped</button>
+            <button data-texture="gradient">Gradient</button>
+          </div>
         </div>
       </div>
 
@@ -1574,7 +1623,14 @@ const designerState = {
   stemColor: '#fefae0',
   spots: 2,
   bounceHeight: 20,
-  animSpeed: 22
+  animSpeed: 22,
+  // Face customization
+  eyeStyle: 'normal',
+  mouthStyle: 'smile',
+  blushEnabled: true,
+  blushColor: '#ff99c8',
+  blushSize: 1.0,
+  capTexture: 'smooth'
 };
 
 function lightenColor(hex, percent) {
@@ -1583,6 +1639,29 @@ function lightenColor(hex, percent) {
   const g = Math.min(255, ((num >> 8) & 0x00FF) + percent);
   const b = Math.min(255, (num & 0x0000FF) + percent);
   return '#' + (1 << 24 | r << 16 | g << 8 | b).toString(16).slice(1);
+}
+
+// ─── EYE STYLES ───
+function getEyePixels(style) {
+  switch(style) {
+    case 'normal': return [{dr:0, dc:0, w:1, h:1, r:1}];
+    case 'happy':  return [{dr:0, dc:0, w:1, h:1, r:1}, {dr:0, dc:0, w:1, h:1, r:1}];
+    case 'sleepy': return [{dr:0, dc:0, w:2, h:0.5, r:0}];
+    case 'closed': return [{dr:0, dc:0, w:2, h:0.3, r:0}];
+    case 'big':    return [{dr:0, dc:0, w:1.5, h:1.5, r:2}];
+    default:       return [];
+  }
+}
+
+// ─── MOUTH STYLES ───
+function getMouthPixels(style) {
+  switch(style) {
+    case 'smile':    return [{dr:0, dc:0, w:2, h:1, r:0}];
+    case 'happy':    return [{dr:0, dc:0, w:3, h:1.5, r:2}];
+    case 'neutral':  return [{dr:0, dc:0, w:1.5, h:0.3, r:0}];
+    case 'surprised':return [{dr:0, dc:0, w:1.5, h:1.5, r:2}];
+    default:         return [];
+  }
 }
 
 function darkenColor(hex, percent) {
@@ -1595,6 +1674,73 @@ function darkenColor(hex, percent) {
 
 function isHexColor(str) {
   return /^#[0-9a-fA-F]{6}$/.test(str);
+}
+
+functi// ─── FACE RENDERER ───
+function renderFace(sprite, grid, cols, pixelSize, state) {
+  const faceRow = 8;
+  const leftEyeCol = 5;
+  const rightEyeCol = 7;
+  const mouthRow = 9;
+  const blushRow = 9;
+  const leftBlushCol = 4;
+  const rightBlushCol = 8;
+
+  const eyeColor = '#1a1a1a';
+  const mouthColor = '#1a1a1a';
+  const blushColor = state.blushColor || '#ff99c8';
+  const blushSize = state.blushSize || 1.0;
+
+  // Eyes
+  if (state.eyeStyle !== 'none') {
+    const eyePixels = getEyePixels(state.eyeStyle);
+    eyePixels.forEach(function(p) {
+      const r = faceRow + p.dr;
+      const c = leftEyeCol + p.dc;
+      const px = document.createElement('div');
+      px.className = 'pixel';
+      px.style.cssText = 'position:absolute;width:' + (pixelSize * (p.w||1)) + 'px;height:' + (pixelSize * (p.h||1)) + 'px;left:' + (c * pixelSize) + 'px;top:' + (r * pixelSize) + 'px;background-color:' + eyeColor + ';border-radius:' + (p.r||1) + 'px;';
+      sprite.appendChild(px);
+    });
+    eyePixels.forEach(function(p) {
+      const r = faceRow + p.dr;
+      const c = rightEyeCol + (-p.dc);
+      const px = document.createElement('div');
+      px.className = 'pixel';
+      px.style.cssText = 'position:absolute;width:' + (pixelSize * (p.w||1)) + 'px;height:' + (pixelSize * (p.h||1)) + 'px;left:' + (c * pixelSize) + 'px;top:' + (r * pixelSize) + 'px;background-color:' + eyeColor + ';border-radius:' + (p.r||1) + 'px;';
+      sprite.appendChild(px);
+    });
+  }
+
+  // Mouth
+  if (state.mouthStyle !== 'none') {
+    const mouthPixels = getMouthPixels(state.mouthStyle);
+    mouthPixels.forEach(function(p) {
+      const r = mouthRow + p.dr;
+      const c = leftEyeCol + p.dc + 1;
+      const px = document.createElement('div');
+      px.className = 'pixel';
+      px.style.cssText = 'position:absolute;width:' + (pixelSize * (p.w||1)) + 'px;height:' + (pixelSize * (p.h||1)) + 'px;left:' + (c * pixelSize) + 'px;top:' + (r * pixelSize) + 'px;background-color:' + mouthColor + ';border-radius:' + (p.r||1) + 'px;';
+      sprite.appendChild(px);
+    });
+  }
+
+  // Blush
+  if (state.blushEnabled) {
+    const blushSizePx = Math.max(1, Math.round(blushSize * pixelSize));
+    const blushPixels = [
+      { r: blushRow, c: leftBlushCol },
+      { r: blushRow + 1, c: leftBlushCol },
+      { r: blushRow, c: rightBlushCol },
+      { r: blushRow + 1, c: rightBlushCol }
+    ];
+    blushPixels.forEach(function(p) {
+      const px = document.createElement('div');
+      px.className = 'pixel';
+      px.style.cssText = 'position:absolute;width:' + blushSizePx + 'px;height:' + blushSizePx + 'px;left:' + (p.c * pixelSize) + 'px;top:' + (p.r * pixelSize) + 'px;background-color:' + blushColor + ';border-radius:50%;opacity:0.7;';
+      sprite.appendChild(px);
+    });
+  }
 }
 
 function renderDesignerSprite() {
@@ -1632,9 +1778,13 @@ function renderDesignerSprite() {
   const spots = SPOT_COORDS[designerState.template] || [];
   const spotsToShow = designerState.spots;
 
+  // Draw base mushroom, skip face pixels (6,7)
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
       let val = grid[r][c];
+      // Skip face pixels — we draw them separately
+      if (val === 6 || val === 7) continue;
+
       let isSpot = false;
       for (let i = 0; i < spotsToShow && i < spots.length; i++) {
         if (spots[i].r === r && spots[i].c === c) { isSpot = true; break; }
@@ -1668,6 +1818,9 @@ function renderDesignerSprite() {
       sprite.appendChild(pixel);
     }
   }
+
+  // ─── Draw face overlay ───
+  renderFace(sprite, grid, cols, pixelSize, designerState);
 
   const speedSec = designerState.animSpeed / 10;
   sprite.style.animation = 'designerBounce ' + speedSec + 's ease-in-out infinite';
@@ -1734,7 +1887,14 @@ function saveCurrentProfile() {
     stemColor: designerState.stemColor,
     spots: designerState.spots,
     bounceHeight: designerState.bounceHeight,
-    animSpeed: designerState.animSpeed
+    animSpeed: designerState.animSpeed,
+    // Face settings
+    eyeStyle: designerState.eyeStyle,
+    mouthStyle: designerState.mouthStyle,
+    blushEnabled: designerState.blushEnabled,
+    blushColor: designerState.blushColor,
+    blushSize: designerState.blushSize,
+    capTexture: designerState.capTexture
   };
 
   const saveBtn = document.getElementById('saveProfileBtn');
@@ -1776,7 +1936,14 @@ function exportDesignerJSON() {
     spots: designerState.spots,
     bounceHeight: designerState.bounceHeight,
     animSpeed: designerState.animSpeed / 10,
-    grid: template.grid
+    grid: template.grid,
+    // Face settings
+    eyeStyle: designerState.eyeStyle,
+    mouthStyle: designerState.mouthStyle,
+    blushEnabled: designerState.blushEnabled,
+    blushColor: designerState.blushColor,
+    blushSize: designerState.blushSize,
+    capTexture: designerState.capTexture
   };
   const json = JSON.stringify(exportData, null, 2);
   const area = document.getElementById('exportArea');
@@ -1829,6 +1996,13 @@ function importDesignerJSON() {
     designerState.spots = (data.spots !== undefined && data.spots !== null) ? data.spots : 2;
     designerState.bounceHeight = data.bounceHeight || 20;
     designerState.animSpeed = data.animSpeed ? data.animSpeed * 10 : 22;
+    // Face settings
+    designerState.eyeStyle = data.eyeStyle || 'normal';
+    designerState.mouthStyle = data.mouthStyle || 'smile';
+    designerState.blushEnabled = data.blushEnabled !== undefined ? data.blushEnabled : true;
+    designerState.blushColor = data.blushColor || '#ff99c8';
+    designerState.blushSize = data.blushSize || 1.0;
+    designerState.capTexture = data.capTexture || 'smooth';
 
     if (data.grid && Array.isArray(data.grid) && data.grid.length === 12) {
       DESIGNER_TEMPLATES[designerState.template].grid = data.grid;
@@ -1909,6 +2083,22 @@ function updateDesignerUI() {
   document.getElementById('customCapColor').value = designerState.capColor;
   document.getElementById('customStemColor').value = designerState.stemColor;
 
+  // ─── Face Controls ───
+  document.querySelectorAll('[data-eye]').forEach(function(b) {
+    b.classList.toggle('active', b.dataset.eye === designerState.eyeStyle);
+  });
+  document.querySelectorAll('[data-mouth]').forEach(function(b) {
+    b.classList.toggle('active', b.dataset.mouth === designerState.mouthStyle);
+  });
+  document.getElementById('blushEnable').checked = designerState.blushEnabled;
+  document.getElementById('blushColor').value = designerState.blushColor;
+  document.getElementById('blushSize').value = designerState.blushSize * 10;
+  document.getElementById('blushSizeVal').textContent = designerState.blushSize.toFixed(1);
+
+  document.querySelectorAll('[data-texture]').forEach(function(b) {
+    b.classList.toggle('active', b.dataset.texture === designerState.capTexture);
+  });
+
   renderDesignerSprite();
 }
 
@@ -1921,8 +2111,7 @@ function handleProfileResponse(msg) {
     profileList = msg.names || [];
     updateProfileDropdown();
     // Render background stars after profiles load
-    renderBackgroundStars(profileList, starSettings);
-  } else if (msg.cmd === 'profile_load') {
+   } else if (msg.cmd === 'profile_load') {
     if (msg.data) {
       const data = msg.data;
       designerState.template = data.template || 'amanita';
@@ -1935,6 +2124,13 @@ function handleProfileResponse(msg) {
       designerState.spots = (data.spots !== undefined && data.spots !== null) ? data.spots : 2;
       designerState.bounceHeight = data.bounceHeight || 20;
       designerState.animSpeed = data.animSpeed || 22;
+      // Face settings
+      designerState.eyeStyle = data.eyeStyle || 'normal';
+      designerState.mouthStyle = data.mouthStyle || 'smile';
+      designerState.blushEnabled = data.blushEnabled !== undefined ? data.blushEnabled : true;
+      designerState.blushColor = data.blushColor || '#ff99c8';
+      designerState.blushSize = data.blushSize || 1.0;
+      designerState.capTexture = data.capTexture || 'smooth';
       updateDesignerUI();
       addLog('Profile loaded: ' + msg.name, 'info');
       document.getElementById('profileNameInput').value = msg.name;
@@ -2054,13 +2250,52 @@ function initDesigner() {
   importBtn.addEventListener('click', importDesignerJSON);
   document.getElementById('importArea').parentNode.appendChild(importBtn);
 
+  // ─── Face Controls ───
+  // Eyes
+  document.querySelectorAll('[data-eye]').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      designerState.eyeStyle = this.dataset.eye;
+      updateDesignerUI();
+    });
+  });
+
+  // Mouth
+  document.querySelectorAll('[data-mouth]').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      designerState.mouthStyle = this.dataset.mouth;
+      updateDesignerUI();
+    });
+  });
+
+  // Blush
+  document.getElementById('blushEnable').addEventListener('change', function() {
+    designerState.blushEnabled = this.checked;
+    updateDesignerUI();
+  });
+  document.getElementById('blushColor').addEventListener('input', function() {
+    designerState.blushColor = this.value;
+    updateDesignerUI();
+  });
+  document.getElementById('blushSize').addEventListener('input', function() {
+    designerState.blushSize = parseInt(this.value) / 10;
+    document.getElementById('blushSizeVal').textContent = designerState.blushSize.toFixed(1);
+    updateDesignerUI();
+  });
+
+  // Cap Texture
+  document.querySelectorAll('[data-texture]').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      designerState.capTexture = this.dataset.texture;
+      updateDesignerUI();
+    });
+  });
+
   updateDesignerUI();
   loadProfileList();
 
   // Initialize stars
   initBackgroundStars();
 }
-
 // ============================================================
 // BACKGROUND STARS ENGINE
 // ============================================================
