@@ -1,14 +1,12 @@
-```cpp
 /*
    web_ui.cpp
    GrowHub32 - Local Web Application Interface Implementation
    Version: 1.4.0
    Revision: Added "Mascots" tab with interactive mushroom designer.
-             Users can design custom mushrooms with real-time preview,
-             randomise, and export as JSON configs.
-             Supports saving/loading/deleting up to 8 profiles to SPIFFS
-             with atomic writes, corruption recovery, and mutex protection.
-             All code changes are contained within this single file.
+             Added background mushroom "stars" — floating, spinning, pulsing
+             custom mushroom designs that drift in the background.
+             Uses nested DOM layers for transform isolation, box-shadow
+             sprite rendering for performance, and localStorage for settings.
 
    This serves a single-page application from program memory.
    Chart.js is served from SPIFFS for cache efficiency (v1.4).
@@ -54,7 +52,6 @@ extern bool g_warmupSelected;
 #define PROFILES_TEMP "/profiles.tmp"
 #define PROFILES_BACKUP "/profiles.json.bak"
 
-// Mutex for profile operations (FreeRTOS mutex, not spinlock!)
 static SemaphoreHandle_t g_profileMutex = NULL;
 
 // ============================================================
@@ -67,7 +64,6 @@ static void sendSystemStatus();
 static void sendConfigUpdate(uint8_t clientNum);
 static void sendCalibrationUpdate();
 
-// Profile helper forward declarations
 enum class LoadResult { OK, Empty, Recovered, Failed };
 static LoadResult loadProfilesJson(JsonDocument& doc, bool& wasRecovered);
 static bool saveProfilesJson(const JsonDocument& doc);
@@ -90,36 +86,46 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <title>GrowHub32 v1.4.0</title>
 <style>
+  /* ─── Reset & Base ─── */
   *{margin:0;padding:0;box-sizing:border-box;}
   body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:linear-gradient(180deg,#0d1117 0%,#1a1a2e 50%,#111827 100%);color:#c9d1d9;min-height:100vh;display:flex;flex-direction:column;}
-  .header{padding:14px 18px;border-bottom:1px solid #2a2a4a;box-shadow:0 2px 12px rgba(184,74,255,0.04);}
+
+  /* ─── Header ─── */
+  .header{padding:14px 18px;border-bottom:1px solid #2a2a4a;box-shadow:0 2px 12px rgba(184,74,255,0.04);position:relative;z-index:30;}
   .header h1{font-size:1.3em;color:#58a6ff;}
   .header .status{font-size:0.75em;color:#8b949e;margin-top:3px;}
-  .warning-banner{color:#fff;text-align:center;padding:10px 16px;font-weight:600;display:none;border-bottom:1px solid #f85149;}
+  .warning-banner{color:#fff;text-align:center;padding:10px 16px;font-weight:600;display:none;border-bottom:1px solid #f85149;position:relative;z-index:30;}
   .warning-banner.active{display:flex;align-items:center;justify-content:center;gap:8px;animation:pulse-danger 2s infinite;}
   @keyframes pulse-danger{0%{background-color:#da3633;}50%{background-color:#8e1519;}100%{background-color:#da3633;}}
   @keyframes pulse-blue{0%{opacity:1;background:#58a6ff;}50%{opacity:0.7;background:#1f6feb;}100%{opacity:1;background:#58a6ff;}}
-  .tabs{display:flex;background:rgba(22,27,34,0.95);backdrop-filter:blur(5px);border-bottom:1px solid #2a2a4a;overflow-x:auto;box-shadow:0 2px 12px rgba(184,74,255,0.04);}
+
+  /* ─── Tabs ─── */
+  .tabs{display:flex;background:rgba(22,27,34,0.95);backdrop-filter:blur(5px);border-bottom:1px solid #2a2a4a;overflow-x:auto;box-shadow:0 2px 12px rgba(184,74,255,0.04);position:relative;z-index:30;}
   .tab{padding:14px 20px;font-size:0.9em;color:#8b949e;border:none;background:none;cursor:pointer;white-space:nowrap;border-bottom:2px solid transparent;transition:all 0.2s;}
   .tab.active{color:#b84aff;border-bottom-color:#b84aff;text-shadow:0 0 20px rgba(184,74,255,0.3);}
-  .tab-content{display:none;padding:16px;flex:1;}
+  .tab-content{display:none;padding:16px;flex:1;position:relative;z-index:10;}
   .tab-content.active{display:block;}
+
+  /* ─── Cards & Grids ─── */
   .sensor-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin-bottom:18px;}
-  .sensor-card{background:#161b22;border:1px solid #2a2a4a;border-radius:12px;padding:18px;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,0.5),0 0 16px rgba(184,74,255,0.06);}
+  .sensor-card{background:#161b22;border:1px solid #2a2a4a;border-radius:12px;padding:18px;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,0.5),0 0 16px rgba(184,74,255,0.06);position:relative;z-index:10;}
   .sensor-card .label{font-size:0.7em;color:#8b949e;text-transform:uppercase;letter-spacing:0.5px;}
   .sensor-card .value{font-size:2.2em;font-weight:700;margin:8px 0;color:#ffffff;line-height:1;font-variant-numeric:tabular-nums;min-height:1.2em;}
   .sensor-card .unit{font-size:0.6em;color:#8b949e;font-weight:500;text-transform:uppercase;letter-spacing:0.5px;}
   .sensor-card .status-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;}
   .sensor-card .status-dot.ok{background:#3fb950;box-shadow:0 0 6px rgba(63,185,80,0.4);}
   .sensor-card .status-dot.fault{background:#da3633;box-shadow:0 0 6px rgba(218,54,51,0.4);}
+
   .relay-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:18px;}
-  .relay-card{background:#161b22;border:1px solid #2a2a4a;border-radius:12px;padding:14px;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,0.5),0 0 12px rgba(184,74,255,0.06);}
+  .relay-card{background:#161b22;border:1px solid #2a2a4a;border-radius:12px;padding:14px;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,0.5),0 0 12px rgba(184,74,255,0.06);position:relative;z-index:10;}
   .relay-card.active{border-color:#b84aff;box-shadow:0 0 20px rgba(184,74,255,0.3),0 0 12px rgba(184,74,255,0.15);}
   .relay-card .name{font-size:0.7em;color:#8b949e;text-transform:uppercase;letter-spacing:0.5px;}
   .relay-card .state{font-size:1.1em;font-weight:bold;margin:6px 0;}
   .relay-card .state.on{color:#3fb950;}
   .relay-card .state.off{color:#8b949e;}
   .relay-card .locked{color:#d29922;font-size:0.7em;margin-top:4px;}
+
+  /* ─── Buttons ─── */
   .btn{padding:12px 20px;border:none;border-radius:8px;font-size:0.95em;cursor:pointer;margin:4px;transition:all 0.15s ease-in-out;font-weight:500;}
   .btn:active{transform:scale(0.96);filter:brightness(0.9);}
   .btn:focus{outline:2px solid #b84aff;outline-offset:2px;box-shadow:0 0 20px rgba(184,74,255,0.2);}
@@ -129,7 +135,13 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   .btn-off:hover{background:#30363d;}
   .btn-neutral{background:#30363d;color:#c9d1d9;}
   .btn-neutral:hover{background:#484f58;}
-  .config-group{margin-bottom:18px;background:#161b22;border:1px solid #2a2a4a;border-radius:12px;padding:16px;box-shadow:0 0 16px rgba(184,74,255,0.06);}
+  .btn-random{background:#b84aff;color:#fff;border:none;border-radius:6px;padding:6px 14px;cursor:pointer;font-size:0.85em;font-weight:600;}
+  .btn-random:hover{background:#9a3ad9;}
+  .btn-reset{background:#30363d;color:#c9d1d9;border:none;border-radius:6px;padding:6px 14px;cursor:pointer;font-size:0.85em;}
+  .btn-reset:hover{background:#484f58;}
+
+  /* ─── Config Groups ─── */
+  .config-group{margin-bottom:18px;background:#161b22;border:1px solid #2a2a4a;border-radius:12px;padding:16px;box-shadow:0 0 16px rgba(184,74,255,0.06);position:relative;z-index:10;}
   .config-group h3{font-size:0.95em;color:#58a6ff;margin-bottom:12px;border-left:4px solid #58a6ff;padding-left:10px;}
   .config-row{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid #21262d;}
   .config-row:last-child{border-bottom:none;}
@@ -138,20 +150,28 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   .config-row input:focus{outline:2px solid #58a6ff;outline-offset:2px;}
   .config-row input:invalid{border-color:#da3633;color:#da3633;box-shadow:0 0 8px rgba(218,54,51,0.4);}
   .config-row select{width:160px;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#e6edf3;padding:8px 12px;font-size:0.95em;}
+  .sticky-save-container{position:sticky;bottom:16px;background:rgba(13,17,23,0.95);padding:12px;border-radius:8px;border:1px solid #2a2a4a;text-align:center;margin-top:16px;box-shadow:0 -4px 12px rgba(0,0,0,0.4),0 0 16px rgba(184,74,255,0.08);z-index:20;}
+
+  /* ─── Logs ─── */
   .log-area{background:#0d1117;border:1px solid #2a2a4a;border-radius:12px;padding:14px;max-height:300px;overflow-y:auto;font-family:monospace;font-size:0.75em;line-height:1.6;box-shadow:0 0 12px rgba(184,74,255,0.06);}
   .log-entry{padding:3px 0;}
   .log-entry.warn{color:#d29922;}
   .log-entry.error{color:#da3633;}
+
+  /* ─── Calibration ─── */
   .calibration-panel{text-align:center;padding:24px;}
   .countdown{font-size:3em;font-weight:bold;color:#58a6ff;}
   .sim-result{background:#161b22;border:1px solid #2a2a4a;border-radius:12px;padding:16px;margin-top:12px;text-align:center;box-shadow:0 0 12px rgba(184,74,255,0.06);}
   .sim-result .time{font-size:1.5em;color:#3fb950;}
   .override-panel{display:none;background:#3a2a1a;color:#d29922;padding:10px;border-radius:8px;margin-bottom:14px;text-align:center;font-weight:bold;border:1px solid #d29922;}
-  .sticky-save-container{position:sticky;bottom:16px;background:rgba(13,17,23,0.95);padding:12px;border-radius:8px;border:1px solid #2a2a4a;text-align:center;margin-top:16px;box-shadow:0 -4px 12px rgba(0,0,0,0.4),0 0 16px rgba(184,74,255,0.08);}
+
+  /* ─── Scrollbar ─── */
   ::-webkit-scrollbar{width:6px;height:6px;}
   ::-webkit-scrollbar-track{background:transparent;}
   ::-webkit-scrollbar-thumb{background:#3d444d;border-radius:10px;}
   ::-webkit-scrollbar-thumb:hover{background:#58a6ff;}
+
+  /* ─── Mascot ─── */
   .mascot-stage{width:64px;height:56px;flex-shrink:0;}
   .mushroom{position:relative;width:64px;height:56px;image-rendering:pixelated;animation:idleBounce 2s ease-in-out infinite;}
   .pixel{position:absolute;width:4px;height:4px;}
@@ -160,190 +180,158 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   @keyframes idleBounce{0%,15%{transform:translateY(0);}20%{transform:translateY(-2px) scaleY(0.95) scaleX(1.05);}25%{transform:translateY(-4px) scaleY(1.05) scaleX(0.95);}30%{transform:translateY(-2px) scaleY(1.02) scaleX(0.98);}35%{transform:translateY(0) scaleY(0.98) scaleX(1.02);}38%,100%{transform:translateY(0) scaleY(1.0) scaleX(1.0);}}
   @media (prefers-reduced-motion:reduce){.mushroom{animation:none;}}
 
+  /* ─── Warmup ─── */
+  #warmupPanel{display:block;background:linear-gradient(180deg,#161b22 0%,#0d1117 100%);border:1px solid #2a2a4a;border-radius:12px;padding:20px;margin:16px;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,0.35),0 0 20px rgba(184,74,255,0.08);position:relative;z-index:10;}
+  #warmupProgressBar{width:0%;height:100%;background:linear-gradient(90deg,#58a6ff,#3fb950,#b84aff);transition:width 0.5s linear;}
+
   /* ─── Mushroom Footer ─── */
-  .mushroom-footer {
-    width: 100%;
-    max-width: 820px;
-    margin: 20px auto 0;
-    display: flex;
-    justify-content: center;
-    align-items: flex-end;
-    gap: 20px;
-    padding: 20px 10px 30px;
-    background: linear-gradient(to top, rgba(0,0,0,0.4) 0%, transparent 100%);
-    flex-wrap: wrap;
-    border-top: 1px solid #1a1a2e;
-  }
-  .mushroom-wrapper {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    position: relative;
-  }
-  .mushroom-sprite {
-    width: 64px;
-    height: 64px;
-    position: relative;
-    transform-origin: bottom center;
-    image-rendering: pixelated;
-  }
-  .mushroom-sprite .pixel {
-    position: absolute;
-    width: 4px;
-    height: 4px;
-    shape-rendering: crispEdges;
-  }
-  .mushroom-shadow {
-    width: 40px;
-    height: 10px;
-    background: radial-gradient(ellipse at center, rgba(0,0,0,0.7) 0%, rgba(0,0,0,0) 70%);
-    margin-top: -2px;
-    border-radius: 50%;
-    transform-origin: center;
-  }
-  @keyframes mushroom-bounce {
-    0%, 100% { transform: translateY(0) scaleY(1) scaleX(1); }
-    10% { transform: translateY(2px) scaleY(0.9) scaleX(1.1); }
-    30% { transform: translateY(-12px) scaleY(1.1) scaleX(0.95); }
-    50% { transform: translateY(-16px) scaleY(1.05) scaleX(0.98); }
-    70% { transform: translateY(-8px) scaleY(1.08) scaleX(0.96); }
-    85% { transform: translateY(2px) scaleY(0.95) scaleX(1.05); }
-    95% { transform: translateY(0) scaleY(1) scaleX(1); }
-  }
-  @keyframes mushroom-shadow-scale {
-    0%, 100% { transform: scale(1); opacity: 0.7; }
-    10% { transform: scale(1.15); opacity: 0.9; }
-    30% { transform: scale(0.5); opacity: 0.25; }
-    50% { transform: scale(0.45); opacity: 0.2; }
-    70% { transform: scale(0.55); opacity: 0.35; }
-    85% { transform: scale(1.15); opacity: 0.9; }
-    95% { transform: scale(1); opacity: 0.7; }
-  }
-  .mushroom-wrapper:nth-child(1) .mushroom-sprite { animation: mushroom-bounce 2.1s ease-in-out infinite; animation-delay: 0s; }
-  .mushroom-wrapper:nth-child(1) .mushroom-shadow { animation: mushroom-shadow-scale 2.1s ease-in-out infinite; animation-delay: 0s; }
-  .mushroom-wrapper:nth-child(2) .mushroom-sprite { animation: mushroom-bounce 2.4s ease-in-out infinite; animation-delay: 0.3s; }
-  .mushroom-wrapper:nth-child(2) .mushroom-shadow { animation: mushroom-shadow-scale 2.4s ease-in-out infinite; animation-delay: 0.3s; }
-  .mushroom-wrapper:nth-child(3) .mushroom-sprite { animation: mushroom-bounce 1.9s ease-in-out infinite; animation-delay: 0.7s; }
-  .mushroom-wrapper:nth-child(3) .mushroom-shadow { animation: mushroom-shadow-scale 1.9s ease-in-out infinite; animation-delay: 0.7s; }
-  .mushroom-wrapper:nth-child(4) .mushroom-sprite { animation: mushroom-bounce 2.6s ease-in-out infinite; animation-delay: 0.1s; }
-  .mushroom-wrapper:nth-child(4) .mushroom-shadow { animation: mushroom-shadow-scale 2.6s ease-in-out infinite; animation-delay: 0.1s; }
-  .mushroom-wrapper:nth-child(5) .mushroom-sprite { animation: mushroom-bounce 2.2s ease-in-out infinite; animation-delay: 0.5s; }
-  .mushroom-wrapper:nth-child(5) .mushroom-shadow { animation: mushroom-shadow-scale 2.2s ease-in-out infinite; animation-delay: 0.5s; }
-  @media (max-width: 600px) {
-    .mushroom-footer { gap: 8px; padding: 16px 6px 20px; }
-    .mushroom-sprite { transform: scale(0.7); transform-origin: bottom center; }
-    .mushroom-shadow { transform: scale(0.7); }
-  }
+  .mushroom-footer{width:100%;max-width:820px;margin:20px auto 0;display:flex;justify-content:center;align-items:flex-end;gap:20px;padding:20px 10px 30px;background:linear-gradient(to top,rgba(0,0,0,0.4) 0%,transparent 100%);flex-wrap:wrap;border-top:1px solid #1a1a2e;position:relative;z-index:20;}
+  .mushroom-wrapper{display:flex;flex-direction:column;align-items:center;position:relative;}
+  .mushroom-sprite{width:64px;height:64px;position:relative;transform-origin:bottom center;image-rendering:pixelated;}
+  .mushroom-sprite .pixel{position:absolute;width:4px;height:4px;shape-rendering:crispEdges;}
+  .mushroom-shadow{width:40px;height:10px;background:radial-gradient(ellipse at center,rgba(0,0,0,0.7) 0%,rgba(0,0,0,0) 70%);margin-top:-2px;border-radius:50%;transform-origin:center;}
+  @keyframes mushroom-bounce{0%,100%{transform:translateY(0) scaleY(1) scaleX(1);}10%{transform:translateY(2px) scaleY(0.9) scaleX(1.1);}30%{transform:translateY(-12px) scaleY(1.1) scaleX(0.95);}50%{transform:translateY(-16px) scaleY(1.05) scaleX(0.98);}70%{transform:translateY(-8px) scaleY(1.08) scaleX(0.96);}85%{transform:translateY(2px) scaleY(0.95) scaleX(1.05);}95%{transform:translateY(0) scaleY(1) scaleX(1);}}
+  @keyframes mushroom-shadow-scale{0%,100%{transform:scale(1);opacity:0.7;}10%{transform:scale(1.15);opacity:0.9;}30%{transform:scale(0.5);opacity:0.25;}50%{transform:scale(0.45);opacity:0.2;}70%{transform:scale(0.55);opacity:0.35;}85%{transform:scale(1.15);opacity:0.9;}95%{transform:scale(1);opacity:0.7;}}
+  .mushroom-wrapper:nth-child(1) .mushroom-sprite{animation:mushroom-bounce 2.1s ease-in-out infinite;animation-delay:0s;}
+  .mushroom-wrapper:nth-child(1) .mushroom-shadow{animation:mushroom-shadow-scale 2.1s ease-in-out infinite;animation-delay:0s;}
+  .mushroom-wrapper:nth-child(2) .mushroom-sprite{animation:mushroom-bounce 2.4s ease-in-out infinite;animation-delay:0.3s;}
+  .mushroom-wrapper:nth-child(2) .mushroom-shadow{animation:mushroom-shadow-scale 2.4s ease-in-out infinite;animation-delay:0.3s;}
+  .mushroom-wrapper:nth-child(3) .mushroom-sprite{animation:mushroom-bounce 1.9s ease-in-out infinite;animation-delay:0.7s;}
+  .mushroom-wrapper:nth-child(3) .mushroom-shadow{animation:mushroom-shadow-scale 1.9s ease-in-out infinite;animation-delay:0.7s;}
+  .mushroom-wrapper:nth-child(4) .mushroom-sprite{animation:mushroom-bounce 2.6s ease-in-out infinite;animation-delay:0.1s;}
+  .mushroom-wrapper:nth-child(4) .mushroom-shadow{animation:mushroom-shadow-scale 2.6s ease-in-out infinite;animation-delay:0.1s;}
+  .mushroom-wrapper:nth-child(5) .mushroom-sprite{animation:mushroom-bounce 2.2s ease-in-out infinite;animation-delay:0.5s;}
+  .mushroom-wrapper:nth-child(5) .mushroom-shadow{animation:mushroom-shadow-scale 2.2s ease-in-out infinite;animation-delay:0.5s;}
+  @media(max-width:600px){.mushroom-footer{gap:8px;padding:16px 6px 20px;}.mushroom-sprite{transform:scale(0.7);transform-origin:bottom center;}.mushroom-shadow{transform:scale(0.7);}}
 
   /* ─── Mascots Tab Designer ─── */
-  .mascots-tab .designer-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-  @media (max-width: 700px) { .mascots-tab .designer-grid { grid-template-columns: 1fr; } }
+  .mascots-tab .designer-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;}
+  @media(max-width:700px){.mascots-tab .designer-grid{grid-template-columns:1fr;}}
+  .mascots-tab .designer-preview{background:#161b22;border:1px solid #2a2a4a;border-radius:12px;padding:20px;display:flex;flex-direction:column;align-items:center;}
+  .mascots-tab .designer-preview h4{color:#8b949e;font-size:0.8em;text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;}
+  .mascots-tab .preview-stage{width:200px;height:200px;display:flex;align-items:flex-end;justify-content:center;background:radial-gradient(ellipse at center bottom,rgba(0,0,0,0.4),transparent);border-radius:16px;}
+  .mascots-tab .preview-stage .mushroom-sprite{position:relative;width:60px;height:72px;image-rendering:pixelated;transform-origin:bottom center;}
+  .mascots-tab .preview-stage .mushroom-sprite .pixel{position:absolute;border-radius:1px;shape-rendering:crispEdges;}
+  @keyframes designerBounce{0%,100%{transform:translateY(0) scaleY(1) scaleX(1);}10%{transform:translateY(2px) scaleY(0.9) scaleX(1.1);}30%{transform:translateY(-12px) scaleY(1.1) scaleX(0.95);}50%{transform:translateY(-16px) scaleY(1.05) scaleX(0.98);}70%{transform:translateY(-8px) scaleY(1.08) scaleX(0.96);}85%{transform:translateY(2px) scaleY(0.95) scaleX(1.05);}95%{transform:translateY(0) scaleY(1) scaleX(1);}}
+  @media(prefers-reduced-motion:reduce){.mascots-tab .preview-stage .mushroom-sprite{animation:none !important;}}
+  .mascots-tab .preview-name{color:#58a6ff;font-size:1.1em;margin-top:12px;font-weight:bold;}
+  .mascots-tab .designer-controls{background:#161b22;border:1px solid #2a2a4a;border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:12px;}
+  .mascots-tab .control-group{border-bottom:1px solid #21262d;padding-bottom:12px;}
+  .mascots-tab .control-group:last-child{border-bottom:none;padding-bottom:0;}
+  .mascots-tab .control-group label{font-size:0.75em;color:#8b949e;text-transform:uppercase;letter-spacing:0.5px;display:block;margin-bottom:6px;}
+  .mascots-tab .btn-group{display:flex;gap:4px;flex-wrap:wrap;}
+  .mascots-tab .btn-group button{padding:4px 12px;border:1px solid #30363d;border-radius:6px;background:#0d1117;color:#c9d1d9;cursor:pointer;font-size:0.8em;transition:all 0.2s;}
+  .mascots-tab .btn-group button:hover{background:#1c2333;}
+  .mascots-tab .btn-group button.active{background:#b84aff;color:#fff;border-color:#b84aff;}
+  .mascots-tab .slider-row{display:flex;align-items:center;gap:8px;margin-bottom:4px;}
+  .mascots-tab .slider-row span:first-child{font-size:0.8em;color:#8b949e;width:50px;}
+  .mascots-tab .slider-row input[type=range]{flex:1;accent-color:#b84aff;background:#21262d;height:4px;border-radius:4px;cursor:pointer;}
+  .mascots-tab .slider-row .slider-value{font-size:0.7em;color:#8b949e;width:40px;text-align:right;}
+  .mascots-tab .color-row{display:flex;align-items:center;gap:8px;}
+  .mascots-tab .color-row>span{font-size:0.8em;color:#8b949e;width:50px;}
+  .mascots-tab .color-picker{display:flex;gap:4px;flex-wrap:wrap;align-items:center;}
+  .mascots-tab .color-swatch{width:24px;height:24px;border-radius:6px;border:2px solid transparent;cursor:pointer;transition:border 0.2s;position:relative;}
+  .mascots-tab .color-swatch:hover{border-color:#58a6ff;}
+  .mascots-tab .color-swatch.active{border-color:#b84aff;}
+  .mascots-tab .color-swatch.custom{background:transparent !important;border:2px dashed #30363d;display:flex;align-items:center;justify-content:center;}
+  .mascots-tab .color-swatch.custom input[type=color]{position:absolute;top:0;left:0;width:100%;height:100%;opacity:0;cursor:pointer;}
+  .mascots-tab .color-swatch.custom span{font-size:12px;line-height:1;}
+  .mascots-tab .profile-section{border-bottom:1px solid #21262d;padding-bottom:12px;}
+  .mascots-tab .profile-row{display:flex;gap:4px;margin-bottom:4px;flex-wrap:wrap;}
+  .mascots-tab .profile-row input[type=text]{flex:1;min-width:100px;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#e6edf3;padding:4px 8px;font-size:0.85em;}
+  .mascots-tab .profile-row select{flex:1;min-width:100px;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#e6edf3;padding:4px 8px;font-size:0.85em;}
+  .mascots-tab .btn-save-profile{background:#238636;color:#fff;border:none;border-radius:6px;padding:4px 12px;cursor:pointer;font-size:0.8em;}
+  .mascots-tab .btn-save-profile:hover{background:#2ea043;}
+  .mascots-tab .btn-save-profile:disabled{opacity:0.5;cursor:not-allowed;}
+  .mascots-tab .btn-load-profile{background:#58a6ff;color:#fff;border:none;border-radius:6px;padding:4px 12px;cursor:pointer;font-size:0.8em;}
+  .mascots-tab .btn-load-profile:hover{background:#79c0ff;}
+  .mascots-tab .btn-delete-profile{background:#da3633;color:#fff;border:none;border-radius:6px;padding:4px 12px;cursor:pointer;font-size:0.8em;}
+  .mascots-tab .btn-delete-profile:hover{background:#f85149;}
+  .mascots-tab .action-row{display:flex;gap:8px;flex-wrap:wrap;padding-top:4px;}
+  .mascots-tab .export-area{background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:8px;font-family:monospace;font-size:0.65em;max-height:120px;overflow:auto;white-space:pre-wrap;color:#8b949e;display:none;margin-top:6px;}
+  .mascots-tab .export-area.show{display:block;}
+  .mascots-tab .import-area{background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:8px;font-family:monospace;font-size:0.65em;max-height:120px;overflow:auto;color:#8b949e;display:none;margin-top:6px;width:100%;resize:vertical;min-height:60px;}
+  .mascots-tab .import-area.show{display:block;}
+  .mascots-tab .profile-count{color:#b84aff;font-size:0.85em;}
 
-  .mascots-tab .designer-preview {
-    background: #161b22; border: 1px solid #2a2a4a; border-radius: 12px;
-    padding: 20px; display: flex; flex-direction: column; align-items: center;
+  /* ─── Background Stars Container ─── */
+  #starContainer {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100vh;
+    height: 100dvh;
+    z-index: 1;
+    pointer-events: none;
+    overflow: hidden;
   }
-  .mascots-tab .designer-preview h4 {
-    color: #8b949e; font-size: 0.8em; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px;
-  }
-  .mascots-tab .preview-stage {
-    width: 200px; height: 200px; display: flex; align-items: flex-end; justify-content: center;
-    background: radial-gradient(ellipse at center bottom, rgba(0,0,0,0.4), transparent); border-radius: 16px;
-  }
-  .mascots-tab .preview-stage .mushroom-sprite {
-    position: relative; width: 60px; height: 72px; image-rendering: pixelated; transform-origin: bottom center;
-  }
-  .mascots-tab .preview-stage .mushroom-sprite .pixel {
-    position: absolute; border-radius: 1px; shape-rendering: crispEdges;
+
+  /* ─── Star Layers ─── */
+  .star-drift-wrapper {
+    position: fixed;
+    pointer-events: none;
+    z-index: 1;
+    animation: var(--star-drift-name, none) var(--drift-duration, 30s) ease-in-out infinite;
   }
 
-  @keyframes designerBounce {
-    0%, 100% { transform: translateY(0) scaleY(1) scaleX(1); }
-    10% { transform: translateY(2px) scaleY(0.9) scaleX(1.1); }
-    30% { transform: translateY(-12px) scaleY(1.1) scaleX(0.95); }
-    50% { transform: translateY(-16px) scaleY(1.05) scaleX(0.98); }
-    70% { transform: translateY(-8px) scaleY(1.08) scaleX(0.96); }
-    85% { transform: translateY(2px) scaleY(0.95) scaleX(1.05); }
-    95% { transform: translateY(0) scaleY(1) scaleX(1); }
-  }
-  @media (prefers-reduced-motion: reduce) { .mascots-tab .preview-stage .mushroom-sprite { animation: none !important; } }
-
-  .mascots-tab .preview-name { color: #58a6ff; font-size: 1.1em; margin-top: 12px; font-weight: bold; }
-
-  .mascots-tab .designer-controls {
-    background: #161b22; border: 1px solid #2a2a4a; border-radius: 12px;
-    padding: 16px; display: flex; flex-direction: column; gap: 12px;
-  }
-  .mascots-tab .control-group { border-bottom: 1px solid #21262d; padding-bottom: 12px; }
-  .mascots-tab .control-group:last-child { border-bottom: none; padding-bottom: 0; }
-  .mascots-tab .control-group label {
-    font-size: 0.75em; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; display: block; margin-bottom: 6px;
+  .star-spin-wrapper {
+    width: 100%;
+    height: 100%;
+    animation: starSpin var(--spin-duration, 60s) linear infinite;
+    animation-direction: var(--spin-direction, normal);
   }
 
-  .mascots-tab .btn-group { display: flex; gap: 4px; flex-wrap: wrap; }
-  .mascots-tab .btn-group button {
-    padding: 4px 12px; border: 1px solid #30363d; border-radius: 6px; background: #0d1117; color: #c9d1d9;
-    cursor: pointer; font-size: 0.8em; transition: all 0.2s;
+  .star-pulse-layer {
+    width: 100%;
+    height: 100%;
+    animation: starPulse var(--pulse-duration, 4s) ease-in-out infinite;
   }
-  .mascots-tab .btn-group button:hover { background: #1c2333; }
-  .mascots-tab .btn-group button.active { background: #b84aff; color: #fff; border-color: #b84aff; }
 
-  .mascots-tab .slider-row { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
-  .mascots-tab .slider-row span:first-child { font-size: 0.8em; color: #8b949e; width: 50px; }
-  .mascots-tab .slider-row input[type="range"] { flex: 1; accent-color: #b84aff; background: #21262d; height: 4px; border-radius: 4px; cursor: pointer; }
-  .mascots-tab .slider-row .slider-value { font-size: 0.7em; color: #8b949e; width: 40px; text-align: right; }
-
-  .mascots-tab .color-row { display: flex; align-items: center; gap: 8px; }
-  .mascots-tab .color-row > span { font-size: 0.8em; color: #8b949e; width: 50px; }
-  .mascots-tab .color-picker { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
-  .mascots-tab .color-swatch { width: 24px; height: 24px; border-radius: 6px; border: 2px solid transparent; cursor: pointer; transition: border 0.2s; position: relative; }
-  .mascots-tab .color-swatch:hover { border-color: #58a6ff; }
-  .mascots-tab .color-swatch.active { border-color: #b84aff; }
-  .mascots-tab .color-swatch.custom { background: transparent !important; border: 2px dashed #30363d; display: flex; align-items: center; justify-content: center; }
-  .mascots-tab .color-swatch.custom input[type="color"] { position: absolute; top: 0; left: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
-  .mascots-tab .color-swatch.custom span { font-size: 12px; line-height: 1; }
-
-  .mascots-tab .profile-section { border-bottom: 1px solid #21262d; padding-bottom: 12px; }
-  .mascots-tab .profile-row { display: flex; gap: 4px; margin-bottom: 4px; flex-wrap: wrap; }
-  .mascots-tab .profile-row input[type="text"] { flex: 1; min-width: 100px; background: #0d1117; border: 1px solid #30363d; border-radius: 6px; color: #e6edf3; padding: 4px 8px; font-size: 0.85em; }
-  .mascots-tab .profile-row select { flex: 1; min-width: 100px; background: #0d1117; border: 1px solid #30363d; border-radius: 6px; color: #e6edf3; padding: 4px 8px; font-size: 0.85em; }
-
-  .mascots-tab .btn-save-profile { background: #238636; color: #fff; border: none; border-radius: 6px; padding: 4px 12px; cursor: pointer; font-size: 0.8em; }
-  .mascots-tab .btn-save-profile:hover { background: #2ea043; }
-  .mascots-tab .btn-save-profile:disabled { opacity: 0.5; cursor: not-allowed; }
-
-  .mascots-tab .btn-load-profile { background: #58a6ff; color: #fff; border: none; border-radius: 6px; padding: 4px 12px; cursor: pointer; font-size: 0.8em; }
-  .mascots-tab .btn-load-profile:hover { background: #79c0ff; }
-
-  .mascots-tab .btn-delete-profile { background: #da3633; color: #fff; border: none; border-radius: 6px; padding: 4px 12px; cursor: pointer; font-size: 0.8em; }
-  .mascots-tab .btn-delete-profile:hover { background: #f85149; }
-
-  .mascots-tab .action-row { display: flex; gap: 8px; flex-wrap: wrap; padding-top: 4px; }
-  .mascots-tab .btn-random { background: #b84aff; color: #fff; border: none; border-radius: 6px; padding: 6px 14px; cursor: pointer; font-size: 0.85em; font-weight: 600; }
-  .mascots-tab .btn-random:hover { background: #9a3ad9; }
-  .mascots-tab .btn-reset { background: #30363d; color: #c9d1d9; border: none; border-radius: 6px; padding: 6px 14px; cursor: pointer; font-size: 0.85em; }
-  .mascots-tab .btn-reset:hover { background: #484f58; }
-  .mascots-tab .btn-export { background: #30363d; color: #c9d1d9; border: none; border-radius: 6px; padding: 6px 14px; cursor: pointer; font-size: 0.85em; }
-  .mascots-tab .btn-export:hover { background: #484f58; }
-  .mascots-tab .btn-import { background: #30363d; color: #c9d1d9; border: none; border-radius: 6px; padding: 6px 14px; cursor: pointer; font-size: 0.85em; }
-  .mascots-tab .btn-import:hover { background: #484f58; }
-
-  .mascots-tab .export-area {
-    background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 8px;
-    font-family: monospace; font-size: 0.65em; max-height: 120px; overflow: auto;
-    white-space: pre-wrap; color: #8b949e; display: none; margin-top: 6px;
+  .star-sprite {
+    width: 100%;
+    height: 100%;
+    position: relative;
+    opacity: var(--star-opacity, 0.2);
+    image-rendering: pixelated;
   }
-  .mascots-tab .export-area.show { display: block; }
 
-  .mascots-tab .import-area {
-    background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 8px;
-    font-family: monospace; font-size: 0.65em; max-height: 120px; overflow: auto;
-    color: #8b949e; display: none; margin-top: 6px; width: 100%;
-    resize: vertical; min-height: 60px;
+  .star-sprite .pixel-grid {
+    width: 1px;
+    height: 1px;
+    position: absolute;
+    top: 0;
+    left: 0;
+    transform-origin: top left;
+    border-radius: 0;
   }
-  .mascots-tab .import-area.show { display: block; }
 
-  .mascots-tab .profile-count { color: #b84aff; font-size: 0.85em; }
+  /* ─── Star Keyframes ─── */
+  @keyframes starSpin {
+    0%   { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+  }
+
+  @keyframes starPulse {
+    0%, 100% { transform: scale(1); }
+    50%      { transform: scale(1.15); }
+  }
+
+  /* ─── Reduced Motion ─── */
+  @media (prefers-reduced-motion: reduce) {
+    #starContainer { display: none; }
+    .star-drift-wrapper,
+    .star-spin-wrapper,
+    .star-pulse-layer {
+      animation: none !important;
+      transform: none !important;
+    }
+  }
+
+  /* ─── Mobile ─── */
+  @media (max-width: 480px) {
+    #starContainer { display: none; }
+  }
 </style>
 <script src="/chart-4.4.0.min.js"></script>
 </head>
@@ -487,6 +475,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
     </div>
 </div>
 
+<!-- Dashboard -->
 <div id="dashboard" class="tab-content active">
   <div class="sensor-grid">
     <div class="sensor-card">
@@ -531,6 +520,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   </div>
 </div>
 
+<!-- Controls -->
 <div id="controls" class="tab-content">
   <h3>Manual Relay Override</h3>
   <p style="font-size:0.75em;color:#8b949e;">Calibration mode must be OFF to use manual controls. Manual commands pause automation. Safety interlocks remain active.</p>
@@ -546,6 +536,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   </div>
 </div>
 
+<!-- Config -->
 <div id="config" class="tab-content">
   <div class="config-group">
     <h3>Humidity Thresholds</h3>
@@ -585,6 +576,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   </div>
 </div>
 
+<!-- Calibration -->
 <div id="calibration" class="tab-content">
   <div class="calibration-panel">
     <h3>Calibration Status</h3>
@@ -595,6 +587,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   </div>
 </div>
 
+<!-- Simulation -->
 <div id="simulation" class="tab-content">
   <h3>Recovery Simulation</h3>
   <div class="config-group">
@@ -610,6 +603,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   </div>
 </div>
 
+<!-- Graphs -->
 <div id="graphs" class="tab-content">
   <div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap;">
     <button class="btn btn-neutral graph-tab active" onclick="switchGraphTab(this,0)">Temp</button>
@@ -626,6 +620,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   </div>
 </div>
 
+<!-- Logs -->
 <div id="logs" class="tab-content">
   <h3>System Log</h3>
   <div class="log-area" id="logArea">
@@ -642,7 +637,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   </p>
 
   <div class="designer-grid">
-    <!-- Preview Column -->
+    <!-- Preview -->
     <div class="designer-preview">
       <h4>📺 Live Preview</h4>
       <div class="preview-stage">
@@ -651,7 +646,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
       <div class="preview-name" id="designerName">Amanita</div>
     </div>
 
-    <!-- Controls Column -->
+    <!-- Controls -->
     <div class="designer-controls">
       <!-- Template -->
       <div class="control-group">
@@ -748,7 +743,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
         </div>
       </div>
 
-      <!-- Profile Management -->
+      <!-- Profile -->
       <div class="control-group profile-section">
         <label>💾 Profile</label>
         <div class="profile-row">
@@ -764,6 +759,55 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
         </div>
         <div style="font-size:0.7em;color:#8b949e;margin-top:4px;">
           Max 8 profiles. Saved designs persist on the device.
+        </div>
+      </div>
+
+      <!-- Background Stars -->
+      <div class="control-group">
+        <label>🌌 Background Mushrooms</label>
+        <div class="profile-row">
+          <label style="font-size:0.8em;color:#8b949e;width:60px;">Enable</label>
+          <input type="checkbox" id="starEnable" checked>
+        </div>
+        <div class="slider-row">
+          <span>Size</span>
+          <input type="range" id="starSize" min="32" max="150" value="56">
+          <span class="slider-value" id="starSizeVal">56px</span>
+        </div>
+        <div style="display:flex;gap:4px;margin-left:58px;flex-wrap:wrap;">
+          <button class="btn-star-size" data-size="32" style="font-size:0.65em;padding:2px 8px;background:#30363d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;cursor:pointer;">Small</button>
+          <button class="btn-star-size" data-size="56" style="font-size:0.65em;padding:2px 8px;background:#30363d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;cursor:pointer;">Medium</button>
+          <button class="btn-star-size" data-size="80" style="font-size:0.65em;padding:2px 8px;background:#30363d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;cursor:pointer;">Large</button>
+          <button class="btn-star-size" data-size="120" style="font-size:0.65em;padding:2px 8px;background:#30363d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;cursor:pointer;">XL</button>
+        </div>
+        <div class="slider-row">
+          <span>Opacity</span>
+          <input type="range" id="starOpacity" min="8" max="45" value="22">
+          <span class="slider-value" id="starOpacityVal">22%</span>
+        </div>
+        <div class="slider-row">
+          <span>Drift Speed</span>
+          <input type="range" id="starDriftSpeed" min="10" max="45" value="22">
+          <span class="slider-value" id="starDriftSpeedVal">22s</span>
+        </div>
+        <div class="slider-row">
+          <span>Spin Speed</span>
+          <input type="range" id="starSpinRPM" min="1" max="20" value="6" step="1">
+          <span class="slider-value" id="starSpinRPMVal">0.6 RPM</span>
+        </div>
+        <div class="slider-row">
+          <span>Pulse Speed</span>
+          <input type="range" id="starPulseSpeed" min="20" max="80" value="40" step="1">
+          <span class="slider-value" id="starPulseSpeedVal">4.0s</span>
+        </div>
+        <div class="slider-row">
+          <span>Drift Range</span>
+          <input type="range" id="starDriftRange" min="50" max="400" value="200" step="10">
+          <span class="slider-value" id="starDriftRangeVal">200px</span>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:4px;flex-wrap:wrap;">
+          <button class="btn-random" id="randomiseStarsBtn">🔄 Randomise Positions</button>
+          <button class="btn-reset" id="resetStarsBtn">↺ Recenter Stars</button>
         </div>
       </div>
 
@@ -786,6 +830,10 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
 <!-- ─── END MUSHROOM FOOTER ─── -->
 
 <script>
+// ============================================================
+// MAIN DASHBOARD LOGIC
+// ============================================================
+
 var ws;
 var reconnectDelay = 3000;
 
@@ -814,7 +862,6 @@ function connectWS(){
     reconnectDelay = 3000;
     initGraph();
     requestHistorical();
-    // Initialise designer once WebSocket is ready
     setTimeout(function() { initDesigner(); }, 200);
   };
   ws.onmessage = function(e){
@@ -1420,7 +1467,7 @@ function handleGraphResponse(msg) {
 // MASCOTS TAB — DESIGNER ENGINE
 // ============================================================
 
-// -------- Templates (12x12 grids) --------
+// -------- Templates --------
 const DESIGNER_TEMPLATES = {
   amanita: {
     name: 'Amanita',
@@ -1509,7 +1556,6 @@ const DESIGNER_TEMPLATES = {
   }
 };
 
-// -------- Spot Coordinates for Each Template --------
 const SPOT_COORDS = {
   amanita: [{r:2,c:4}, {r:2,c:7}, {r:4,c:3}, {r:4,c:8}, {r:1,c:5}, {r:1,c:6}],
   chanterelle: [{r:2,c:5}, {r:2,c:8}, {r:4,c:3}, {r:4,c:9}, {r:1,c:4}, {r:5,c:6}],
@@ -1518,7 +1564,6 @@ const SPOT_COORDS = {
   morel: [{r:2,c:5}, {r:2,c:8}, {r:4,c:3}, {r:4,c:9}, {r:1,c:4}, {r:5,c:6}]
 };
 
-// -------- Designer State --------
 const designerState = {
   template: 'amanita',
   capWidth: 100,
@@ -1532,7 +1577,6 @@ const designerState = {
   animSpeed: 22
 };
 
-// -------- Color Helpers --------
 function lightenColor(hex, percent) {
   const num = parseInt(hex.replace('#', ''), 16);
   const r = Math.min(255, (num >> 16) + percent);
@@ -1549,34 +1593,24 @@ function darkenColor(hex, percent) {
   return '#' + (1 << 24 | r << 16 | g << 8 | b).toString(16).slice(1);
 }
 
-function hexToRgb(hex) {
-  const num = parseInt(hex.replace('#', ''), 16);
-  return { r: (num >> 16) & 255, g: (num >> 8) & 255, b: num & 255 };
-}
-
 function isHexColor(str) {
   return /^#[0-9a-fA-F]{6}$/.test(str);
 }
 
-// -------- Render Function --------
 function renderDesignerSprite() {
   const template = DESIGNER_TEMPLATES[designerState.template];
   if (!template) return;
-
   const sprite = document.getElementById('designerSprite');
   if (!sprite) return;
-
   const grid = template.grid;
   const rows = grid.length;
   const cols = grid[0].length;
-
   sprite.innerHTML = '';
 
   const capScaleX = designerState.capWidth / 100;
   const capScaleY = designerState.capHeight / 100;
   const stemScaleY = designerState.stemHeight / 100;
   const stemScaleX = designerState.stemWidth / 100;
-
   const capRows = 7;
   const stemRows = rows - capRows;
 
@@ -1595,36 +1629,27 @@ function renderDesignerSprite() {
   };
 
   const pixelSize = 5;
-
   const spots = SPOT_COORDS[designerState.template] || [];
   const spotsToShow = designerState.spots;
 
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
       let val = grid[r][c];
-
       let isSpot = false;
       for (let i = 0; i < spotsToShow && i < spots.length; i++) {
-        if (spots[i].r === r && spots[i].c === c) {
-          isSpot = true;
-          break;
-        }
+        if (spots[i].r === r && spots[i].c === c) { isSpot = true; break; }
       }
       if (isSpot) val = 3;
-
       if (val === 0) continue;
 
       let scaleX = 1, scaleY = 1;
       let offsetX = 0, offsetY = 0;
-
       if (r < capRows) {
-        scaleX = capScaleX;
-        scaleY = capScaleY;
+        scaleX = capScaleX; scaleY = capScaleY;
         offsetX = (cols * pixelSize * (1 - capScaleX)) / 2;
         offsetY = (capRows * pixelSize * (1 - capScaleY)) / 2;
       } else {
-        scaleX = stemScaleX;
-        scaleY = stemScaleY;
+        scaleX = stemScaleX; scaleY = stemScaleY;
         offsetX = (cols * pixelSize * (1 - stemScaleX)) / 2;
         offsetY = (stemRows * pixelSize * (1 - stemScaleY)) / 2;
       }
@@ -1640,19 +1665,19 @@ function renderDesignerSprite() {
       pixel.style.height = (pixelSize * scaleY) + 'px';
       pixel.style.borderRadius = '1px';
       pixel.style.backgroundColor = colorMap[val] || '#ff00ff';
-
       sprite.appendChild(pixel);
     }
   }
 
-  // Apply animation
   const speedSec = designerState.animSpeed / 10;
   sprite.style.animation = 'designerBounce ' + speedSec + 's ease-in-out infinite';
-
   document.getElementById('designerName').textContent = template.name;
 }
 
-// -------- Profile Management --------
+// ============================================================
+// MASCOTS TAB — PROFILE MANAGEMENT
+// ============================================================
+
 var profileList = [];
 
 function loadProfileList() {
@@ -1662,10 +1687,8 @@ function loadProfileList() {
 function updateProfileDropdown() {
   const select = document.getElementById('profileLoadSelect');
   if (!select) return;
-
   const currentVal = select.value;
   select.innerHTML = '';
-
   if (profileList.length === 0) {
     select.innerHTML = '<option value="">-- No saved profiles --</option>';
   } else {
@@ -1676,16 +1699,13 @@ function updateProfileDropdown() {
       select.appendChild(opt);
     });
   }
-
   if (currentVal && profileList.indexOf(currentVal) !== -1) {
     select.value = currentVal;
   }
-
   const countEl = document.getElementById('profileCount');
   if (countEl) {
     countEl.textContent = '(' + profileList.length + '/8 profiles used)';
   }
-
   const saveBtn = document.getElementById('saveProfileBtn');
   if (saveBtn) {
     const nameInput = document.getElementById('profileNameInput');
@@ -1697,15 +1717,9 @@ function updateProfileDropdown() {
 function saveCurrentProfile() {
   const nameInput = document.getElementById('profileNameInput');
   const name = nameInput.value.trim();
-
-  if (!name) {
-    addLog('Please enter a profile name', 'warn');
-    return;
-  }
-
+  if (!name) { addLog('Please enter a profile name', 'warn'); return; }
   if (profileList.length >= 8 && profileList.indexOf(name) === -1) {
-    addLog('Maximum 8 profiles reached', 'warn');
-    return;
+    addLog('Maximum 8 profiles reached', 'warn'); return;
   }
 
   const template = DESIGNER_TEMPLATES[designerState.template];
@@ -1726,19 +1740,13 @@ function saveCurrentProfile() {
   const saveBtn = document.getElementById('saveProfileBtn');
   saveBtn.disabled = true;
   saveBtn.textContent = '💾 Saving...';
-
   sendWS({type: 6, cmd: 'profile_save', name: name, data: data});
 }
 
 function loadSelectedProfile() {
   const select = document.getElementById('profileLoadSelect');
   const name = select.value;
-
-  if (!name) {
-    addLog('No profile selected', 'warn');
-    return;
-  }
-
+  if (!name) { addLog('No profile selected', 'warn'); return; }
   sendWS({type: 6, cmd: 'profile_load', name: name});
   addLog('Loading profile: ' + name, 'info');
 }
@@ -1746,22 +1754,14 @@ function loadSelectedProfile() {
 function deleteSelectedProfile() {
   const select = document.getElementById('profileLoadSelect');
   const name = select.value;
-
-  if (!name) {
-    addLog('No profile selected', 'warn');
-    return;
-  }
-
+  if (!name) { addLog('No profile selected', 'warn'); return; }
   if (!confirm('Delete profile "' + name + '"?')) return;
-
   const deleteBtn = document.getElementById('deleteProfileBtn');
   deleteBtn.disabled = true;
   deleteBtn.textContent = '🗑 Deleting...';
-
   sendWS({type: 6, cmd: 'profile_delete', name: name});
 }
 
-// -------- Export --------
 function exportDesignerJSON() {
   const template = DESIGNER_TEMPLATES[designerState.template];
   const exportData = {
@@ -1778,19 +1778,15 @@ function exportDesignerJSON() {
     animSpeed: designerState.animSpeed / 10,
     grid: template.grid
   };
-
   const json = JSON.stringify(exportData, null, 2);
   const area = document.getElementById('exportArea');
   area.textContent = json;
   area.classList.add('show');
-
   const range = document.createRange();
   range.selectNodeContents(area);
   const sel = window.getSelection();
   sel.removeAllRanges();
   sel.addRange(range);
-
-  // Also try clipboard API
   if (navigator.clipboard) {
     navigator.clipboard.writeText(json).then(function() {
       addLog('JSON copied to clipboard!', 'info');
@@ -1798,39 +1794,29 @@ function exportDesignerJSON() {
   }
 }
 
-// -------- Import --------
 var importVisible = false;
 
 function toggleImport() {
   const area = document.getElementById('importArea');
   importVisible = !importVisible;
   area.classList.toggle('show', importVisible);
-  if (importVisible) {
-    area.focus();
-  }
+  if (importVisible) area.focus();
 }
 
 function importDesignerJSON() {
   const area = document.getElementById('importArea');
   const text = area.value.trim();
-  if (!text) {
-    addLog('Paste JSON to import', 'warn');
-    return;
-  }
-
+  if (!text) { addLog('Paste JSON to import', 'warn'); return; }
   try {
     const data = JSON.parse(text);
     if (!data.template || !DESIGNER_TEMPLATES[data.template]) {
-      addLog('Invalid template in JSON', 'warn');
-      return;
+      addLog('Invalid template in JSON', 'warn'); return;
     }
     if (!data.capColor || !isHexColor(data.capColor)) {
-      addLog('Invalid capColor in JSON', 'warn');
-      return;
+      addLog('Invalid capColor in JSON', 'warn'); return;
     }
     if (!data.stemColor || !isHexColor(data.stemColor)) {
-      addLog('Invalid stemColor in JSON', 'warn');
-      return;
+      addLog('Invalid stemColor in JSON', 'warn'); return;
     }
 
     designerState.template = data.template || 'amanita';
@@ -1844,7 +1830,6 @@ function importDesignerJSON() {
     designerState.bounceHeight = data.bounceHeight || 20;
     designerState.animSpeed = data.animSpeed ? data.animSpeed * 10 : 22;
 
-    // If grid is provided, override the template's grid
     if (data.grid && Array.isArray(data.grid) && data.grid.length === 12) {
       DESIGNER_TEMPLATES[designerState.template].grid = data.grid;
     }
@@ -1859,7 +1844,6 @@ function importDesignerJSON() {
   }
 }
 
-// -------- Randomise --------
 function randomiseDesigner() {
   const templates = ['amanita', 'chanterelle', 'shiitake', 'magic', 'morel'];
   const capColors = ['#e63946', '#f4a261', '#795548', '#7b2cbf', '#40916c', '#ff6b6b', '#ffd93d', '#6bcbff', '#a66cff'];
@@ -1880,7 +1864,6 @@ function randomiseDesigner() {
   addLog('Randomised!', 'info');
 }
 
-// -------- Reset --------
 function resetDesigner() {
   designerState.template = 'amanita';
   designerState.capWidth = 100;
@@ -1892,12 +1875,10 @@ function resetDesigner() {
   designerState.spots = 2;
   designerState.bounceHeight = 20;
   designerState.animSpeed = 22;
-
   updateDesignerUI();
   addLog('Reset to default', 'info');
 }
 
-// -------- Update UI --------
 function updateDesignerUI() {
   document.getElementById('capWidth').value = designerState.capWidth;
   document.getElementById('capHeight').value = designerState.capHeight;
@@ -1916,30 +1897,31 @@ function updateDesignerUI() {
   document.querySelectorAll('#templateButtons button').forEach(function(b) {
     b.classList.toggle('active', b.dataset.template === designerState.template);
   });
-
   document.querySelectorAll('[data-spots]').forEach(function(b) {
     b.classList.toggle('active', parseInt(b.dataset.spots) === designerState.spots);
   });
-
   document.querySelectorAll('#capColorPicker .color-swatch[data-color]').forEach(function(s) {
     s.classList.toggle('active', s.dataset.color === designerState.capColor);
   });
-
   document.querySelectorAll('#stemColorPicker .color-swatch[data-color]').forEach(function(s) {
     s.classList.toggle('active', s.dataset.color === designerState.stemColor);
   });
-
   document.getElementById('customCapColor').value = designerState.capColor;
   document.getElementById('customStemColor').value = designerState.stemColor;
 
   renderDesignerSprite();
 }
 
-// -------- WebSocket Response Handler --------
+// ============================================================
+// MASCOTS TAB — PROFILE RESPONSE HANDLER
+// ============================================================
+
 function handleProfileResponse(msg) {
   if (msg.cmd === 'profile_list') {
     profileList = msg.names || [];
     updateProfileDropdown();
+    // Render background stars after profiles load
+    renderBackgroundStars(profileList, starSettings);
   } else if (msg.cmd === 'profile_load') {
     if (msg.data) {
       const data = msg.data;
@@ -1953,7 +1935,6 @@ function handleProfileResponse(msg) {
       designerState.spots = (data.spots !== undefined && data.spots !== null) ? data.spots : 2;
       designerState.bounceHeight = data.bounceHeight || 20;
       designerState.animSpeed = data.animSpeed || 22;
-
       updateDesignerUI();
       addLog('Profile loaded: ' + msg.name, 'info');
       document.getElementById('profileNameInput').value = msg.name;
@@ -1982,23 +1963,19 @@ function handleProfileResponse(msg) {
   } else if (msg.status === 'error') {
     addLog('Profile error: ' + (msg.message || 'unknown error'), 'warn');
     const saveBtn = document.getElementById('saveProfileBtn');
-    if (saveBtn) {
-      saveBtn.disabled = false;
-      saveBtn.textContent = '💾 Save';
-    }
+    if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = '💾 Save'; }
     const deleteBtn = document.getElementById('deleteProfileBtn');
-    if (deleteBtn) {
-      deleteBtn.disabled = false;
-      deleteBtn.textContent = '🗑 Delete';
-    }
+    if (deleteBtn) { deleteBtn.disabled = false; deleteBtn.textContent = '🗑 Delete'; }
   }
 }
 
-// -------- Event Bindings --------
+// ============================================================
+// DESIGNER INIT
+// ============================================================
+
 function initDesigner() {
   if (!document.getElementById('mascots')) return;
 
-  // Template buttons
   document.querySelectorAll('#templateButtons button').forEach(function(btn) {
     btn.addEventListener('click', function() {
       designerState.template = this.dataset.template;
@@ -2006,7 +1983,6 @@ function initDesigner() {
     });
   });
 
-  // Sliders
   ['capWidth', 'capHeight', 'stemHeight', 'stemWidth', 'bounceHeight', 'animSpeed'].forEach(function(id) {
     const el = document.getElementById(id);
     if (!el) return;
@@ -2023,7 +1999,6 @@ function initDesigner() {
     });
   });
 
-  // Cap color swatches
   document.querySelectorAll('#capColorPicker .color-swatch[data-color]').forEach(function(sw) {
     sw.addEventListener('click', function() {
       designerState.capColor = this.dataset.color;
@@ -2035,7 +2010,6 @@ function initDesigner() {
     updateDesignerUI();
   });
 
-  // Stem color swatches
   document.querySelectorAll('#stemColorPicker .color-swatch[data-color]').forEach(function(sw) {
     sw.addEventListener('click', function() {
       designerState.stemColor = this.dataset.color;
@@ -2047,7 +2021,6 @@ function initDesigner() {
     updateDesignerUI();
   });
 
-  // Spot buttons
   document.querySelectorAll('[data-spots]').forEach(function(btn) {
     btn.addEventListener('click', function() {
       designerState.spots = parseInt(this.dataset.spots);
@@ -2055,59 +2028,497 @@ function initDesigner() {
     });
   });
 
-  // Profile buttons
   document.getElementById('saveProfileBtn').addEventListener('click', saveCurrentProfile);
   document.getElementById('loadProfileBtn').addEventListener('click', loadSelectedProfile);
   document.getElementById('deleteProfileBtn').addEventListener('click', deleteSelectedProfile);
 
-  // Profile name input - auto-save on Enter
   document.getElementById('profileNameInput').addEventListener('keydown', function(e) {
     if (e.key === 'Enter') saveCurrentProfile();
   });
-  // Also update save button state when name changes
   document.getElementById('profileNameInput').addEventListener('input', function() {
     updateProfileDropdown();
   });
 
-  // Action buttons
   document.getElementById('randomizeBtn').addEventListener('click', randomiseDesigner);
   document.getElementById('resetBtn').addEventListener('click', resetDesigner);
   document.getElementById('exportBtn').addEventListener('click', exportDesignerJSON);
 
-  // Import
   document.getElementById('importToggleBtn').addEventListener('click', toggleImport);
   document.getElementById('importArea').addEventListener('keydown', function(e) {
-    if (e.key === 'Enter' && e.ctrlKey) {
-      importDesignerJSON();
-    }
+    if (e.key === 'Enter' && e.ctrlKey) { importDesignerJSON(); }
   });
-  // Add an import button inside the import area
   const importBtn = document.createElement('button');
   importBtn.textContent = '📥 Import';
   importBtn.className = 'btn-import';
-  importBtn.style.marginTop = '6px';
+  importBtn.style.cssText = 'background:#30363d;color:#c9d1d9;border:none;border-radius:6px;padding:6px 14px;cursor:pointer;font-size:0.85em;margin-top:6px;';
   importBtn.addEventListener('click', importDesignerJSON);
   document.getElementById('importArea').parentNode.appendChild(importBtn);
 
-  // Initial render
   updateDesignerUI();
   loadProfileList();
+
+  // Initialize stars
+  initBackgroundStars();
 }
 
 // ============================================================
-// MUSHROOM FAMILY FOOTER RENDERER
+// BACKGROUND STARS ENGINE
 // ============================================================
+
+// -------- Settings --------
+const STAR_SETTINGS_VERSION = 1;
+
+let starSettings = {
+  version: STAR_SETTINGS_VERSION,
+  enabled: true,
+  size: 56,
+  opacity: 22,
+  driftSpeed: 22,
+  spinRPM: 6,
+  pulseSpeed: 4.0,
+  driftRange: 200
+};
+
+function loadStarSettings() {
+  try {
+    const saved = localStorage.getItem('growhub32-starSettings');
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      if (parsed.version === STAR_SETTINGS_VERSION) {
+        Object.assign(starSettings, parsed);
+      } else {
+        // Migrate old settings
+        starSettings.enabled = parsed.enabled !== undefined ? parsed.enabled : true;
+        starSettings.size = parsed.size || 56;
+        starSettings.opacity = parsed.opacity || 22;
+        starSettings.driftSpeed = parsed.driftSpeed || 22;
+        starSettings.spinRPM = parsed.spinRPM || 6;
+        starSettings.pulseSpeed = parsed.pulseSpeed || 4.0;
+        starSettings.driftRange = parsed.driftRange || 200;
+        starSettings.version = STAR_SETTINGS_VERSION;
+      }
+    }
+  } catch(e) { /* ignore */ }
+}
+
+function saveStarSettings() {
+  try {
+    localStorage.setItem('growhub32-starSettings', JSON.stringify(starSettings));
+  } catch(e) { /* ignore */ }
+}
+
+// -------- Helpers --------
+function getMaxStars() {
+  if (window.innerWidth < 480) return 2;
+  if (window.innerWidth < 768) return 4;
+  return 6;
+}
+
+function generateDriftPath(range, speed) {
+  const r = range || 200;
+  const duration = (speed || 22) + (Math.random() - 0.5) * 8;
+  return {
+    duration: Math.max(12, duration),
+    waypoints: [
+      { x: (Math.random() - 0.5) * r * 1.2, y: (Math.random() - 0.5) * r * 0.8 },
+      { x: (Math.random() - 0.5) * r * 0.7, y: (Math.random() - 0.5) * r * 1.3 },
+      { x: (Math.random() - 0.5) * r * 0.9, y: (Math.random() - 0.5) * r * 1.1 },
+      { x: (Math.random() - 0.5) * r * 0.6, y: (Math.random() - 0.5) * r * 0.9 },
+      { x: (Math.random() - 0.5) * r * 1.1, y: (Math.random() - 0.5) * r * 0.7 }
+    ]
+  };
+}
+
+// -------- Per-star Keyframe Injection --------
+function injectDriftKeyframes(index, waypoints, duration) {
+  const styleId = 'star-drift-kf-' + index;
+  const old = document.getElementById(styleId);
+  if (old) old.remove();
+
+  const style = document.createElement('style');
+  style.id = styleId;
+  style.textContent =
+    '@keyframes starDrift-' + index + ' {\n' +
+    '  0%   { transform: translate(0px, 0px); }\n' +
+    '  20%  { transform: translate(' + waypoints[0].x + 'px, ' + waypoints[0].y + 'px); }\n' +
+    '  40%  { transform: translate(' + waypoints[1].x + 'px, ' + waypoints[1].y + 'px); }\n' +
+    '  60%  { transform: translate(' + waypoints[2].x + 'px, ' + waypoints[2].y + 'px); }\n' +
+    '  80%  { transform: translate(' + waypoints[3].x + 'px, ' + waypoints[3].y + 'px); }\n' +
+    '  100% { transform: translate(' + waypoints[4].x + 'px, ' + waypoints[4].y + 'px); }\n' +
+    '}';
+  document.head.appendChild(style);
+  return 'starDrift-' + index;
+}
+
+// -------- Create a Single Star --------
+function createStar(profile, settings, index) {
+  const template = DESIGNER_TEMPLATES[profile.template || 'amanita'];
+  if (!template) return null;
+
+  const xPos = 5 + Math.random() * 90;
+  const yPos = 10 + Math.random() * 80;
+
+  const size = settings.size + (Math.random() - 0.5) * 12;
+  const opacity = (settings.opacity / 100) + (Math.random() - 0.5) * 0.04;
+
+  const drift = generateDriftPath(settings.driftRange, settings.driftSpeed);
+  const spinDuration = 60 / (settings.spinRPM / 10);
+  const spinDirection = Math.random() > 0.5 ? 'normal' : 'reverse';
+
+  // Inject per-star keyframe
+  const kfName = injectDriftKeyframes(index, drift.waypoints, drift.duration);
+
+  // Build wrapper
+  const wrapper = document.createElement('div');
+  wrapper.className = 'star-drift-wrapper';
+  wrapper.style.cssText =
+    'left:' + xPos + '%;top:' + yPos + '%;' +
+    'width:' + size + 'px;height:' + (size * 1.2) + 'px;' +
+    '--star-drift-name:' + kfName + ';' +
+    '--drift-duration:' + drift.duration + 's;';
+
+  // Spin wrapper
+  const spinWrapper = document.createElement('div');
+  spinWrapper.className = 'star-spin-wrapper';
+  spinWrapper.style.cssText =
+    'width:100%;height:100%;' +
+    '--spin-duration:' + spinDuration + 's;' +
+    '--spin-direction:' + spinDirection + ';';
+
+  // Pulse layer
+  const pulseLayer = document.createElement('div');
+  pulseLayer.className = 'star-pulse-layer';
+  pulseLayer.style.cssText =
+    'width:100%;height:100%;' +
+    '--pulse-duration:' + settings.pulseSpeed + 's;';
+
+  // Sprite with box-shadow
+  const sprite = document.createElement('div');
+  sprite.className = 'star-sprite';
+  sprite.style.cssText =
+    'width:100%;height:100%;position:relative;' +
+    '--star-opacity:' + Math.max(0.08, Math.min(0.45, opacity)) + ';' +
+    'image-rendering:pixelated;';
+
+  const grid = template.grid;
+  const cols = grid[0].length;
+  const rows = grid.length;
+  const pixelSize = Math.max(1, size / cols);
+
+  // Color mapping
+  const colorMap = {
+    1: profile.capColor || '#e63946',
+    2: lightenColor(profile.capColor || '#e63946', 30),
+    3: '#ffffff',
+    4: profile.stemColor || '#fefae0',
+    5: darkenColor(profile.stemColor || '#fefae0', 20),
+    6: '#1a1a1a',
+    7: '#ff99c8'
+  };
+
+  let shadows = [];
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const val = grid[r][c];
+      if (val === 0) continue;
+      if (val === 3 && pixelSize < 1.5) continue;
+      const color = colorMap[val] || '#ff00ff';
+      shadows.push(c + 'px ' + r + 'px 0 0 ' + color);
+    }
+  }
+
+  const pixelDiv = document.createElement('div');
+  pixelDiv.className = 'pixel-grid';
+  pixelDiv.style.boxShadow = shadows.join(', ');
+  pixelDiv.style.transform = 'scale(' + pixelSize + ')';
+  pixelDiv.style.transformOrigin = 'top left';
+  sprite.appendChild(pixelDiv);
+
+  // Assemble
+  pulseLayer.appendChild(sprite);
+  spinWrapper.appendChild(pulseLayer);
+  wrapper.appendChild(spinWrapper);
+
+  wrapper.dataset.spawnX = xPos;
+  wrapper.dataset.spawnY = yPos;
+  wrapper.dataset.currentX = xPos;
+  wrapper.dataset.currentY = yPos;
+  wrapper.dataset.driftPath = JSON.stringify(drift);
+
+  return wrapper;
+}
+
+// -------- Render / Update --------
+let starCache = null;
+let starContainer = null;
+
+function initStarContainer() {
+  if (starContainer) return;
+  const container = document.createElement('div');
+  container.id = 'starContainer';
+  container.setAttribute('aria-hidden', 'true');
+  document.body.insertBefore(container, document.body.firstChild);
+  starContainer = container;
+}
+
+function renderBackgroundStars(profiles, settings, forceRebuild) {
+  if (!starContainer) initStarContainer();
+
+  const maxStars = Math.min(profiles.length, getMaxStars());
+
+  if (!settings.enabled || maxStars === 0) {
+    starContainer.innerHTML = '';
+    starCache = null;
+    return;
+  }
+
+  // If cache matches and not force, update CSS only
+  if (!forceRebuild && starCache && starCache.length === maxStars) {
+    updateStarCSS(settings);
+    return;
+  }
+
+  // Full rebuild
+  starContainer.innerHTML = '';
+  const fragment = document.createDocumentFragment();
+  const stars = [];
+
+  for (let i = 0; i < maxStars; i++) {
+    const star = createStar(profiles[i], settings, i);
+    if (star) {
+      fragment.appendChild(star);
+      stars.push(star);
+    }
+  }
+
+  starContainer.appendChild(fragment);
+  starCache = stars;
+}
+
+function updateStarCSS(settings) {
+  const stars = document.querySelectorAll('.star-drift-wrapper');
+  const spinWrappers = document.querySelectorAll('.star-spin-wrapper');
+  const pulseLayers = document.querySelectorAll('.star-pulse-layer');
+  const sprites = document.querySelectorAll('.star-sprite');
+
+  const size = settings.size;
+  const opacity = settings.opacity / 100;
+  const spinDuration = 60 / (settings.spinRPM / 10);
+
+  // Update sprites (size & opacity)
+  sprites.forEach(function(sprite) {
+    const pixelDiv = sprite.querySelector('.pixel-grid');
+    if (pixelDiv) {
+      const cols = 12;
+      const pixelSize = size / cols;
+      pixelDiv.style.transform = 'scale(' + pixelSize + ')';
+    }
+    sprite.style.setProperty('--star-opacity', opacity);
+  });
+
+  // Update pulse
+  pulseLayers.forEach(function(layer) {
+    layer.style.setProperty('--pulse-duration', settings.pulseSpeed + 's');
+  });
+
+  // Update spin
+  spinWrappers.forEach(function(wrapper) {
+    wrapper.style.setProperty('--spin-duration', spinDuration + 's');
+  });
+
+  // Update drift (only if range/speed changed)
+  const driftSpeed = settings.driftSpeed;
+  const driftRange = settings.driftRange;
+  stars.forEach(function(star, i) {
+    const currentDuration = parseFloat(star.style.getPropertyValue('--drift-duration'));
+    if (isNaN(currentDuration) || Math.abs(currentDuration - driftSpeed) > 2) {
+      const drift = generateDriftPath(driftRange, driftSpeed);
+      const kfName = injectDriftKeyframes(i, drift.waypoints, drift.duration);
+      star.style.setProperty('--star-drift-name', kfName);
+      star.style.setProperty('--drift-duration', drift.duration + 's');
+    }
+  });
+}
+
+// -------- Randomise / Recenter --------
+function randomiseStars() {
+  const container = document.getElementById('starContainer');
+  if (!container) return;
+
+  const stars = container.querySelectorAll('.star-drift-wrapper');
+  if (stars.length === 0) return;
+
+  requestAnimationFrame(function() {
+    stars.forEach(function(star, i) {
+      const x = 5 + Math.random() * 90;
+      const y = 10 + Math.random() * 80;
+      star.style.left = x + '%';
+      star.style.top = y + '%';
+      star.dataset.currentX = x;
+      star.dataset.currentY = y;
+
+      const drift = generateDriftPath(starSettings.driftRange, starSettings.driftSpeed);
+      const kfName = injectDriftKeyframes(i, drift.waypoints, drift.duration);
+      star.style.setProperty('--star-drift-name', kfName);
+      star.style.setProperty('--drift-duration', drift.duration + 's');
+
+      const spinWrapper = star.querySelector('.star-spin-wrapper');
+      if (spinWrapper) {
+        const direction = Math.random() > 0.5 ? 'normal' : 'reverse';
+        spinWrapper.style.setProperty('--spin-direction', direction);
+      }
+
+      const sprite = star.querySelector('.star-sprite');
+      if (sprite) {
+        const opacity = (starSettings.opacity / 100) + (Math.random() - 0.5) * 0.04;
+        sprite.style.setProperty('--star-opacity', Math.max(0.08, Math.min(0.45, opacity)));
+      }
+    });
+  });
+
+  addLog('Stars randomised!', 'info');
+}
+
+function recenterStars() {
+  const container = document.getElementById('starContainer');
+  if (!container) return;
+
+  const stars = container.querySelectorAll('.star-drift-wrapper');
+  if (stars.length === 0) return;
+
+  requestAnimationFrame(function() {
+    stars.forEach(function(star) {
+      const homeX = star.dataset.spawnX || 50;
+      const homeY = star.dataset.spawnY || 50;
+      star.style.left = homeX + '%';
+      star.style.top = homeY + '%';
+      star.dataset.currentX = homeX;
+      star.dataset.currentY = homeY;
+
+      const sprite = star.querySelector('.star-sprite');
+      if (sprite) {
+        sprite.style.setProperty('--star-opacity', starSettings.opacity / 100);
+      }
+    });
+  });
+
+  addLog('Stars recentered', 'info');
+}
+
+// -------- Resize Handler --------
+var resizeTimeout;
+
+function handleResize() {
+  clearTimeout(resizeTimeout);
+  resizeTimeout = setTimeout(function() {
+    if (!starSettings.enabled) return;
+    const newMax = Math.min(profileList.length, getMaxStars());
+    if (newMax !== (starCache ? starCache.length : 0)) {
+      renderBackgroundStars(profileList, starSettings, true);
+    }
+  }, 300);
+}
+
+// -------- Bind Controls --------
+function bindStarControls() {
+  document.getElementById('starEnable').addEventListener('change', function() {
+    starSettings.enabled = this.checked;
+    saveStarSettings();
+    renderBackgroundStars(profileList, starSettings);
+  });
+
+  const sizeSlider = document.getElementById('starSize');
+  sizeSlider.addEventListener('input', function() {
+    starSettings.size = parseInt(this.value);
+    document.getElementById('starSizeVal').textContent = starSettings.size + 'px';
+    saveStarSettings();
+    updateStarCSS(starSettings);
+  });
+
+  document.querySelectorAll('.btn-star-size').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      const size = parseInt(this.dataset.size);
+      sizeSlider.value = size;
+      starSettings.size = size;
+      document.getElementById('starSizeVal').textContent = size + 'px';
+      saveStarSettings();
+      updateStarCSS(starSettings);
+    });
+  });
+
+  document.getElementById('starOpacity').addEventListener('input', function() {
+    starSettings.opacity = parseInt(this.value);
+    document.getElementById('starOpacityVal').textContent = starSettings.opacity + '%';
+    saveStarSettings();
+    updateStarCSS(starSettings);
+  });
+
+  var driftDebounce;
+  document.getElementById('starDriftSpeed').addEventListener('input', function() {
+    starSettings.driftSpeed = parseInt(this.value);
+    document.getElementById('starDriftSpeedVal').textContent = starSettings.driftSpeed + 's';
+    saveStarSettings();
+    clearTimeout(driftDebounce);
+    driftDebounce = setTimeout(function() {
+      renderBackgroundStars(profileList, starSettings, true);
+    }, 300);
+  });
+
+  document.getElementById('starSpinRPM').addEventListener('input', function() {
+    starSettings.spinRPM = parseInt(this.value);
+    var rpm = starSettings.spinRPM / 10;
+    document.getElementById('starSpinRPMVal').textContent = rpm + ' RPM';
+    saveStarSettings();
+    updateStarCSS(starSettings);
+  });
+
+  document.getElementById('starPulseSpeed').addEventListener('input', function() {
+    starSettings.pulseSpeed = parseInt(this.value) / 10;
+    document.getElementById('starPulseSpeedVal').textContent = starSettings.pulseSpeed + 's';
+    saveStarSettings();
+    updateStarCSS(starSettings);
+  });
+
+  var rangeDebounce;
+  document.getElementById('starDriftRange').addEventListener('input', function() {
+    starSettings.driftRange = parseInt(this.value);
+    document.getElementById('starDriftRangeVal').textContent = starSettings.driftRange + 'px';
+    saveStarSettings();
+    clearTimeout(rangeDebounce);
+    rangeDebounce = setTimeout(function() {
+      renderBackgroundStars(profileList, starSettings, true);
+    }, 300);
+  });
+
+  document.getElementById('randomiseStarsBtn').addEventListener('click', randomiseStars);
+  document.getElementById('resetStarsBtn').addEventListener('click', recenterStars);
+
+  window.addEventListener('resize', handleResize);
+}
+
+// -------- Init Stars --------
+function initBackgroundStars() {
+  loadStarSettings();
+  initStarContainer();
+  bindStarControls();
+
+  // Initial render after profiles load
+  if (profileList && profileList.length > 0) {
+    renderBackgroundStars(profileList, starSettings);
+  }
+}
+
+// ============================================================
+// MUSHROOM FAMILY FOOTER
+// ============================================================
+
 const mushroomContainer = document.getElementById('mushroomFooter');
 const PIXEL_SIZE = 4;
 
 const mushroomData = [
   {
     name: 'Toadstool',
-    colors: {
-      1: '#5c1a1a', 2: '#e63946', 3: '#ff7b89', 4: '#ffffff',
-      5: '#a98467', 6: '#fefae0', 7: '#ffffff',
-      8: '#1d1d1d', 9: '#ff99c8'
-    },
+    colors: {1:'#5c1a1a',2:'#e63946',3:'#ff7b89',4:'#ffffff',5:'#a98467',6:'#fefae0',7:'#ffffff',8:'#1d1d1d',9:'#ff99c8'},
     grid: [
       [0,0,0,0,0,1,1,1,1,1,1,0,0,0,0,0],
       [0,0,0,1,1,2,2,2,2,2,2,1,1,0,0,0],
@@ -2129,11 +2540,7 @@ const mushroomData = [
   },
   {
     name: 'Chanterelle',
-    colors: {
-      1: '#8a5a19', 2: '#f4a261', 3: '#e9c46a', 4: '#ffffff',
-      5: '#8a5a19', 6: '#fefae0', 7: '#ffffff',
-      8: '#1d1d1d', 9: '#ff99c8'
-    },
+    colors: {1:'#8a5a19',2:'#f4a261',3:'#e9c46a',4:'#ffffff',5:'#8a5a19',6:'#fefae0',7:'#ffffff',8:'#1d1d1d',9:'#ff99c8'},
     grid: [
       [0,0,0,0,1,1,1,1,1,1,1,1,0,0,0,0],
       [0,0,0,1,2,2,3,3,3,3,2,2,1,0,0,0],
@@ -2155,11 +2562,7 @@ const mushroomData = [
   },
   {
     name: 'Shiitake',
-    colors: {
-      1: '#3e2723', 2: '#795548', 3: '#a1887f', 4: '#d7ccc8',
-      5: '#3e2723', 6: '#efebe9', 7: '#ffffff',
-      8: '#1d1d1d', 9: '#ff99c8'
-    },
+    colors: {1:'#3e2723',2:'#795548',3:'#a1887f',4:'#d7ccc8',5:'#3e2723',6:'#efebe9',7:'#ffffff',8:'#1d1d1d',9:'#ff99c8'},
     grid: [
       [0,0,0,1,1,1,1,1,1,1,1,1,1,0,0,0],
       [0,0,1,2,2,2,2,2,2,2,2,2,2,1,0,0],
@@ -2181,11 +2584,7 @@ const mushroomData = [
   },
   {
     name: 'Magic',
-    colors: {
-      1: '#2a1b38', 2: '#7b2cbf', 3: '#c77dff', 4: '#e0aaff',
-      5: '#2a1b38', 6: '#f8edeb', 7: '#ffffff',
-      8: '#1d1d1d', 9: '#ff99c8'
-    },
+    colors: {1:'#2a1b38',2:'#7b2cbf',3:'#c77dff',4:'#e0aaff',5:'#2a1b38',6:'#f8edeb',7:'#ffffff',8:'#1d1d1d',9:'#ff99c8'},
     grid: [
       [0,0,0,0,0,0,1,1,1,1,0,0,0,0,0,0],
       [0,0,0,0,0,1,2,3,3,2,1,0,0,0,0,0],
@@ -2207,11 +2606,7 @@ const mushroomData = [
   },
   {
     name: 'Morel',
-    colors: {
-      1: '#1b4332', 2: '#40916c', 3: '#74c69d', 4: '#b7e4c7',
-      5: '#1b4332', 6: '#f8edeb', 7: '#ffffff',
-      8: '#1d1d1d', 9: '#ff99c8'
-    },
+    colors: {1:'#1b4332',2:'#40916c',3:'#74c69d',4:'#b7e4c7',5:'#1b4332',6:'#f8edeb',7:'#ffffff',8:'#1d1d1d',9:'#ff99c8'},
     grid: [
       [0,0,0,0,1,1,1,1,1,1,1,1,0,0,0,0],
       [0,0,0,1,2,3,2,3,2,3,2,2,1,0,0,0],
@@ -2236,10 +2631,8 @@ const mushroomData = [
 function renderMushroom(data) {
   const wrapper = document.createElement('div');
   wrapper.className = 'mushroom-wrapper';
-
   const sprite = document.createElement('div');
   sprite.className = 'mushroom-sprite';
-
   for (let r = 0; r < 16; r++) {
     for (let c = 0; c < 16; c++) {
       const val = data.grid[r][c];
@@ -2253,11 +2646,9 @@ function renderMushroom(data) {
     }
   }
   wrapper.appendChild(sprite);
-
   const shadow = document.createElement('div');
   shadow.className = 'mushroom-shadow';
   wrapper.appendChild(shadow);
-
   return wrapper;
 }
 
@@ -2848,19 +3239,11 @@ static LoadResult loadProfilesJson(JsonDocument& doc, bool& wasRecovered) {
 
     wasRecovered = true;
 
-    // Move corrupt file to backup
-    if (SPIFFS.exists(PROFILES_BACKUP)) {
-      SPIFFS.remove(PROFILES_BACKUP);
-    }
+    if (SPIFFS.exists(PROFILES_BACKUP)) SPIFFS.remove(PROFILES_BACKUP);
     SPIFFS.rename(PROFILES_FILE, PROFILES_BACKUP);
 
-    // Create fresh empty file
     File fresh = SPIFFS.open(PROFILES_FILE, "w");
-    if (fresh) {
-      fresh.print("{}");
-      fresh.close();
-      Serial.println(F("[PROFILES] Created fresh empty file"));
-    }
+    if (fresh) { fresh.print("{}"); fresh.close(); Serial.println(F("[PROFILES] Created fresh empty file")); }
 
     doc.to<JsonObject>();
     return LoadResult::Recovered;
@@ -2870,14 +3253,12 @@ static LoadResult loadProfilesJson(JsonDocument& doc, bool& wasRecovered) {
 }
 
 static bool saveProfilesJson(const JsonDocument& doc) {
-  // Write to temp file
   File file = SPIFFS.open(PROFILES_TEMP, "w");
   if (!file) {
     Serial.println(F("[PROFILES] Failed to open temp file for writing"));
     return false;
   }
 
-  // Measure JSON size first
   size_t jsonSize = measureJson(doc);
   size_t bytesWritten = serializeJson(doc, file);
   file.close();
@@ -2891,7 +3272,6 @@ static bool saveProfilesJson(const JsonDocument& doc) {
     return false;
   }
 
-  // Verify with same-sized buffer
   DynamicJsonDocument verifyDoc(8192);
   File verifyFile = SPIFFS.open(PROFILES_TEMP, "r");
   if (!verifyFile) {
@@ -2909,7 +3289,6 @@ static bool saveProfilesJson(const JsonDocument& doc) {
     return false;
   }
 
-  // Atomic rename — ESP32 rename OVERWRITES destination, no remove needed!
   if (!SPIFFS.rename(PROFILES_TEMP, PROFILES_FILE)) {
     Serial.println(F("[PROFILES] Atomic rename failed"));
     SPIFFS.remove(PROFILES_TEMP);
@@ -2923,7 +3302,6 @@ static void getProfileNames(JsonArray& names) {
   bool wasRecovered;
   DynamicJsonDocument doc(8192);
   LoadResult result = loadProfilesJson(doc, wasRecovered);
-
   if (result == LoadResult::Failed) return;
 
   JsonObject obj = doc.as<JsonObject>();
@@ -2933,9 +3311,7 @@ static void getProfileNames(JsonArray& names) {
 }
 
 static bool isValidTemplate(const char* name) {
-  static const char* validTemplates[] = {
-    "amanita", "chanterelle", "shiitake", "magic", "morel"
-  };
+  static const char* validTemplates[] = {"amanita", "chanterelle", "shiitake", "magic", "morel"};
   for (size_t i = 0; i < 5; i++) {
     if (strcmp(name, validTemplates[i]) == 0) return true;
   }
@@ -2943,7 +3319,6 @@ static bool isValidTemplate(const char* name) {
 }
 
 static bool validateProfileData(const JsonObject& data) {
-  // Check required fields
   if (!data.containsKey("template")) return false;
   if (!data.containsKey("capWidth")) return false;
   if (!data.containsKey("capHeight")) return false;
@@ -2955,33 +3330,24 @@ static bool validateProfileData(const JsonObject& data) {
   if (!data.containsKey("bounceHeight")) return false;
   if (!data.containsKey("animSpeed")) return false;
 
-  // Validate template name
   const char* templateName = data["template"] | "";
   if (!isValidTemplate(templateName)) return false;
 
-  // Validate numeric ranges
   int capWidth = data["capWidth"] | 0;
   if (capWidth < 60 || capWidth > 120) return false;
-
   int capHeight = data["capHeight"] | 0;
   if (capHeight < 60 || capHeight > 120) return false;
-
   int stemHeight = data["stemHeight"] | 0;
   if (stemHeight < 60 || stemHeight > 140) return false;
-
   int stemWidth = data["stemWidth"] | 0;
   if (stemWidth < 50 || stemWidth > 120) return false;
-
   int spots = data["spots"] | -1;
   if (spots != 0 && spots != 2 && spots != 4 && spots != 6) return false;
-
   int bounceHeight = data["bounceHeight"] | 0;
   if (bounceHeight < 5 || bounceHeight > 35) return false;
-
   int animSpeed = data["animSpeed"] | 0;
   if (animSpeed < 12 || animSpeed > 35) return false;
 
-  // Validate colors (hex format)
   const char* capColor = data["capColor"] | "";
   if (strlen(capColor) != 7 || capColor[0] != '#') return false;
   for (int i = 1; i < 7; i++) {
@@ -3003,7 +3369,6 @@ static void sendProfileResponse(uint8_t num, const char* cmd, const char* status
   resp["cmd"] = cmd;
   resp["status"] = status;
   resp["message"] = message;
-
   String output;
   serializeJson(resp, output);
   g_webSocket.sendTXT(num, (const uint8_t*)output.c_str(), output.length());
@@ -3035,7 +3400,6 @@ static void handleProfileSave(uint8_t num, const JsonDocument& req) {
     return;
   }
 
-  // Validate name (alphanumeric, spaces, hyphens, underscores, dots)
   for (size_t i = 0; i < nameLen; i++) {
     char c = name[i];
     if (!isalnum((unsigned char)c) && c != ' ' && c != '-' && c != '_' && c != '.') {
@@ -3055,16 +3419,14 @@ static void handleProfileSave(uint8_t num, const JsonDocument& req) {
     return;
   }
 
-  // Check free space before write
   size_t totalBytes = SPIFFS.totalBytes();
   size_t usedBytes = SPIFFS.usedBytes();
   size_t freeBytes = totalBytes - usedBytes;
-  if (freeBytes < 2048) {  // Need at least 2KB free
+  if (freeBytes < 2048) {
     sendProfileResponse(num, "profile_save", "error", "Storage full (need 2KB free)");
     return;
   }
 
-  // Use FreeRTOS mutex, not spinlock!
   if (g_profileMutex == NULL) {
     sendProfileResponse(num, "profile_save", "error", "Storage not initialized");
     return;
@@ -3093,19 +3455,13 @@ static void handleProfileSave(uint8_t num, const JsonDocument& req) {
     return;
   }
 
-  // Save data (grid is regenerated from template on client)
   obj[name] = data;
-
   bool success = saveProfilesJson(doc);
 
   xSemaphoreGive(g_profileMutex);
 
   if (success) {
-    if (wasRecovered) {
-      sendProfileResponse(num, "profile_save", "ok", "Profile saved (recovered from corruption)");
-    } else {
-      sendProfileResponse(num, "profile_save", "ok", "Profile saved");
-    }
+    sendProfileResponse(num, "profile_save", "ok", wasRecovered ? "Profile saved (recovered from corruption)" : "Profile saved");
   } else {
     sendProfileResponse(num, "profile_save", "error", "Disk write failed");
   }
@@ -3145,12 +3501,11 @@ static void handleProfileLoad(uint8_t num, const JsonDocument& req) {
     return;
   }
 
-  // Deep copy using .set() — fixes dangling reference bug
   DynamicJsonDocument response(4096);
   response["type"] = WS_PROFILE_RESPONSE;
   response["cmd"] = "profile_load";
   response["name"] = name;
-  response["data"].set(obj[name]);  // Deep copy!
+  response["data"].set(obj[name]);
 
   xSemaphoreGive(g_profileMutex);
 
@@ -3158,9 +3513,8 @@ static void handleProfileLoad(uint8_t num, const JsonDocument& req) {
   serializeJson(response, output);
   g_webSocket.sendTXT(num, (const uint8_t*)output.c_str(), output.length());
 
-  // If corruption was recovered, log it
   if (wasRecovered) {
-    sendProfileResponse(num, "profile_save", "ok", "Profile loaded (recovered from corruption)");
+    sendProfileResponse(num, "profile_load", "ok", "Profile loaded (recovered from corruption)");
   }
 }
 
@@ -3211,23 +3565,20 @@ static void handleProfileDelete(uint8_t num, const JsonDocument& req) {
 }
 
 // ============================================================
-// Startup Recovery for Orphaned Temp/Backup Files
+// Startup Recovery
 // ============================================================
 
 static void recoverProfiles() {
-  // Scenario 1: Temp file exists, main doesn't → rename temp to main
   if (SPIFFS.exists(PROFILES_TEMP) && !SPIFFS.exists(PROFILES_FILE)) {
     SPIFFS.rename(PROFILES_TEMP, PROFILES_FILE);
     Serial.println(F("[PROFILES] Recovered from temp file"));
   }
 
-  // Scenario 2: Backup exists, main doesn't → restore backup
   if (SPIFFS.exists(PROFILES_BACKUP) && !SPIFFS.exists(PROFILES_FILE)) {
     SPIFFS.rename(PROFILES_BACKUP, PROFILES_FILE);
     Serial.println(F("[PROFILES] Recovered from backup file"));
   }
 
-  // Clean up orphaned temp (if main already exists)
   if (SPIFFS.exists(PROFILES_TEMP)) {
     SPIFFS.remove(PROFILES_TEMP);
   }
@@ -3240,32 +3591,22 @@ static void recoverProfiles() {
 bool webUI_init() {
   Serial.println(F("[WEB] Initializing web server..."));
 
-  // Mount SPIFFS (required for chart serving and profiles)
   if (!SPIFFS.begin(true)) {
     Serial.println(F("[WEB] SPIFFS mount failed"));
     return false;
   }
 
-  // Create mutex for profile operations
   g_profileMutex = xSemaphoreCreateMutex();
   if (g_profileMutex == NULL) {
     Serial.println(F("[PROFILES] Failed to create mutex"));
-    // Continue anyway — profile ops will error gracefully
   }
 
-  // Recover orphaned profile files
   recoverProfiles();
 
-  // Create empty profiles file if it doesn't exist
   if (!SPIFFS.exists(PROFILES_FILE)) {
     File file = SPIFFS.open(PROFILES_FILE, "w");
-    if (file) {
-      file.print("{}");
-      file.close();
-      Serial.println(F("[PROFILES] Created empty profiles file"));
-    } else {
-      Serial.println(F("[PROFILES] Failed to create profiles file"));
-    }
+    if (file) { file.print("{}"); file.close(); Serial.println(F("[PROFILES] Created empty profiles file")); }
+    else { Serial.println(F("[PROFILES] Failed to create profiles file")); }
   }
 
   g_server.on("/chart-4.4.0.min.js", []() {
@@ -3352,4 +3693,3 @@ void webUI_pushUpdates() {
     wasActive = isActive;
   }
 }
-```
