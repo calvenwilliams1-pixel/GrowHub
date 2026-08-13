@@ -257,10 +257,10 @@
 // ============================================================
 // SAFETY: Override & Recovery
 // ============================================================
-// Pre-calculated millisecond value (avoids caller overflow bugs)
-#define MANUAL_OVERRIDE_TIMEOUT_MS      (600UL * 1000UL)  // 10 minutes
-// @deprecated — Use MANUAL_OVERRIDE_TIMEOUT_MS. Remove in v1.4.
-#define MANUAL_OVERRIDE_TIMEOUT_SEC     600UL
+// v1.6: Configurable override timeout — persisted in RuntimeCache
+#define MIN_OVERRIDE_TIMEOUT_MIN         1
+#define DEFAULT_OVERRIDE_TIMEOUT_MIN     10
+#define MAX_OVERRIDE_TIMEOUT_MIN          1440
 
 // Default recovery rate: ~1% RH per minute = 0.0167% RH per second
 #define DEFAULT_RECOVERY_RATE_PCT_PER_SEC  0.0167f
@@ -288,9 +288,16 @@
                                                 // Recommended: 92% for early intervention before emergency cutoff.
 
 // ============================================================
+// WEATHER CARD (v1.6)
+// ============================================================
+#define WEATHER_UPDATE_INTERVAL_MS      1800000 // 30 minutes
+#define WEATHER_STALE_MS                3600000 // 60 minutes — show stale warning
+#define WEATHER_FETCH_TIMEOUT_MS        3000    // HTTP timeout
+#define DEFAULT_WEATHER_LAT             43.68f  // Brampton, ON
+#define DEFAULT_WEATHER_LON             -79.77f
+
+// ============================================================
 // GRAPH DASHBOARD (v1.4)
-// NOTE: 7-day (604800) not supported in v1.4. Two-pass counting over
-// 600k+ lines takes minutes. v1.5 will use file-size heuristics.
 // ============================================================
 #define GRAPH_LIVE_BUFFER_SIZE          3600
 #define GRAPH_MAX_RESPONSE_POINTS       350

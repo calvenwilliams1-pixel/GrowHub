@@ -130,6 +130,17 @@ typedef struct {
     float    fridgeTemp;               // Last received fridge temperature (°C)
     float    fridgeHumidity;            // Last received fridge humidity (%, NAN if unknown)
     bool     fridgeDoorOpen;            // Last received fridge door state
+
+    // ================================================================
+    // Weather Data (v1.6 — Open-Meteo API)
+    // ================================================================
+    float    weatherTemp;               // Current outdoor temperature (°C)
+    float    weatherHum;                // Current outdoor humidity (%)
+    int16_t  weatherCode;               // WMO weather code
+    float    weatherWind;               // Wind speed (km/h)
+    unsigned long weatherLastFetch;      // millis() of last successful fetch
+    bool     weatherValid;              // True if data has been received
+
     // ================================================================
     // v1.3: PID Controller State
     // Updated by: automation.cpp (executeHumidityControl)

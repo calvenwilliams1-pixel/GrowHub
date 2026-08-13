@@ -260,6 +260,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
 </div>
 
 <div class="warning-banner" id="warningBanner">Warning: Sensor Fault - System Running Last Known Values</div>
+<div id="toastPanel" style="display:none;position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:#30363d;color:#e6edf3;padding:10px 24px;border-radius:20px;font-size:0.9em;font-weight:500;z-index:200;box-shadow:0 4px 12px rgba(0,0,0,0.5);pointer-events:none;"><span id="toastMsg"></span></div>
 
 <div class="tabs">
   <button class="tab active" onclick="switchTab(this, 'dashboard')">Dashboard</button>
@@ -312,11 +313,27 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
       <div class="unit"></div>
     </div>
   </div>
+   <div class="config-group" id="weatherPanel" style="display:none;">
+    <h3>🌤️ Outdoor Weather</h3>
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+      <span id="weatherIcon" style="font-size:2.5em;" aria-label="Current weather condition"></span>
+      <div>
+        <div id="weatherTemp" style="font-size:1.4em;font-weight:bold;color:#ffffff;">--</div>
+        <div id="weatherHum" style="font-size:0.85em;color:#8b949e;">--</div>
+        <div id="weatherWind" style="font-size:0.85em;color:#8b949e;">--</div>
+      </div>
+    </div>
+    <div id="weatherStale" style="display:none;font-size:0.75em;color:#d29922;margin-top:6px;">⚠️ Data may be stale</div>
+  </div>
   <div class="relay-grid">
-    <div class="relay-card"><div class="name">Humidifier</div><div class="state off" id="hohState">OFF</div></div>
-    <div class="relay-card"><div class="name">Air Assist</div><div class="state off" id="assistState">OFF</div></div>
-    <div class="relay-card"><div class="name">Exhaust Fan</div><div class="state off" id="fanState">OFF</div></div>
-    <div class="relay-card"><div class="name">Compressor</div><div class="state off" id="compState">OFF</div><div class="locked" id="compLock"></div></div>
+       <div class="relay-card" data-relay-index="0" data-relay-state="false"><div class="name">Humidifier</div><div class="state off" id="hohState">OFF</div></div>
+    <div class="relay-card" data-relay-index="1" data-relay-state="false"><div class="name">Air Assist</div><div class="state off" id="assistState">OFF</div></div>
+    <div class="relay-card" data-relay-index="2" data-relay-state="false"><div class="name">Exhaust Fan</div><div class="state off" id="fanState">OFF</div></div>
+    <div class="relay-card" data-relay-index="3" data-relay-state="false"><div class="name">Compressor</div><div class="state off" id="compState">OFF</div><div class="locked" id="compLock"></div></div>
+    </div>
+  <div class="config-group" id="alertsPanel" style="display:none;">
+    <h3>⚠️ Alerts</h3>
+    <div id="alertsList"></div>
   </div>
   <div class="config-group">
     <h3>System Status</h3>
@@ -367,6 +384,22 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   <div class="config-group">
     <h3>Adaptive Learning</h3>
     <div class="config-row"><label>EMA Weight (0.10-0.50)</label><input type="number" id="emaWeight" value="0.30" step="0.05" min="0.10" max="0.50"></div>
+  </div>
+   <div class="config-group">
+    <h3>Manual Override Timeout</h3>
+    <div class="config-row"><label>Timeout (minutes)</label><input type="number" id="overrideTimeout" value="10" min="1" max="1440" step="1"></div>
+    <div style="display:flex;gap:4px;margin-top:8px;flex-wrap:wrap;">
+      <button class="btn btn-neutral override-btn" onclick="setOverrideTime(10,this)">10 min</button>
+      <button class="btn btn-neutral override-btn" onclick="setOverrideTime(30,this)">30 min</button>
+      <button class="btn btn-neutral override-btn" onclick="setOverrideTime(60,this)">1 hr</button>
+      <button class="btn btn-neutral override-btn" onclick="setOverrideTime(360,this)">6 hr</button>
+      <button class="btn btn-neutral override-btn" onclick="setOverrideTime(1440,this)">24 hr</button>
+    </div>
+  </div>
+  <div class="config-group">
+    <h3>Weather Location</h3>
+    <div class="config-row"><label>Latitude</label><input type="number" id="weatherLat" value="43.68" step="0.01" min="-90" max="90"></div>
+    <div class="config-row"><label>Longitude</label><input type="number" id="weatherLon" value="-79.77" step="0.01" min="-180" max="180"></div>
   </div>
   <div class="config-group">
     <h3>Relay Mapping</h3>
@@ -483,7 +516,7 @@ function connectWS(){
 function handleMessage(msg){
   switch(msg.type){
     case 0: updateSensors(msg); break;
-    case 1: updateRelays(msg); updateOverrideStatus(msg); break;
+    case 1: updateRelays(msg); updateOverrideStatus(msg); updateAlerts(msg); break;
     case 2:
       if(msg.message === "CONFIRM_LOUD_NIGHT"){
         var relayNames = ["Humidifier","Air Assist","Exhaust Fan","Compressor"];
@@ -692,24 +725,28 @@ function updateRelays(msg){
   hoh.className = 'state ' + (msg.hoh ? 'on' : 'off');
   var hohCard = hoh.parentElement;
   if (msg.hoh) hohCard.classList.add('active'); else hohCard.classList.remove('active');
+  hohCard.setAttribute('data-relay-state', msg.hoh ? 'true' : 'false');
 
   var assist = document.getElementById('assistState');
   assist.textContent = msg.assist ? 'ON' : 'OFF';
   assist.className = 'state ' + (msg.assist ? 'on' : 'off');
   var assistCard = assist.parentElement;
   if (msg.assist) assistCard.classList.add('active'); else assistCard.classList.remove('active');
+  assistCard.setAttribute('data-relay-state', msg.assist ? 'true' : 'false');
 
   var fan = document.getElementById('fanState');
   fan.textContent = msg.fan ? 'ON' : 'OFF';
   fan.className = 'state ' + (msg.fan ? 'on' : 'off');
   var fanCard = fan.parentElement;
   if (msg.fan) fanCard.classList.add('active'); else fanCard.classList.remove('active');
+  fanCard.setAttribute('data-relay-state', msg.fan ? 'true' : 'false');
 
   var comp = document.getElementById('compState');
   comp.textContent = msg.compressor ? 'ON' : 'OFF';
   comp.className = 'state ' + (msg.compressor ? 'on' : 'off');
   var compCard = comp.parentElement;
   if (msg.compressor) compCard.classList.add('active'); else compCard.classList.remove('active');
+  compCard.setAttribute('data-relay-state', msg.compressor ? 'true' : 'false');
 
   // compressorLocked is now handled in updateOverrideStatus
 }
@@ -729,6 +766,9 @@ function updateConfig(msg){
   document.getElementById('funcPos2').value = msg.funcPos2;
   document.getElementById('funcPos3').value = msg.funcPos3;
   document.getElementById('funcPos4').value = msg.funcPos4;
+  document.getElementById('weatherLat').value = msg.weatherLat;
+  document.getElementById('weatherLon').value = msg.weatherLon;
+  document.getElementById('overrideTimeout').value = msg.overrideTimeout || 10;
 }
 
 function updateCalibration(msg){
@@ -915,6 +955,12 @@ function runSimulation(){
   sendWS({type: 6, cmd: 'simulate', current: current, target: target});
 }
 
+function setOverrideTime(minutes, btn) {
+  document.getElementById('overrideTimeout').value = minutes;
+  document.querySelectorAll('.override-btn').forEach(function(b) { b.classList.remove('active'); });
+  btn.classList.add('active');
+}
+
 function setRTCTime(){
   var dt = document.getElementById('rtcDateTime').value;
   if(!dt){
@@ -1082,6 +1128,8 @@ function handleGraphResponse(msg) {
   graphChart.data.datasets[1].data = points;
   graphChart.update('none');
 }
+
+initDashboardTaps();
 
 connectWS();
 </script>
@@ -1397,7 +1445,7 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
           char response[128];
           size_t responseLen = serializeJson(responseDoc, response, sizeof(response));
           g_webSocket.sendTXT(num, (const uint8_t*)response, responseLen);
-        } else {
+               } else {
           StaticJsonDocument<128> responseDoc;
           responseDoc["type"] = 2;
           responseDoc["message"] = "Invalid relay mapping — check functions";
@@ -1488,7 +1536,7 @@ static void sendSensorUpdate() {
     controlMode = "PID";
   }
 
-  StaticJsonDocument<768> doc;
+  StaticJsonDocument<1024> doc;
   doc["type"] = WS_SENSOR_UPDATE;
   doc["temp"] = temp;
   doc["hum"] = hum;
@@ -1507,6 +1555,13 @@ static void sendSensorUpdate() {
   doc["activeBand"] = activeBand;
   doc["confidence"] = confidence;
   doc["controlMode"] = controlMode;
+  doc["weatherValid"] = g_systemState.weatherValid;
+  doc["weatherTemp"] = g_systemState.weatherTemp;
+  doc["weatherHum"] = g_systemState.weatherHum;
+  doc["weatherCode"] = g_systemState.weatherCode;
+  doc["weatherWind"] = g_systemState.weatherWind;
+  doc["weatherStale"] = (g_systemState.weatherValid && 
+                         (millis() - g_systemState.weatherLastFetch > WEATHER_STALE_MS));
 
   doc["warmupSelected"] = warmupSelected;
   if (warmupSelected && warmupDuration > 0) {
@@ -1589,6 +1644,9 @@ static void sendConfigUpdate(uint8_t clientNum) {
   doc["funcPos2"] = mapping->functionForPos[1];
   doc["funcPos3"] = mapping->functionForPos[2];
   doc["funcPos4"] = mapping->functionForPos[3];
+  doc["weatherLat"] = g_runtimeCache.weatherLat;
+  doc["weatherLon"] = g_runtimeCache.weatherLon;
+  doc["overrideTimeout"] = g_runtimeCache.overrideTimeoutMinutes;
   char output[256];
   size_t len = serializeJson(doc, output, sizeof(output));
   if (len >= sizeof(output)) {

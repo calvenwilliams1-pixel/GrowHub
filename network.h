@@ -42,6 +42,7 @@ void network_checkConnection();
 void network_checkFridgeHeartbeat();
 void network_sendAlert(const char* title, const char* message);
 void network_sendAlivePing();
+void network_fetchWeather();
 bool network_isWiFiConnected();
 bool network_isAPMode();
 String network_getIPAddress();
@@ -51,6 +52,7 @@ String network_getIPAddress();
 float network_getFridgeTemp();
 float network_getFridgeHumidity();
 bool network_isFridgeDoorOpen();
+uint8_t network_getActiveAlerts();
 bool network_isFridgeHeartbeatLost();
 uint16_t network_getFridgeLastSequence();
 // ESP-NOW callback (runs in WiFi task context)

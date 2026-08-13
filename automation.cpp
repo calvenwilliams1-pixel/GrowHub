@@ -87,6 +87,7 @@
 #include "automation.h"
 #include "rtc_handler.h"
 #include "network.h"
+#include "sd_logger.h"
 
 // ============================================================
 // External Declarations
@@ -96,6 +97,7 @@
 // Called from real-time control loop — must not allocate or block.
 extern void network_sendAlert(const char* title, const char* message);
 extern portMUX_TYPE g_stateMux;
+extern RuntimeCache g_runtimeCache;
 
 // ============================================================
 // Forward Declarations
@@ -187,6 +189,15 @@ static float g_lastTunedConfidence = 0.0f;
 // ============================================================
 // Private Helpers
 // ============================================================
+
+// v1.6: Configurable override timeout helper
+static inline unsigned long automation_getOverrideTimeoutMs() {
+  uint16_t mins = g_runtimeCache.overrideTimeoutMinutes;
+  if (mins < MIN_OVERRIDE_TIMEOUT_MIN || mins > MAX_OVERRIDE_TIMEOUT_MIN) {
+    mins = DEFAULT_OVERRIDE_TIMEOUT_MIN;
+  }
+  return (unsigned long)mins * 60000UL;
+}
 
 /**
  * @brief Suspend PID controller, reset internal state, and clear telemetry.
@@ -1074,7 +1085,7 @@ bool automation_isCompressorOverrideActive() {
     start = g_compressorOverrideStart;
     portEXIT_CRITICAL(&g_stateMux);
 
-    if (active && (millis() - start >= MANUAL_OVERRIDE_TIMEOUT_MS)) {
+     if (active && (millis() - start >= automation_getOverrideTimeoutMs())) {
         portENTER_CRITICAL(&g_stateMux);
         g_compressorOverrideActive = false;
         portEXIT_CRITICAL(&g_stateMux);
@@ -1101,8 +1112,9 @@ unsigned long automation_getCompressorOverrideRemaining() {
 
     if (!active) return 0;
     unsigned long elapsed = millis() - start;
-    if (elapsed >= MANUAL_OVERRIDE_TIMEOUT_MS) return 0;
-    return MANUAL_OVERRIDE_TIMEOUT_MS - elapsed;
+    unsigned long timeoutMs = automation_getOverrideTimeoutMs();
+    if (elapsed >= timeoutMs) return 0;
+    return timeoutMs - elapsed;
 }
 // ============================================================
 // Public API: PID Suspend/Resume (for adaptive.cpp calibration)
@@ -1183,7 +1195,7 @@ bool automation_isHumidityOverrideActive() {
     start = g_humidityOverrideStart;
     portEXIT_CRITICAL(&g_stateMux);
 
-    if (active && (millis() - start >= MANUAL_OVERRIDE_TIMEOUT_MS)) {
+    if (active && (millis() - start >= automation_getOverrideTimeoutMs())) {
         portENTER_CRITICAL(&g_stateMux);
         g_humidityOverrideActive = false;
         portEXIT_CRITICAL(&g_stateMux);
@@ -1201,7 +1213,7 @@ bool automation_isCO2OverrideActive() {
     start = g_co2OverrideStart;
     portEXIT_CRITICAL(&g_stateMux);
 
-    if (active && (millis() - start >= MANUAL_OVERRIDE_TIMEOUT_MS)) {
+    if (active && (millis() - start >= automation_getOverrideTimeoutMs())) {
         portENTER_CRITICAL(&g_stateMux);
         g_co2OverrideActive = false;
         portEXIT_CRITICAL(&g_stateMux);
@@ -1221,8 +1233,9 @@ unsigned long automation_getHumidityOverrideRemaining() {
 
     if (!active) return 0;
     unsigned long elapsed = millis() - start;
-    if (elapsed >= MANUAL_OVERRIDE_TIMEOUT_MS) return 0;
-    return MANUAL_OVERRIDE_TIMEOUT_MS - elapsed;
+    unsigned long timeoutMs = automation_getOverrideTimeoutMs();
+    if (elapsed >= timeoutMs) return 0;
+    return timeoutMs - elapsed;
 }
 
 unsigned long automation_getCO2OverrideRemaining() {
@@ -1235,6 +1248,7 @@ unsigned long automation_getCO2OverrideRemaining() {
 
     if (!active) return 0;
     unsigned long elapsed = millis() - start;
-    if (elapsed >= MANUAL_OVERRIDE_TIMEOUT_MS) return 0;
-    return MANUAL_OVERRIDE_TIMEOUT_MS - elapsed;
+        unsigned long timeoutMs = automation_getOverrideTimeoutMs();
+    if (elapsed >= timeoutMs) return 0;
+    return timeoutMs - elapsed;
 }
