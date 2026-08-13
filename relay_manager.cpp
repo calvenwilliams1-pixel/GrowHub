@@ -321,23 +321,6 @@ bool relayManager_setRelay(uint8_t relayIndex, bool turnOn, bool force) {
       }
   }
 
-  // --- COOLDOWN CHECK (bypassed when force=true) ---
-  if (relayManager_requiresCooldown(relayIndex) && turnOn && !force) {
-    if (relay->cooldownLocked) {
-      unsigned long elapsedSinceOff = now - relay->cooldownStart;
-      if (elapsedSinceOff < COMPRESSOR_COOLDOWN_MS) {
-        unsigned long remaining = COMPRESSOR_COOLDOWN_MS - elapsedSinceOff;
-        Serial.print(F("[SAFETY] Cooldown active - "));
-        Serial.print(remaining / 1000);
-        Serial.println(F("s remaining. Refusing to start."));
-        return false;
-      } else {
-        relay->cooldownLocked = false;
-        Serial.println(F("[SAFETY] Cooldown complete - available for use"));
-      }
-    }
-  }
-
   // --- RELAY CYCLE LIMIT CHECK (bypassed when force=true) ---
   if (turnOn && !force) {
     if (!relayManager_canToggle(relayIndex)) {
@@ -366,17 +349,6 @@ bool relayManager_setRelay(uint8_t relayIndex, bool turnOn, bool force) {
     relay->isActive = false;
     relay->lastOffTime = now;
     relay->totalOnDuration = 0;
-
-    if (relayManager_requiresCooldown(relayIndex)) {
-      relay->cooldownLocked = true;
-      relay->cooldownStart = now;
-      relay->cooldownOffEpoch = rtc_getGH2000Seconds();
-      Serial.print(F("[SAFETY] Cooldown started on "));
-      Serial.print(relayNames[relayIndex]);
-      Serial.print(F(" - locked for "));
-      Serial.print(COMPRESSOR_COOLDOWN_SEC / 60);
-      Serial.println(F(" minutes"));
-    }
 
     Serial.print(F("[RELAY] "));
     Serial.print(relayNames[relayIndex]);
@@ -451,96 +423,8 @@ void relayManager_logCycle(uint8_t relayIndex) {
 }
 
 // ============================================
-// Compressor Cooldown (Single Source of Truth)
+// Emergency Shutdown
 // ============================================
-
-bool relayManager_isCompressorCooldownActive() {
-  RelayState* relay = &g_relays[RELAY_COMPRESSOR];
-
-  if (!relay->cooldownLocked) {
-    return false;
-  }
-
-  unsigned long now = millis();
-  unsigned long elapsed = now - relay->cooldownStart;
-
-  if (elapsed >= COMPRESSOR_COOLDOWN_MS) {
-    relay->cooldownLocked = false;
-    return false;
-  }
-
-  return true;
-}
-
-unsigned long relayManager_getCompressorCooldownRemaining() {
-  RelayState* relay = &g_relays[RELAY_COMPRESSOR];
-
-  if (!relay->cooldownLocked) {
-    return 0;
-  }
-
-  unsigned long now = millis();
-  unsigned long elapsed = now - relay->cooldownStart;
-
-  if (elapsed >= COMPRESSOR_COOLDOWN_MS) {
-    relay->cooldownLocked = false;
-    return 0;
-  }
-
-  return COMPRESSOR_COOLDOWN_MS - elapsed;
-}
-
-// ============================================
-// Cooldown Persistence Across Reboots
-// ============================================
-
-void relayManager_saveCooldownState() {
-  Serial.println(F("[RELAY] Cooldown state flagged for SD persistence"));
-}
-
-void relayManager_loadCooldownState(unsigned long lastOffTimestamp, bool wasInCooldown) {
-  if (!wasInCooldown) {
-    Serial.println(F("[RELAY] No cooldown was active before shutdown"));
-    return;
-  }
-
-  RelayState* relay = &g_relays[RELAY_COMPRESSOR];
-  unsigned long now = millis();
-
-  if (lastOffTimestamp > 0) {
-    unsigned long currentTimestamp = rtc_getGH2000Seconds();
-
-    if (currentTimestamp > lastOffTimestamp &&
-        (currentTimestamp - lastOffTimestamp) < 86400UL) {
-      unsigned long elapsed = currentTimestamp - lastOffTimestamp;
-
-      if ((elapsed * 1000UL) >= COMPRESSOR_COOLDOWN_MS) {
-        relay->cooldownLocked = false;
-        Serial.print(F("[RELAY] Cooldown expired during downtime ("));
-        Serial.print(elapsed);
-        Serial.println(F("s) - compressor available immediately"));
-        return;
-      }
-
-      unsigned long elapsedMs = elapsed * 1000UL;
-      unsigned long remainingMs = COMPRESSOR_COOLDOWN_MS - elapsedMs;
-      relay->cooldownLocked = true;
-      relay->cooldownStart = now - elapsedMs;
-      Serial.print(F("[RELAY] Cooldown restored with "));
-      Serial.print(remainingMs / 1000);
-      Serial.println(F("s remaining"));
-      return;
-    } else {
-      Serial.println(F("[RELAY] RTC invalid or clock skew detected - applying full safety cooldown"));
-    }
-  }
-
-  relay->cooldownLocked = true;
-  relay->cooldownStart = now;
-  Serial.print(F("[RELAY] Full cooldown applied (fail-safe) - "));
-  Serial.print(COMPRESSOR_COOLDOWN_SEC / 60);
-  Serial.println(F(" minutes"));
-}
 
 bool relayManager_isRelayLoud(uint8_t relayIndex) {
     if (relayIndex >= RELAY_COUNT) return false;
@@ -557,29 +441,17 @@ bool relayManager_isBurstCycled(uint8_t relayIndex) {
     return g_relayCaps[relayIndex].isBurstCycled;
 }
 
-// ============================================
-// Emergency Shutdown
-// ============================================
-
 void relayManager_forceAllOff() {
   unsigned long now = millis();
 
-  // HARDWARE SAFETY FIRST: Cut power before ANY Serial I/O.
-  // In an emergency, milliseconds matter. Serial can block on full UART buffer.
   portENTER_CRITICAL(&g_stateMux);
   for (uint8_t i = 0; i < RELAY_COUNT; i++) {
     if (g_relays[i].pin != 255) {
-      digitalWrite(g_relays[i].pin, HIGH);  // Active LOW = OFF
+      digitalWrite(g_relays[i].pin, HIGH);
     }
     g_relays[i].isActive = false;
     g_relays[i].lastOffTime = now;
     g_relays[i].totalOnDuration = 0;
-
-    if (relayManager_requiresCooldown(i)) {
-      g_relays[i].cooldownLocked = true;
-      g_relays[i].cooldownStart = now;
-      g_relays[i].cooldownOffEpoch = rtc_getGH2000Seconds();
-    }
   }
 
   g_systemState.hoHActive = false;
@@ -588,6 +460,5 @@ void relayManager_forceAllOff() {
   g_systemState.compressorActive = false;
   portEXIT_CRITICAL(&g_stateMux);
 
-  // Safe to log now — hardware is already off
   Serial.println(F("[RELAY] EMERGENCY: ALL relays forced OFF and system state cleared"));
 }

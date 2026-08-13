@@ -46,7 +46,6 @@ static SPIClass g_sdSPI(VSPI);
 static String g_currentLogFile = "";
 
 // Track compressor state changes to trigger cooldown saves
-static bool g_lastCompressorState = false;
 
 // --- Private Helpers ---
 
@@ -160,9 +159,6 @@ bool sdLogger_init() {
   // GH-SYS-001: Load cached runtime parameters
   sdLogger_loadCache();
 
-  // GH-SAFE-002 persistent: Restore compressor cooldown state
-  sdLogger_loadCooldownState();
-
   // Purge logs older than 30 days
   sdLogger_purgeOldLogs();
 
@@ -267,26 +263,6 @@ bool sdLogger_writeData() {
   }
 
   bool writeSuccess = writeLine(g_currentLogFile.c_str(), line);
-
-  // GH-SAFE-002 persistent: Track state switches cleanly
-  bool compressorCurrentlyOn = g_systemState.compressorActive;
-  if (compressorCurrentlyOn != g_lastCompressorState) {
-    g_lastCompressorState = compressorCurrentlyOn;
-
-    if (!compressorCurrentlyOn && relayManager_isCompressorCooldownActive()) {
-      sdLogger_saveCooldownState();
-      Serial.println(F("[SD] Compressor OFF - cooldown state persisted"));
-    }
-  }
-
-  // Periodic cooldown persistence balance window
-  static unsigned long lastCooldownSave = 0;
-  if (millis() - lastCooldownSave >= 300000UL) {  // Every 5 minutes
-    lastCooldownSave = millis();
-    if (relayManager_isCompressorCooldownActive()) {
-      sdLogger_saveCooldownState();
-    }
-  }
 
   return writeSuccess;
 }
@@ -418,67 +394,6 @@ bool sdLogger_saveCache() {
   f.close();
 
   return (written == sizeof(RuntimeCache));
-}
-
-// ============================================
-// Compressor Cooldown Persistence (GH-SAFE-002 persistent)
-// ============================================
-
-bool sdLogger_saveCooldownState() {
-  if (!g_sdAvailable) return false;
-
-  g_runtimeCache.compressorCooldownActive = relayManager_isCompressorCooldownActive();
-  unsigned long offEpoch = g_relays[RELAY_COMPRESSOR].cooldownOffEpoch;
-
-  if (offEpoch > 0) {
-    g_runtimeCache.compressorLastOffTimestamp = offEpoch;
-  } else if (g_runtimeCache.compressorLastOffTimestamp == 0) {
-    Serial.println(F("[SD] WARNING: RTC unavailable at compressor OFF - no timestamp to persist"));
-  }
-
-  bool saved = sdLogger_saveCache();
-
-  if (saved) {
-    Serial.print(F("[SD] Cooldown state persisted: "));
-    Serial.print(g_runtimeCache.compressorCooldownActive ? "ACTIVE" : "inactive");
-    if (g_runtimeCache.compressorLastOffTimestamp > 0) {
-      Serial.print(F(", offEpoch: "));
-      Serial.print(g_runtimeCache.compressorLastOffTimestamp);
-    }
-    Serial.println();
-  }
-
-  return saved;
-}
-
-bool sdLogger_loadCooldownState() {
-  if (!g_sdAvailable) {
-    Serial.println(F("[SD] No SD - cooldown state not restored"));
-    return false;
-  }
-
-  if (!g_runtimeCache.compressorCooldownActive) {
-    Serial.println(F("[SD] No active cooldown to restore"));
-    return false;
-  }
-
-  Serial.println(F("[SD] Restoring compressor cooldown state from cache..."));
-  Serial.print(F("[SD]   Cached offEpoch: "));
-  Serial.println(g_runtimeCache.compressorLastOffTimestamp);
-
-  relayManager_loadCooldownState(
-    g_runtimeCache.compressorLastOffTimestamp,
-    g_runtimeCache.compressorCooldownActive
-  );
-
-  bool stillActive = relayManager_isCompressorCooldownActive();
-  if (!stillActive && g_runtimeCache.compressorCooldownActive) {
-    g_runtimeCache.compressorCooldownActive = false;
-    sdLogger_saveCache();
-    Serial.println(F("[SD] Cooldown expired during downtime - cache updated"));
-  }
-
-  return true;
 }
 
 // ============================================

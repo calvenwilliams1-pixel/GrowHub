@@ -34,6 +34,8 @@
 #include "safety.h"
 #include "system_state.h"
 #include <ESPmDNS.h>
+#include "sd_logger.h"
+#include <ArduinoJson.h>
 
 // ============================================================
 // Network Credentials (private — do not commit to version control)
@@ -242,6 +244,14 @@ bool network_isFridgeHeartbeatLost() {
   lost = g_systemState.fridgeHeartbeatLost;
   portEXIT_CRITICAL(&g_stateMux);
   return lost;
+}
+
+uint8_t network_getActiveAlerts() {
+  uint8_t alerts = 0;
+  if (network_isFridgeHeartbeatLost()) {
+    alerts |= 0x08;  // Bit 3: Fridge offline
+  }
+  return alerts;
 }
 
 uint16_t network_getFridgeLastSequence() {
@@ -668,6 +678,55 @@ void network_sendAlert(const char* title, const char* message) {
     Serial.print(F(" - "));
     Serial.print(http.errorToString(httpResponseCode));
     Serial.println(F(")"));
+  }
+
+  http.end();
+}
+
+// ============================================================
+// Weather Fetch (v1.6 — Open-Meteo API)
+// ============================================================
+void network_fetchWeather() {
+  static bool everFetched = false;
+  if (!network_isWiFiConnected()) return;
+
+  WiFiClient client;
+  HTTPClient http;
+
+  char url[160];
+  snprintf(url, sizeof(url),
+           "http://api.open-meteo.com/v1/forecast?latitude=%.2f&longitude=%.2f&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m",
+           g_runtimeCache.weatherLat, g_runtimeCache.weatherLon);
+
+  http.begin(client, url);
+  http.setTimeout(WEATHER_FETCH_TIMEOUT_MS);
+
+  int httpCode = http.GET();
+
+  if (httpCode == 200) {
+    String payload = http.getString();
+    StaticJsonDocument<768> doc;
+    DeserializationError err = deserializeJson(doc, payload);
+
+    if (!err) {
+      portENTER_CRITICAL(&g_stateMux);
+      g_systemState.weatherTemp = doc["current"]["temperature_2m"] | NAN;
+      g_systemState.weatherHum = doc["current"]["relative_humidity_2m"] | NAN;
+      g_systemState.weatherCode = doc["current"]["weather_code"] | -1;
+      g_systemState.weatherWind = doc["current"]["wind_speed_10m"] | NAN;
+      g_systemState.weatherLastFetch = millis();
+      g_systemState.weatherValid = true;
+      everFetched = true;
+      portEXIT_CRITICAL(&g_stateMux);
+
+      Serial.println(F("[WEATHER] Fetch successful"));
+    } else {
+      Serial.print(F("[WEATHER] JSON parse error: "));
+      Serial.println(err.c_str());
+    }
+  } else {
+    Serial.print(F("[WEATHER] HTTP error: "));
+    Serial.println(httpCode);
   }
 
   http.end();

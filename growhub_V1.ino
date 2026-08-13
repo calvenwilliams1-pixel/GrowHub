@@ -164,6 +164,17 @@ void setup() {
     Serial.println(F("[BOOT] WARNING: SPIFFS mount FAILED — graph dashboard disabled"));
   }
 
+     // Seed weather location defaults (v1.6)
+  if (g_runtimeCache.weatherLat == 0.0f && g_runtimeCache.weatherLon == 0.0f) {
+    g_runtimeCache.weatherLat = DEFAULT_WEATHER_LAT;
+    g_runtimeCache.weatherLon = DEFAULT_WEATHER_LON;
+  }
+
+  // Seed default override timeout (v1.6)
+  if (g_runtimeCache.overrideTimeoutMinutes == 0) {
+    g_runtimeCache.overrideTimeoutMinutes = DEFAULT_OVERRIDE_TIMEOUT_MIN;
+  }
+   
   // Apply cached relay mapping if available (v1.4)
   if (g_runtimeCache.relayMapping.magic == RELAY_MAPPING_MAGIC) {
     relayManager_updateMapping(&g_runtimeCache.relayMapping);
@@ -232,6 +243,11 @@ void setup() {
   Serial.println(F("[BOOT] Step 9: Automation engine init..."));
   automation_init();
   adaptive_init();
+     // Seed weather location defaults (v1.6)
+  if (g_runtimeCache.weatherLat == 0.0f && g_runtimeCache.weatherLon == 0.0f) {
+    g_runtimeCache.weatherLat = DEFAULT_WEATHER_LAT;
+    g_runtimeCache.weatherLon = DEFAULT_WEATHER_LON;
+  }
   adaptive_loadProfiles();  // Must be after adaptive_init()
 
   // Step 10: System Ready
@@ -304,6 +320,15 @@ void loop() {
     network_checkConnection();
   }
 
+  // Weather fetch every 30 minutes, first fetch immediately (v1.6)
+  static bool firstWeatherFetch = true;
+  static unsigned long lastWeatherFetch = 0;
+  if (firstWeatherFetch || now - lastWeatherFetch >= WEATHER_UPDATE_INTERVAL_MS) {
+    firstWeatherFetch = false;
+    lastWeatherFetch = now;
+    network_fetchWeather();
+  }
+   
   // ESP-NOW heartbeat check every 5 seconds
   if (now - g_lastESPNOWCheck >= 5000) {
     g_lastESPNOWCheck = now;

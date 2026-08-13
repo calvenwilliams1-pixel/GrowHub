@@ -97,14 +97,6 @@ unsigned long relayManager_getOnDuration(uint8_t relayIndex);
 // Track a relay cycle for rate limiting
 void relayManager_logCycle(uint8_t relayIndex);
 
-// Compressor cooldown queries (single source of truth - GH-SAFE-002)
-bool relayManager_isCompressorCooldownActive();
-unsigned long relayManager_getCompressorCooldownRemaining();
-
-// Persist cooldown state across reboots (called by SD logger)
-void relayManager_saveCooldownState();
-void relayManager_loadCooldownState(unsigned long lastOffTimestamp, bool wasInCooldown);
-
 // Emergency: force all relays OFF immediately (bypasses state tracking)
 void relayManager_forceAllOff();
 
