@@ -1676,7 +1676,7 @@ function isHexColor(str) {
   return /^#[0-9a-fA-F]{6}$/.test(str);
 }
 
-functi// ─── FACE RENDERER ───
+// ─── FACE RENDERER ───
 function renderFace(sprite, grid, cols, pixelSize, state) {
   const faceRow = 8;
   const leftEyeCol = 5;
@@ -3376,6 +3376,7 @@ static void sendSystemStatus() {
         (warmupDuration - elapsed) / 1000 : 0;
   }
   doc["compressorLocked"] = relayManager_isCompressorLocked();
+  doc["alerts"] = safety_getActiveAlerts() | network_getActiveAlerts();
 
   char output[256];
   size_t len = serializeJson(doc, output, sizeof(output));
