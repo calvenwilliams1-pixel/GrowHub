@@ -8,6 +8,16 @@
              Fixed g_systemState.calibrationActive read outside mutex in sendSensorUpdate().
              Updated UI text for manual override description.
              Updated default values for 88% ceiling and 20-min calibration.
+             Fixed spinlock I/O violation in warmup handler.
+             Fixed warmup globals race conditions.
+             Fixed warmup panel visibility on reconnect.
+             Added client-side countdown interval for UI smoothness.
+             Fixed reconnect race: infer warmupDuration from warmupRemaining.
+             Fixed panel visibility in updateSensors() and startWarmup().
+             Added aria-hidden to mascot.
+             identifyRelay now uses dedicated identify flag (not force bypass).
+             Fixed lastRequestedSensor hoisting.
+             Fixed millis() capture in sendSystemStatus().
 
    This serves a single-page application from program memory.
    Chart.js is served from LittleFS for cache efficiency (v1.4).
@@ -40,6 +50,9 @@ static unsigned long g_lastWSUpdate = 0;
 
 extern portMUX_TYPE g_stateMux;
 extern RuntimeCache g_runtimeCache;
+extern unsigned long g_compressorWarmupStart;
+extern unsigned long g_compressorWarmupDuration;
+extern bool g_warmupSelected;
 
 // Forward declarations
 static void handleRoot();
@@ -57,24 +70,24 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-<title>GrowHub32 v1.5</title>
+<title>GrowHub32 v1.4.0</title>
 <style>
   *{margin:0;padding:0;box-sizing:border-box;}
-  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:linear-gradient(180deg,#0d1117 0%,#111827 100%);color:#c9d1d9;min-height:100vh;}
-  .header{padding:14px 18px;border-bottom:1px solid #30363d;}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:linear-gradient(180deg,#0d1117 0%,#1a1a2e 50%,#111827 100%);color:#c9d1d9;min-height:100vh;}
+  .header{padding:14px 18px;border-bottom:1px solid #2a2a4a;box-shadow:0 2px 12px rgba(184,74,255,0.04);}
   .header h1{font-size:1.3em;color:#58a6ff;}
   .header .status{font-size:0.75em;color:#8b949e;margin-top:3px;}
   .warning-banner{color:#fff;text-align:center;padding:10px 16px;font-weight:600;display:none;border-bottom:1px solid #f85149;}
   .warning-banner.active{display:flex;align-items:center;justify-content:center;gap:8px;animation:pulse-danger 2s infinite;}
   @keyframes pulse-danger{0%{background-color:#da3633;}50%{background-color:#8e1519;}100%{background-color:#da3633;}}
-  .tabs{display:flex;background:rgba(22,27,34,0.95);backdrop-filter:blur(5px);border-bottom:1px solid #30363d;overflow-x:auto;}
-  .tab{padding:10px 16px;font-size:0.85em;color:#8b949e;border:none;background:none;cursor:pointer;white-space:nowrap;border-radius:20px;margin:4px 2px;transition:all 0.2s;font-weight:500;}
-  .tab:hover{color:#c9d1d9;}
-  .tab.active{color:#58a6ff;background:rgba(88,166,255,0.15);border:1px solid rgba(88,166,255,0.3);}
+  @keyframes pulse-blue{0%{opacity:1;background:#58a6ff;}50%{opacity:0.7;background:#1f6feb;}100%{opacity:1;background:#58a6ff;}}
+  .tabs{display:flex;background:rgba(22,27,34,0.95);backdrop-filter:blur(5px);border-bottom:1px solid #2a2a4a;overflow-x:auto;box-shadow:0 2px 12px rgba(184,74,255,0.04);}
+  .tab{padding:14px 20px;font-size:0.9em;color:#8b949e;border:none;background:none;cursor:pointer;white-space:nowrap;border-bottom:2px solid transparent;transition:all 0.2s;}
+  .tab.active{color:#b84aff;border-bottom-color:#b84aff;text-shadow:0 0 20px rgba(184,74,255,0.3);}
   .tab-content{display:none;padding:16px;}
   .tab-content.active{display:block;}
   .sensor-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin-bottom:18px;}
-  .sensor-card{background:linear-gradient(180deg,#161b22 0%,#0d1117 100%);border:1px solid #30363d;border-radius:12px;padding:18px;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,0.35);}
+  .sensor-card{background:#161b22;border:1px solid #2a2a4a;border-radius:12px;padding:18px;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,0.5),0 0 16px rgba(184,74,255,0.06);}
   .sensor-card .label{font-size:0.7em;color:#8b949e;text-transform:uppercase;letter-spacing:0.5px;}
   .sensor-card .value{font-size:2.2em;font-weight:700;margin:8px 0;color:#ffffff;line-height:1;font-variant-numeric:tabular-nums;min-height:1.2em;}
   .sensor-card .unit{font-size:0.6em;color:#8b949e;font-weight:500;text-transform:uppercase;letter-spacing:0.5px;}
@@ -82,10 +95,8 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   .sensor-card .status-dot.ok{background:#3fb950;box-shadow:0 0 6px rgba(63,185,80,0.4);}
   .sensor-card .status-dot.fault{background:#da3633;box-shadow:0 0 6px rgba(218,54,51,0.4);}
   .relay-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:18px;}
-  .relay-card{background:linear-gradient(180deg,#161b22 0%,#0d1117 100%);border:1px solid #30363d;border-radius:12px;padding:14px;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,0.35);cursor:pointer;user-select:none;-webkit-tap-highlight-color:transparent;touch-action:manipulation;transition:transform 0.15s ease,border-color 0.15s ease;}
-  .relay-card:active{transform:scale(0.97);border-color:#58a6ff;}
-  .relay-card.active{border-color:#3fb950;box-shadow:0 0 16px rgba(63,185,80,0.25);}
-  .relay-card.active:active{border-color:#3fb950;}
+  .relay-card{background:#161b22;border:1px solid #2a2a4a;border-radius:12px;padding:14px;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,0.5),0 0 12px rgba(184,74,255,0.06);}
+  .relay-card.active{border-color:#b84aff;box-shadow:0 0 20px rgba(184,74,255,0.3),0 0 12px rgba(184,74,255,0.15);}
   .relay-card .name{font-size:0.7em;color:#8b949e;text-transform:uppercase;letter-spacing:0.5px;}
   .relay-card .state{font-size:1.1em;font-weight:bold;margin:6px 0;}
   .relay-card .state.on{color:#3fb950;}
@@ -93,14 +104,14 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   .relay-card .locked{color:#d29922;font-size:0.7em;margin-top:4px;}
   .btn{padding:12px 20px;border:none;border-radius:8px;font-size:0.95em;cursor:pointer;margin:4px;transition:all 0.15s ease-in-out;font-weight:500;}
   .btn:active{transform:scale(0.96);filter:brightness(0.9);}
-  .btn:focus{outline:2px solid #58a6ff;outline-offset:2px;}
+  .btn:focus{outline:2px solid #b84aff;outline-offset:2px;box-shadow:0 0 20px rgba(184,74,255,0.2);}
   .btn-on{background:#238636;color:#fff;}
   .btn-on:hover{background:#2ea043;}
   .btn-off{background:#21262d;border:1px solid #30363d;color:#c9d1d9;}
   .btn-off:hover{background:#30363d;}
   .btn-neutral{background:#30363d;color:#c9d1d9;}
   .btn-neutral:hover{background:#484f58;}
-  .config-group{background:linear-gradient(180deg,#161b22 0%,#0d1117 100%);border:1px solid #30363d;border-radius:12px;padding:16px;margin-bottom:18px;box-shadow:0 4px 12px rgba(0,0,0,0.35);}
+  .config-group{margin-bottom:18px;background:#161b22;border:1px solid #2a2a4a;border-radius:12px;padding:16px;box-shadow:0 0 16px rgba(184,74,255,0.06);}
   .config-group h3{font-size:0.95em;color:#58a6ff;margin-bottom:12px;border-left:4px solid #58a6ff;padding-left:10px;}
   .config-row{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid #21262d;}
   .config-row:last-child{border-bottom:none;}
@@ -109,28 +120,143 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   .config-row input:focus{outline:2px solid #58a6ff;outline-offset:2px;}
   .config-row input:invalid{border-color:#da3633;color:#da3633;box-shadow:0 0 8px rgba(218,54,51,0.4);}
   .config-row select{width:160px;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#e6edf3;padding:8px 12px;font-size:0.95em;}
-  .log-area{background:#0d1117;border:1px solid #3d444d;border-radius:12px;padding:14px;max-height:300px;overflow-y:auto;font-family:monospace;font-size:0.75em;line-height:1.6;}
+  .log-area{background:#0d1117;border:1px solid #2a2a4a;border-radius:12px;padding:14px;max-height:300px;overflow-y:auto;font-family:monospace;font-size:0.75em;line-height:1.6;box-shadow:0 0 12px rgba(184,74,255,0.06);}
   .log-entry{padding:3px 0;}
   .log-entry.warn{color:#d29922;}
   .log-entry.error{color:#da3633;}
   .calibration-panel{text-align:center;padding:24px;}
   .countdown{font-size:3em;font-weight:bold;color:#58a6ff;}
-  .sim-result{background:linear-gradient(180deg,#161b22 0%,#0d1117 100%);border:1px solid #30363d;border-radius:12px;padding:16px;margin-top:12px;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,0.35);}
+  .sim-result{background:#161b22;border:1px solid #2a2a4a;border-radius:12px;padding:16px;margin-top:12px;text-align:center;box-shadow:0 0 12px rgba(184,74,255,0.06);}
   .sim-result .time{font-size:1.5em;color:#3fb950;}
   .footer{text-align:center;padding:18px;font-size:0.7em;color:#484f58;}
   .override-panel{display:none;background:#3a2a1a;color:#d29922;padding:10px;border-radius:8px;margin-bottom:14px;text-align:center;font-weight:bold;border:1px solid #d29922;}
-  .sticky-save-container{position:sticky;bottom:16px;background:rgba(13,17,23,0.95);padding:12px;border-radius:8px;border:1px solid #30363d;text-align:center;margin-top:16px;box-shadow:0 -4px 12px rgba(0,0,0,0.4);}
+  .sticky-save-container{position:sticky;bottom:16px;background:rgba(13,17,23,0.95);padding:12px;border-radius:8px;border:1px solid #2a2a4a;text-align:center;margin-top:16px;box-shadow:0 -4px 12px rgba(0,0,0,0.4),0 0 16px rgba(184,74,255,0.08);}
   ::-webkit-scrollbar{width:6px;height:6px;}
   ::-webkit-scrollbar-track{background:transparent;}
   ::-webkit-scrollbar-thumb{background:#3d444d;border-radius:10px;}
   ::-webkit-scrollbar-thumb:hover{background:#58a6ff;}
+  .mascot-stage{width:64px;height:56px;flex-shrink:0;}
+  .mushroom{position:relative;width:64px;height:56px;image-rendering:pixelated;animation:idleBounce 2s ease-in-out infinite;}
+  .pixel{position:absolute;width:4px;height:4px;}
+  .c1{background:#b02020;}.c2{background:#c83838;}.c3{background:#d85555;}.c4{background:#b84860;}.c5{background:#9a4a70;}.c6{background:#8a3030;}
+  .cs{background:#a02020;}.w{background:#fff;}.st{background:#f5e6d0;}.sts{background:#e8d5b8;}.bk{background:#1a1a1a;}.bl{background:#f0a0a0;}
+  @keyframes idleBounce{0%,15%{transform:translateY(0);}20%{transform:translateY(-2px) scaleY(0.95) scaleX(1.05);}25%{transform:translateY(-4px) scaleY(1.05) scaleX(0.95);}30%{transform:translateY(-2px) scaleY(1.02) scaleX(0.98);}35%{transform:translateY(0) scaleY(0.98) scaleX(1.02);}38%,100%{transform:translateY(0) scaleY(1.0) scaleX(1.0);}}
+  @media (prefers-reduced-motion:reduce){.mushroom{animation:none;}}
 </style>
 <script src="/chart-4.4.0.min.js"></script>
 </head>
 <body>
-<div class="header">
-  <h1>GrowHub32</h1>
-  <div class="status" id="connectionStatus">Connecting...</div>
+<div class="header" style="overflow-x:hidden;">
+    <div style="display:flex;align-items:center;gap:12px;">
+        <div class="mascot-stage" aria-hidden="true"><div class="mushroom" aria-hidden="true">
+    <div class="pixel c2" style="top:0;left:24px"></div>
+    <div class="pixel c2" style="top:4px;left:16px"></div>
+    <div class="pixel c2" style="top:4px;left:20px"></div>
+    <div class="pixel c2" style="top:4px;left:24px"></div>
+    <div class="pixel c3" style="top:4px;left:28px"></div>
+    <div class="pixel c3" style="top:4px;left:32px"></div>
+    <div class="pixel c2" style="top:4px;left:36px"></div>
+    <div class="pixel c2" style="top:4px;left:40px"></div>
+    <div class="pixel c2" style="top:4px;left:44px"></div>
+    <div class="pixel c6" style="top:8px;left:12px"></div>
+    <div class="pixel c2" style="top:8px;left:16px"></div>
+    <div class="pixel w" style="top:8px;left:20px"></div>
+    <div class="pixel c3" style="top:8px;left:24px"></div>
+    <div class="pixel c3" style="top:8px;left:28px"></div>
+    <div class="pixel c2" style="top:8px;left:32px"></div>
+    <div class="pixel w" style="top:8px;left:36px"></div>
+    <div class="pixel c3" style="top:8px;left:40px"></div>
+    <div class="pixel c2" style="top:8px;left:44px"></div>
+    <div class="pixel c6" style="top:8px;left:48px"></div>
+    <div class="pixel c4" style="top:12px;left:8px"></div>
+    <div class="pixel c6" style="top:12px;left:12px"></div>
+    <div class="pixel w" style="top:12px;left:16px"></div>
+    <div class="pixel c3" style="top:12px;left:20px"></div>
+    <div class="pixel c6" style="top:12px;left:24px"></div>
+    <div class="pixel w" style="top:12px;left:28px"></div>
+    <div class="pixel c3" style="top:12px;left:32px"></div>
+    <div class="pixel c6" style="top:12px;left:36px"></div>
+    <div class="pixel w" style="top:12px;left:40px"></div>
+    <div class="pixel c3" style="top:12px;left:44px"></div>
+    <div class="pixel c4" style="top:12px;left:48px"></div>
+    <div class="pixel c4" style="top:12px;left:52px"></div>
+    <div class="pixel c6" style="top:16px;left:8px"></div>
+    <div class="pixel c3" style="top:16px;left:12px"></div>
+    <div class="pixel w" style="top:16px;left:16px"></div>
+    <div class="pixel c6" style="top:16px;left:20px"></div>
+    <div class="pixel c3" style="top:16px;left:24px"></div>
+    <div class="pixel w" style="top:16px;left:28px"></div>
+    <div class="pixel c6" style="top:16px;left:32px"></div>
+    <div class="pixel c3" style="top:16px;left:36px"></div>
+    <div class="pixel w" style="top:16px;left:40px"></div>
+    <div class="pixel c6" style="top:16px;left:44px"></div>
+    <div class="pixel c3" style="top:16px;left:48px"></div>
+    <div class="pixel c4" style="top:16px;left:52px"></div>
+    <div class="pixel c6" style="top:20px;left:4px"></div>
+    <div class="pixel c6" style="top:20px;left:8px"></div>
+    <div class="pixel c6" style="top:20px;left:12px"></div>
+    <div class="pixel c3" style="top:20px;left:16px"></div>
+    <div class="pixel c6" style="top:20px;left:20px"></div>
+    <div class="pixel c3" style="top:20px;left:24px"></div>
+    <div class="pixel c6" style="top:20px;left:28px"></div>
+    <div class="pixel c3" style="top:20px;left:32px"></div>
+    <div class="pixel c6" style="top:20px;left:36px"></div>
+    <div class="pixel c3" style="top:20px;left:40px"></div>
+    <div class="pixel c6" style="top:20px;left:44px"></div>
+    <div class="pixel c6" style="top:20px;left:48px"></div>
+    <div class="pixel c6" style="top:20px;left:52px"></div>
+    <div class="pixel c6" style="top:20px;left:56px"></div>
+    <div class="pixel c6" style="top:24px;left:4px"></div>
+    <div class="pixel c6" style="top:24px;left:8px"></div>
+    <div class="pixel c6" style="top:24px;left:12px"></div>
+    <div class="pixel c6" style="top:24px;left:16px"></div>
+    <div class="pixel c6" style="top:24px;left:20px"></div>
+    <div class="pixel c6" style="top:24px;left:24px"></div>
+    <div class="pixel c6" style="top:24px;left:28px"></div>
+    <div class="pixel c6" style="top:24px;left:32px"></div>
+    <div class="pixel c6" style="top:24px;left:36px"></div>
+    <div class="pixel c6" style="top:24px;left:40px"></div>
+    <div class="pixel c6" style="top:24px;left:44px"></div>
+    <div class="pixel c6" style="top:24px;left:48px"></div>
+    <div class="pixel c6" style="top:24px;left:52px"></div>
+    <div class="pixel c6" style="top:24px;left:56px"></div>
+    <div class="pixel st" style="top:28px;left:24px"></div>
+    <div class="pixel st" style="top:28px;left:28px"></div>
+    <div class="pixel st" style="top:28px;left:32px"></div>
+    <div class="pixel st" style="top:28px;left:36px"></div>
+    <div class="pixel sts" style="top:32px;left:24px"></div>
+    <div class="pixel bk" style="top:32px;left:28px"></div>
+    <div class="pixel st" style="top:32px;left:32px"></div>
+    <div class="pixel bk" style="top:32px;left:36px"></div>
+    <div class="pixel sts" style="top:32px;left:40px"></div>
+    <div class="pixel sts" style="top:36px;left:20px"></div>
+    <div class="pixel st" style="top:36px;left:24px"></div>
+    <div class="pixel bl" style="top:36px;left:28px"></div>
+    <div class="pixel st" style="top:36px;left:32px"></div>
+    <div class="pixel bl" style="top:36px;left:36px"></div>
+    <div class="pixel st" style="top:36px;left:40px"></div>
+    <div class="pixel sts" style="top:36px;left:44px"></div>
+    <div class="pixel sts" style="top:40px;left:22px"></div>
+    <div class="pixel sts" style="top:40px;left:26px"></div>
+    <div class="pixel st" style="top:40px;left:30px"></div>
+    <div class="pixel st" style="top:40px;left:34px"></div>
+    <div class="pixel sts" style="top:40px;left:38px"></div>
+    <div class="pixel sts" style="top:44px;left:24px"></div>
+    <div class="pixel sts" style="top:44px;left:28px"></div>
+    <div class="pixel sts" style="top:44px;left:32px"></div>
+    <div class="pixel sts" style="top:44px;left:36px"></div>
+</div>
+        <div style="flex:1;">
+            <div style="display:flex;align-items:center;justify-content:space-between;">
+                <h1 style="margin:0;line-height:1.2;">GrowHub32</h1>
+                <div id="warmupBadge" style="display:none;background:#58a6ff;color:#0d1117;padding:4px 12px;border-radius:20px;font-size:0.7em;font-weight:bold;animation:pulse-blue 1.5s infinite;">⚙️ Warming Up</div>
+            </div>
+            <div class="status" id="connectionStatus" style="margin-top:2px;">Connecting...</div>
+            <div id="warmupProgressContainer" style="display:none;margin-top:4px;width:100%;height:4px;background:#21262d;border-radius:4px;overflow:hidden;">
+                <div id="warmupProgressBar" style="width:0%;height:100%;background:linear-gradient(90deg,#58a6ff,#3fb950);transition:width 0.5s linear;"></div>
+            </div>
+        </div>
+    </div>
 </div>
 
 <div class="warning-banner" id="warningBanner">Warning: Sensor Fault - System Running Last Known Values</div>
@@ -144,6 +270,19 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   <button class="tab" onclick="switchTab(this, 'simulation')">Simulate</button>
   <button class="tab" onclick="switchTab(this, 'graphs')">Graphs</button>
   <button class="tab" onclick="switchTab(this, 'logs')">Logs</button>
+</div>
+
+<!-- Warmup panel moved outside tab content for global visibility -->
+<div id="warmupPanel" style="display:block;background:linear-gradient(180deg,#161b22 0%,#0d1117 100%);border:1px solid #5a3a7a;border-radius:12px;padding:20px;margin:16px;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,0.35),0 0 16px rgba(184,74,255,0.12);">
+    <h3 style="color:#58a6ff;margin-bottom:8px;">🔄 Compressor Warmup</h3>
+    <p style="font-size:0.85em;color:#8b949e;margin-bottom:12px;">The air tank needs time to fill before Air Assist can work. How long should the compressor warm up?</p>
+    <div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap;">
+        <button class="btn btn-neutral" onclick="startWarmup(0)">Skip</button>
+        <button class="btn btn-neutral" onclick="startWarmup(30)">30 sec</button>
+        <button class="btn btn-neutral" onclick="startWarmup(60)">1 min</button>
+        <button class="btn btn-neutral" onclick="startWarmup(120)">2 min</button>
+        <button class="btn btn-neutral" onclick="startWarmup(300)">5 min</button>
+    </div>
 </div>
 
 <div id="dashboard" class="tab-content active">
@@ -214,10 +353,10 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
     <br><button class="btn btn-off" style="margin-top:6px;" onclick="resumeAutomation()">Resume Automation Now</button>
   </div>
   <div class="config-group">
-    <div class="config-row"><label>Humidifier</label><div><button class="btn btn-neutral" onclick="identifyRelay(0)">ID</button><button class="btn btn-on" onclick="relayCmd(0,1)">ON</button><button class="btn btn-off" onclick="relayCmd(0,0)">OFF</button></div></div>
-    <div class="config-row"><label>Air Assist</label><div><button class="btn btn-neutral" onclick="identifyRelay(1)">ID</button><button class="btn btn-on" onclick="relayCmd(1,1)">ON</button><button class="btn btn-off" onclick="relayCmd(1,0)">OFF</button></div></div>
-    <div class="config-row"><label>Exhaust Fan</label><div><button class="btn btn-neutral" onclick="identifyRelay(2)">ID</button><button class="btn btn-on" onclick="relayCmd(2,1)">ON</button><button class="btn btn-off" onclick="relayCmd(2,0)">OFF</button></div></div>
-    <div class="config-row"><label>Compressor</label><div><button class="btn btn-neutral" onclick="identifyRelay(3)">ID</button><button class="btn btn-on" onclick="relayCmd(3,1)">ON</button><button class="btn btn-off" onclick="relayCmd(3,0)">OFF</button></div></div>
+    <div class="config-row"><label>Humidifier</label><div><button class="btn btn-on" onclick="relayCmd(0,1)">ON</button><button class="btn btn-off" onclick="relayCmd(0,0)">OFF</button></div></div>
+    <div class="config-row"><label>Air Assist</label><div><button class="btn btn-on" onclick="relayCmd(1,1)">ON</button><button class="btn btn-off" onclick="relayCmd(1,0)">OFF</button></div></div>
+    <div class="config-row"><label>Exhaust Fan</label><div><button class="btn btn-on" onclick="relayCmd(2,1)">ON</button><button class="btn btn-off" onclick="relayCmd(2,0)">OFF</button></div></div>
+    <div class="config-row"><label>Compressor</label><div><button class="btn btn-on" onclick="relayCmd(3,1)">ON</button><button class="btn btn-off" onclick="relayCmd(3,0)">OFF</button></div></div>
   </div>
 </div>
 
@@ -264,11 +403,11 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   </div>
   <div class="config-group">
     <h3>Relay Mapping</h3>
-    <p style="font-size:0.7em;color:#8b949e;margin-bottom:8px;">Assign functions to physical relay positions 1-4. Use the ID button on the Controls tab to identify which position is which. Each function must be assigned exactly once.</p>
-    <div class="config-row"><label>Position 1 (GPIO 13)</label><select id="funcPos1"><option value="0" selected>HOH Humidifier</option><option value="1">Air Assist</option><option value="2">Exhaust Fan</option><option value="3">Compressor</option></select></div>
-    <div class="config-row"><label>Position 2 (GPIO 26)</label><select id="funcPos2"><option value="0">HOH Humidifier</option><option value="1" selected>Air Assist</option><option value="2">Exhaust Fan</option><option value="3">Compressor</option></select></div>
-    <div class="config-row"><label>Position 3 (GPIO 14)</label><select id="funcPos3"><option value="0">HOH Humidifier</option><option value="1">Air Assist</option><option value="2" selected>Exhaust Fan</option><option value="3">Compressor</option></select></div>
-    <div class="config-row"><label>Position 4 (GPIO 27)</label><select id="funcPos4"><option value="0">HOH Humidifier</option><option value="1">Air Assist</option><option value="2">Exhaust Fan</option><option value="3" selected>Compressor</option></select></div>
+    <p style="font-size:0.7em;color:#8b949e;margin-bottom:8px;">Assign functions to physical relay positions 1-4. Use the ID button next to each position to identify which relay is which. Each function must be assigned exactly once.</p>
+    <div class="config-row"><label>Position 1</label><div style="display:flex;align-items:center;gap:8px;"><button class="btn btn-neutral" onclick="identifyRelay(0)" style="padding:4px 10px;font-size:0.75em;">ID</button><select id="funcPos1"><option value="0" selected>HOH Humidifier</option><option value="1">Air Assist</option><option value="2">Exhaust Fan</option><option value="3">Compressor</option></select></div></div>
+    <div class="config-row"><label>Position 2</label><div style="display:flex;align-items:center;gap:8px;"><button class="btn btn-neutral" onclick="identifyRelay(1)" style="padding:4px 10px;font-size:0.75em;">ID</button><select id="funcPos2"><option value="0">HOH Humidifier</option><option value="1" selected>Air Assist</option><option value="2">Exhaust Fan</option><option value="3">Compressor</option></select></div></div>
+    <div class="config-row"><label>Position 3</label><div style="display:flex;align-items:center;gap:8px;"><button class="btn btn-neutral" onclick="identifyRelay(2)" style="padding:4px 10px;font-size:0.75em;">ID</button><select id="funcPos3"><option value="0">HOH Humidifier</option><option value="1">Air Assist</option><option value="2" selected>Exhaust Fan</option><option value="3">Compressor</option></select></div></div>
+    <div class="config-row"><label>Position 4</label><div style="display:flex;align-items:center;gap:8px;"><button class="btn btn-neutral" onclick="identifyRelay(3)" style="padding:4px 10px;font-size:0.75em;">ID</button><select id="funcPos4"><option value="0">HOH Humidifier</option><option value="1">Air Assist</option><option value="2">Exhaust Fan</option><option value="3" selected>Compressor</option></select></div></div>
     <button class="btn btn-on" onclick="saveRelayMapping()">Apply Relay Mapping</button>
   </div>
   <div class="sticky-save-container">
@@ -324,16 +463,27 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   </div>
 </div>
 
-<div class="footer">GrowHub32 v1.5 | Calven</div>
+<div class="footer">GrowHub32 v1.4.0 | Calven</div>
 
 <script>
 var ws;
 var reconnectDelay = 3000;
 
+// Warmup state
+var warmupRemaining = 0;
+var warmupDuration = 0;
+var warmupInterval = null;
+var isWarmupComplete = false;
+
+// Graph globals
+var lastRequestedSensor = 0;
+
 function sendWS(data){
   if(ws && ws.readyState === WebSocket.OPEN){
     ws.send(JSON.stringify(data));
+    return true;
   }
+  return false;
 }
 
 function connectWS(){
@@ -436,66 +586,137 @@ function updateSensors(msg){
   if (typeof msg.hum === 'number') feedLiveGraph(1, msg.hum);
   if (typeof msg.co2 === 'number') feedLiveGraph(2, msg.co2);
   if (typeof msg.fridge === 'number') feedLiveGraph(3, msg.fridge);
-  updateWeather(msg);
+
+  // Warmup state handling
+  var panel = document.getElementById('warmupPanel');
+  if (msg.warmupSelected) {
+    // Warmup is or was active
+    if (msg.warmupDuration && msg.warmupDuration > 0) {
+      warmupDuration = msg.warmupDuration;
+      isWarmupComplete = false;
+      // Hide panel immediately
+      if (panel) panel.style.display = 'none';
+    } else {
+      // Warmup was SKIPPED (duration is 0)
+      if (panel) panel.style.display = 'none';
+      document.getElementById('warmupBadge').style.display = 'none';
+      document.getElementById('warmupProgressContainer').style.display = 'none';
+      if (warmupInterval) {
+        clearInterval(warmupInterval);
+        warmupInterval = null;
+      }
+      isWarmupComplete = true;
+    }
+  } else {
+    // Fresh boot - ensure panel is visible
+    if (panel) panel.style.display = 'block';
+    document.getElementById('warmupBadge').style.display = 'none';
+    document.getElementById('warmupProgressContainer').style.display = 'none';
+    if (warmupInterval) {
+      clearInterval(warmupInterval);
+      warmupInterval = null;
+    }
+    isWarmupComplete = false;
+  }
 }
 
-function updateWeather(msg) {
-  var panel = document.getElementById('weatherPanel');
-  if (!panel) return;
+function updateWarmupUI(remainingSeconds) {
+  var badge = document.getElementById('warmupBadge');
+  var progressContainer = document.getElementById('warmupProgressContainer');
+  var progressBar = document.getElementById('warmupProgressBar');
+  var panel = document.getElementById('warmupPanel');
 
-  if (!msg.weatherValid) {
-    panel.style.display = 'none';
+  if (remainingSeconds <= 0 || warmupDuration <= 0) {
+    // Warmup complete or invalid
+    if (panel) panel.style.display = 'none';
+    badge.style.display = 'none';
+    progressContainer.style.display = 'none';
+    if (warmupInterval) {
+      clearInterval(warmupInterval);
+      warmupInterval = null;
+    }
+    isWarmupComplete = true;
     return;
   }
 
-  panel.style.display = '';
-  document.getElementById('weatherTemp').textContent = (typeof msg.weatherTemp === 'number') ? msg.weatherTemp.toFixed(1) + '°C' : '--';
-  document.getElementById('weatherHum').textContent = (typeof msg.weatherHum === 'number') ? 'Humidity: ' + msg.weatherHum + '%' : '';
-  document.getElementById('weatherWind').textContent = (typeof msg.weatherWind === 'number') ? 'Wind: ' + msg.weatherWind.toFixed(1) + ' km/h' : '';
+  // Warmup in progress
+  isWarmupComplete = false;
+  if (panel) panel.style.display = 'none';
+  badge.style.display = 'inline-block';
+  progressContainer.style.display = 'block';
 
-  var code = msg.weatherCode || 0;
-  var emoji = '🌤️';
-  if (code === 0) emoji = '☀️';
-  else if (code >= 1 && code <= 3) emoji = '⛅';
-  else if (code >= 45 && code <= 48) emoji = '🌫️';
-  else if (code >= 51 && code <= 55) emoji = '🌦️';
-  else if (code >= 61 && code <= 65) emoji = '🌧️';
-  else if (code >= 71 && code <= 75) emoji = '❄️';
-  else if (code >= 80 && code <= 82) emoji = '🌦️';
-  else if (code >= 95 && code <= 99) emoji = '⛈️';
-  document.getElementById('weatherIcon').textContent = emoji;
+  var elapsed = warmupDuration - remainingSeconds;
+  var percent = Math.min(100, (elapsed / warmupDuration) * 100);
+  progressBar.style.width = percent + '%';
 
-  var staleEl = document.getElementById('weatherStale');
-  staleEl.style.display = msg.weatherStale ? 'block' : 'none';
+  if (remainingSeconds >= 60) {
+    badge.textContent = '⏱️ ' + Math.ceil(remainingSeconds / 60) + 'm remaining';
+  } else {
+    badge.textContent = '⏱️ ' + Math.ceil(remainingSeconds) + 's remaining';
+  }
+  badge.style.background = '#58a6ff';
+  badge.style.animation = 'pulse-blue 1.5s infinite';
 }
 
-var lastAlertBitmask = -1;
-
-function updateAlerts(msg) {
-  var panel = document.getElementById('alertsPanel');
-  var list = document.getElementById('alertsList');
-  if (!panel || !list) return;
-
-  var alerts = msg.alerts || 0;
-  if (alerts === lastAlertBitmask) return;
-  lastAlertBitmask = alerts;
-
-  if (alerts === 0) {
-    list.innerHTML = '';
-    panel.style.display = 'none';
-    return;
+function startWarmupClientCountdown(initialRemaining) {
+  if (warmupInterval) {
+    clearInterval(warmupInterval);
+    warmupInterval = null;
   }
 
-  panel.style.display = 'block';
-  var html = '';
+  warmupRemaining = initialRemaining;
+  updateWarmupUI(warmupRemaining);
 
-  if (alerts & 0x01) html += '<div style="color:#f85149;background:rgba(248,81,73,0.1);border:1px solid rgba(248,81,73,0.4);padding:8px 12px;margin-bottom:6px;border-radius:6px;font-size:0.85em;font-weight:600;">Sensor Fault — Using Last Known Values</div>';
-  if (alerts & 0x02) html += '<div style="color:#d29922;background:rgba(210,153,34,0.1);border:1px solid rgba(210,153,34,0.4);padding:8px 12px;margin-bottom:6px;border-radius:6px;font-size:0.85em;font-weight:600;">Humidifier Dry-Run Suspected — Check Tank</div>';
-  if (alerts & 0x04) html += '<div style="color:#d29922;background:rgba(210,153,34,0.1);border:1px solid rgba(210,153,34,0.4);padding:8px 12px;margin-bottom:6px;border-radius:6px;font-size:0.85em;font-weight:600;">Exhaust Fan May Be Blocked — CO2 Not Dropping</div>';
-  if (alerts & 0x08) html += '<div style="color:#d29922;background:rgba(210,153,34,0.1);border:1px solid rgba(210,153,34,0.4);padding:8px 12px;margin-bottom:6px;border-radius:6px;font-size:0.85em;font-weight:600;">Fridge Node Offline</div>';
+  // Start local countdown to keep UI smooth
+  warmupInterval = setInterval(function() {
+    warmupRemaining--;
+    if (warmupRemaining <= 0) {
+      warmupRemaining = 0;
+      updateWarmupUI(0);
+      if (warmupInterval) {
+        clearInterval(warmupInterval);
+        warmupInterval = null;
+      }
+    } else {
+      updateWarmupUI(warmupRemaining);
+    }
+  }, 1000);
+}
 
-  // ⚠️ Strings are hardcoded — do not interpolate dynamic data into innerHTML
-  list.innerHTML = html;
+function updateOverrideStatus(msg){
+  var panel = document.getElementById('overridePanel');
+  var timeDisplay = document.getElementById('overrideTime');
+  var active = msg.humOverride || msg.co2Override;
+  var remaining = Math.max(msg.humOverrideRemaining || 0, msg.co2OverrideRemaining || 0);
+
+  if(active && remaining > 0){
+    panel.style.display = 'block';
+    var min = Math.floor(remaining / 60);
+    var sec = remaining % 60;
+    timeDisplay.textContent = min + ':' + (sec < 10 ? '0' : '') + sec;
+  } else {
+    panel.style.display = 'none';
+  }
+
+  // Handle warmup remaining from this message (type 1)
+  if (msg.warmupRemaining !== undefined) {
+    var newRemaining = Math.max(0, msg.warmupRemaining);
+    // Infer warmupDuration from remaining if missing (reconnect race fix)
+    if (warmupDuration <= 0 && newRemaining > 0) {
+      warmupDuration = newRemaining;
+    }
+    if (warmupDuration > 0 && (!warmupInterval || isWarmupComplete)) {
+      startWarmupClientCountdown(newRemaining);
+    } else if (warmupDuration > 0) {
+      warmupRemaining = newRemaining;
+      updateWarmupUI(warmupRemaining);
+    }
+  }
+
+  // Check compressor locked state
+  if (msg.compressorLocked !== undefined) {
+    document.getElementById('compLock').textContent = msg.compressorLocked ? '(COOLDOWN)' : '';
+  }
 }
 
 function updateRelays(msg){
@@ -527,7 +748,7 @@ function updateRelays(msg){
   if (msg.compressor) compCard.classList.add('active'); else compCard.classList.remove('active');
   compCard.setAttribute('data-relay-state', msg.compressor ? 'true' : 'false');
 
-  document.getElementById('compLock').textContent = msg.compressorLocked ? '(COOLDOWN)' : '';
+  // compressorLocked is now handled in updateOverrideStatus
 }
 
 function updateConfig(msg){
@@ -548,22 +769,6 @@ function updateConfig(msg){
   document.getElementById('weatherLat').value = msg.weatherLat;
   document.getElementById('weatherLon').value = msg.weatherLon;
   document.getElementById('overrideTimeout').value = msg.overrideTimeout || 10;
-}
-
-function updateOverrideStatus(msg){
-  var panel = document.getElementById('overridePanel');
-  var timeDisplay = document.getElementById('overrideTime');
-  var active = msg.humOverride || msg.co2Override;
-  var remaining = Math.max(msg.humOverrideRemaining || 0, msg.co2OverrideRemaining || 0);
-
-  if(active && remaining > 0){
-    panel.style.display = 'block';
-    var min = Math.floor(remaining / 60);
-    var sec = remaining % 60;
-    timeDisplay.textContent = min + ':' + (sec < 10 ? '0' : '') + sec;
-  } else {
-    panel.style.display = 'none';
-  }
 }
 
 function updateCalibration(msg){
@@ -610,52 +815,33 @@ function switchTab(element, tabId){
   document.getElementById(tabId).classList.add('active');
 }
 
-var lastOverrideConfirmation = 0;
-var pendingConfirmRelay = -1;
-var pendingConfirmTimer = null;
-var toastTimer = null;
+function startWarmup(seconds) {
+  // Disable buttons immediately for feedback
+  document.querySelectorAll('#warmupPanel button').forEach(function(b) { b.disabled = true; });
 
-function showToast(msg) {
-  var el = document.getElementById('toastMsg');
-  if (el) el.textContent = msg;
-  var panel = document.getElementById('toastPanel');
-  if (panel) panel.style.display = 'block';
-  if (toastTimer) clearTimeout(toastTimer);
-  toastTimer = setTimeout(function() {
-    var p = document.getElementById('toastPanel');
-    if (p) p.style.display = 'none';
-  }, 3000);
+  var success = sendWS({type: 6, cmd: 'warmup', duration: seconds});
+  var panel = document.getElementById('warmupPanel');
+
+  // Hide panel immediately for all cases
+  if (panel) panel.style.display = 'none';
+
+  if (!success) {
+    // WebSocket is down - show error and re-enable buttons
+    addLog('Failed to send warmup command - WebSocket disconnected', 'warn');
+    document.querySelectorAll('#warmupPanel button').forEach(function(b) { b.disabled = false; });
+    if (panel) panel.style.display = 'block';
+    return;
+  }
+
+  if (seconds === 0) {
+    // Optional flash confirmation - but panel is already hidden
+    addLog('Warmup skipped', 'info');
+    return;
+  }
+
+  addLog('Warmup started - ' + seconds + ' seconds', 'info');
 }
 
-function initDashboardTaps() {
-  document.querySelectorAll('.relay-card').forEach(function(card) {
-    card.addEventListener('click', function(e) {
-      if (e.target.tagName === 'BUTTON') return;
-      var relayId = parseInt(this.getAttribute('data-relay-index'), 10);
-      var isActive = this.getAttribute('data-relay-state') === 'true';
-      var targetState = isActive ? 0 : 1;
-      var now = Date.now();
-
-      if (now - lastOverrideConfirmation > 300000) {
-        if (pendingConfirmRelay === relayId) {
-          relayCmd(relayId, targetState);
-          lastOverrideConfirmation = now;
-          pendingConfirmRelay = -1;
-          if (pendingConfirmTimer) clearTimeout(pendingConfirmTimer);
-          showToast('Override requested...');
-        } else {
-          pendingConfirmRelay = relayId;
-          var relayName = this.querySelector('.name').textContent;
-          showToast('Tap again to ' + (targetState ? 'start' : 'stop') + ' ' + relayName);
-          if (pendingConfirmTimer) clearTimeout(pendingConfirmTimer);
-          pendingConfirmTimer = setTimeout(function() { pendingConfirmRelay = -1; }, 3000);
-        }
-      } else {
-        relayCmd(relayId, targetState);
-      }
-    });
-  });
-}
 var identifyTimer = null;
 var identifyTimeout = null;
 
@@ -663,17 +849,19 @@ function identifyRelay(index) {
   if (identifyTimer) { clearInterval(identifyTimer); identifyTimer = null; }
   if (identifyTimeout) { clearTimeout(identifyTimeout); identifyTimeout = null; }
   var state = false;
-  sendWS({type: 6, cmd: 'relay', index: index, state: 1, force: true, confirmed: true});
+  // Use identify flag - this should be handled server-side as a dedicated operation
+  // that bypasses automation but respects safety interlocks
+  sendWS({type: 6, cmd: 'relay', index: index, state: 1, force: false, confirmed: true, identify: true});
   addLog('Relay identification started - toggling for 5 seconds', 'info');
   identifyTimer = setInterval(function() {
     state = !state;
-    sendWS({type: 6, cmd: 'relay', index: index, state: state ? 1 : 0, force: true, confirmed: true});
+    sendWS({type: 6, cmd: 'relay', index: index, state: state ? 1 : 0, force: false, confirmed: true, identify: true});
   }, 500);
   identifyTimeout = setTimeout(function() {
     clearInterval(identifyTimer);
     identifyTimer = null;
     identifyTimeout = null;
-    sendWS({type: 6, cmd: 'relay', index: index, state: 0, force: true, confirmed: true});
+    sendWS({type: 6, cmd: 'relay', index: index, state: 0, force: false, confirmed: true, identify: true});
     addLog('Relay identification complete', 'info');
   }, 5000);
 }
@@ -697,35 +885,37 @@ function saveThresholds(){
   var co2Emer = parseInt(document.getElementById('co2Emergency').value, 10);
   var exhaustOn = parseFloat(document.getElementById('humExhaustOn').value);
 
+  // Validate EMA first
+  var emaWeight = parseFloat(document.getElementById('emaWeight').value);
+  if (isNaN(emaWeight) || emaWeight < 0.10 || emaWeight > 0.50) {
+    addLog('EMA Weight must be between 0.10 and 0.50', 'warn');
+    return;
+  }
+
+  // Validate thresholds
   if (isNaN(hohFloor) || isNaN(assistFloor) || isNaN(ceiling) || isNaN(exhaustOn)) {
     addLog('Invalid humidity threshold value', 'warn');
     return;
   }
-  if (isNaN(assistOn) || assistOn < 0) {
-    addLog('Assist ON time cannot be negative', 'warn');
+  if (hohFloor < 0 || hohFloor > 100 || assistFloor < 0 || assistFloor > 100 || ceiling < 0 || ceiling > 100 || exhaustOn < 0 || exhaustOn > 100) {
+    addLog('Humidity values must be between 0 and 100', 'warn');
     return;
   }
-  if (isNaN(assistOff) || assistOff < 0) {
-    addLog('Assist OFF time cannot be negative', 'warn');
+  if (assistOn < 0 || assistOff < 0) {
+    addLog('Assist times cannot be negative', 'warn');
     return;
   }
   if (isNaN(co2High) || isNaN(co2Low) || isNaN(co2Emer)) {
     addLog('Invalid CO2 threshold value', 'warn');
     return;
   }
-
-    var wLat = parseFloat(document.getElementById('weatherLat').value);
-  var wLon = parseFloat(document.getElementById('weatherLon').value);
-  if (isNaN(wLat) || wLat < -90 || wLat > 90 || isNaN(wLon) || wLon < -180 || wLon > 180) {
-    addLog('Invalid weather coordinates', 'warn');
+  if (co2High < 0 || co2Low < 0 || co2Emer < 0) {
+    addLog('CO2 values must be positive', 'warn');
     return;
   }
 
-  var overrideTimeout = parseInt(document.getElementById('overrideTimeout').value, 10);
-  if (isNaN(overrideTimeout) || overrideTimeout < 1) overrideTimeout = 10;
-  if (overrideTimeout > 1440) overrideTimeout = 1440;
-
-   var thresholds = {
+  // Send thresholds and EMA atomically
+  var thresholds = {
     humHoHFloor: hohFloor,
     humAssistFloor: assistFloor,
     humCeiling: ceiling,
@@ -735,19 +925,9 @@ function saveThresholds(){
     co2HighLimit: co2High,
     co2LowTarget: co2Low,
     co2Emergency: co2Emer,
-    weatherLat: wLat,
-    weatherLon: wLon,
-    overrideTimeout: overrideTimeout
+    emaWeight: emaWeight
   };
-
-  sendWS({type: 6, cmd: 'thresholds', data: thresholds});
-  var emaWeight = parseFloat(document.getElementById('emaWeight').value);
-  if (isNaN(emaWeight) || emaWeight < 0.10 || emaWeight > 0.50) {
-    addLog('EMA Weight must be between 0.10 and 0.50', 'warn');
-    return;
-  }
-  sendWS({type: 6, cmd: 'ema', weight: emaWeight});
-
+  sendWS({type: 6, cmd: 'thresholds_and_ema', data: thresholds});
   addLog('Settings saved!', 'info');
 }
 
@@ -802,11 +982,7 @@ function saveRelayMapping(){
     return;
   }
 
-   var data = {
-    pinPos1: 13,
-    pinPos2: 26,
-    pinPos3: 14,
-    pinPos4: 27,
+  var data = {
     funcPos1: f1,
     funcPos2: f2,
     funcPos3: f3,
@@ -903,6 +1079,7 @@ function switchGraphTab(btn, sensor) {
     graphChart.data.datasets[0].data = liveBuffers[sensor];
   }
   updateGraphLabels();
+  // Exempt tab changes from throttle
   requestHistorical();
 }
 
@@ -916,25 +1093,26 @@ function setGraphRange(seconds, btn) {
 
 function requestHistorical() {
   var now = Date.now();
-  if (now - graphLastRequestTime < 5000) return;
+  // Allow immediate requests for tab changes, throttle only repeated requests
+  if (now - graphLastRequestTime < 5000 && graphSensor === lastRequestedSensor) return;
   graphLastRequestTime = now;
   graphRequestId = (graphRequestId + 1) & 0xFFFF;
   var start = Math.floor(now / 1000) - graphRange;
   sendWS({type: 100, sensor: graphSensor, start: start, end: Math.floor(now / 1000), max: 350, rid: graphRequestId});
+  lastRequestedSensor = graphSensor;
 }
 
 var lastLiveFeedTime = [0, 0, 0, 0];
 
 function feedLiveGraph(sensor, value) {
   var now = Date.now();
-  // Record one point every 5 seconds
   if (now - lastLiveFeedTime[sensor] < 5000) return;
   lastLiveFeedTime[sensor] = now;
 
   var epoch = Math.floor(now / 1000);
   liveBuffers[sensor].push({x: epoch, y: value});
   if (liveBuffers[sensor].length > GRAPH_MAX_LIVE) {
-    liveBuffers[sensor] = liveBuffers[sensor].slice(-GRAPH_MAX_LIVE);
+    liveBuffers[sensor].shift(); // O(n) but simpler than slice
   }
   if (graphChart && sensor === graphSensor) {
     graphChart.data.datasets[0].data = liveBuffers[sensor];
@@ -958,6 +1136,7 @@ connectWS();
 </body>
 </html>
 )rawliteral";
+
 // ============================================================
 // Web Server Handlers
 // ============================================================
@@ -1020,7 +1199,6 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
         req.requestId = doc["rid"] | 0;
 
         if (req.sensorType > 3) return;
-        // Sanity: reject epochs before 2020 to prevent 1970 DoS loop
         if (req.startEpoch < 1577836800) req.startEpoch = 1577836800;
         if (req.endEpoch > 0 && req.startEpoch >= req.endEpoch) return;
         if (req.maxPoints == 0 || req.maxPoints > GRAPH_MAX_RESPONSE_POINTS) req.maxPoints = GRAPH_MAX_RESPONSE_POINTS;
@@ -1054,10 +1232,18 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
         bool state = (doc["state"].as<int>() != 0);
         bool force = (doc["force"].as<int>() != 0);
         bool confirmed = (doc["confirmed"].as<int>() != 0);
+        bool identify = (doc["identify"].as<int>() != 0);
 
         if (index >= RELAY_COUNT) {
           Serial.print(F("[WS] Invalid relay index: "));
           Serial.println(index);
+          return;
+        }
+
+        // If this is an identification request, handle it separately
+        if (identify) {
+          // Bypass automation but respect hardware interlocks
+          relayManager_identifyRelay(index);
           return;
         }
 
@@ -1095,7 +1281,7 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
         calibrationActive = g_systemState.calibrationActive;
         portEXIT_CRITICAL(&g_stateMux);
 
-             if (!calibrationActive) {
+        if (!calibrationActive) {
           if (index == RELAY_HOH || index == RELAY_AIR_ASSIST) {
             if (!automation_isHumidityOverrideActive()) {
               automation_activateHumidityOverride();
@@ -1116,35 +1302,24 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
           }
         }
       }
-      else if (msgType == WS_COMMAND && strcmp(cmd, "thresholds") == 0) {
+      else if (msgType == WS_COMMAND && strcmp(cmd, "thresholds_and_ema") == 0) {
         AutomationThresholds* thresholds = automation_getThresholds();
         AutomationThresholds newThresholds = *thresholds;
 
-        newThresholds.humHoHFloor = doc["data"]["humHoHFloor"] | thresholds->humHoHFloor;
-        newThresholds.humAssistFloor = doc["data"]["humAssistFloor"] | thresholds->humAssistFloor;
-        newThresholds.humCeiling = doc["data"]["humCeiling"] | thresholds->humCeiling;
-        newThresholds.humExhaustOn = doc["data"]["humExhaustOn"] | thresholds->humExhaustOn;
-        newThresholds.assistOnSec = doc["data"]["assistOnSec"] | thresholds->assistOnSec;
-        newThresholds.assistOffSec = doc["data"]["assistOffSec"] | thresholds->assistOffSec;
-        newThresholds.co2HighLimit = doc["data"]["co2HighLimit"] | thresholds->co2HighLimit;
-        newThresholds.co2LowTarget = doc["data"]["co2LowTarget"] | thresholds->co2LowTarget;
-        newThresholds.co2Emergency = doc["data"]["co2Emergency"] | thresholds->co2Emergency;
+        // Clamp all threshold values server-side
+        newThresholds.humHoHFloor = constrain(doc["data"]["humHoHFloor"] | thresholds->humHoHFloor, 0, 100);
+        newThresholds.humAssistFloor = constrain(doc["data"]["humAssistFloor"] | thresholds->humAssistFloor, 0, 100);
+        newThresholds.humCeiling = constrain(doc["data"]["humCeiling"] | thresholds->humCeiling, 0, 100);
+        newThresholds.humExhaustOn = constrain(doc["data"]["humExhaustOn"] | thresholds->humExhaustOn, 0, 100);
+        newThresholds.assistOnSec = max(doc["data"]["assistOnSec"] | thresholds->assistOnSec, 0);
+        newThresholds.assistOffSec = max(doc["data"]["assistOffSec"] | thresholds->assistOffSec, 0);
+        newThresholds.co2HighLimit = max(doc["data"]["co2HighLimit"] | thresholds->co2HighLimit, 0);
+        newThresholds.co2LowTarget = max(doc["data"]["co2LowTarget"] | thresholds->co2LowTarget, 0);
+        newThresholds.co2Emergency = max(doc["data"]["co2Emergency"] | thresholds->co2Emergency, 0);
 
         automation_updateThresholds(&newThresholds);
-                 // v1.6: Weather location
-        float wLat = doc["data"]["weatherLat"] | g_runtimeCache.weatherLat;
-        float wLon = doc["data"]["weatherLon"] | g_runtimeCache.weatherLon;
-        if (wLat >= -90.0f && wLat <= 90.0f) g_runtimeCache.weatherLat = wLat;
-        if (wLon >= -180.0f && wLon <= 180.0f) g_runtimeCache.weatherLon = wLon;
-                 // v1.6: Configurable override timeout
-        int parsedTimeout = doc["data"]["overrideTimeout"] | DEFAULT_OVERRIDE_TIMEOUT_MIN;
-        if (parsedTimeout < MIN_OVERRIDE_TIMEOUT_MIN) parsedTimeout = MIN_OVERRIDE_TIMEOUT_MIN;
-        if (parsedTimeout > MAX_OVERRIDE_TIMEOUT_MIN) parsedTimeout = MAX_OVERRIDE_TIMEOUT_MIN;
-        g_runtimeCache.overrideTimeoutMinutes = (uint16_t)parsedTimeout;
-        sdLogger_saveCache();
-      }
-      else if (msgType == WS_COMMAND && strcmp(cmd, "ema") == 0) {
-        float weight = doc["weight"] | DEFAULT_EMA_WEIGHT;
+
+        float weight = doc["data"]["emaWeight"] | DEFAULT_EMA_WEIGHT;
         if (weight < EMA_WEIGHT_MIN) weight = EMA_WEIGHT_MIN;
         if (weight > EMA_WEIGHT_MAX) weight = EMA_WEIGHT_MAX;
         adaptive_setEMAWeight(weight);
@@ -1164,6 +1339,16 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
         if (year < 2000 || year > 2099 || month < 1 || month > 12 ||
             day < 1 || day > 31 || hour < 0 || hour > 23 || minute < 0 || minute > 59) {
           Serial.print(F("[WS] RTC datetime out of range: "));
+          Serial.println(datetime);
+          return;
+        }
+        // Basic calendar validation
+        int daysInMonth[] = {0,31,28,31,30,31,30,31,31,30,31,30,31};
+        if ((year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)) {
+          daysInMonth[2] = 29;
+        }
+        if (day > daysInMonth[month]) {
+          Serial.print(F("[WS] Invalid day for month: "));
           Serial.println(datetime);
           return;
         }
@@ -1197,14 +1382,53 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
       else if (msgType == WS_COMMAND && strcmp(cmd, "resume_automation") == 0) {
         automation_deactivateAllOverrides();
       }
+      else if (msgType == WS_COMMAND && strcmp(cmd, "warmup") == 0) {
+        unsigned long duration = doc["duration"] | 0;
+        if (duration > 600) duration = 600;
+
+        bool alreadySelected = false;
+
+        // Read current state
+        portENTER_CRITICAL(&g_stateMux);
+        alreadySelected = g_warmupSelected;
+        portEXIT_CRITICAL(&g_stateMux);
+
+        if (alreadySelected) {
+          Serial.println(F("[WS] Warmup already selected, ignoring"));
+          return;
+        }
+
+        // Heavy I/O outside spinlock
+        relayManager_setRelay(RELAY_COMPRESSOR, true);
+
+        // Atomic state commit - all or nothing
+        unsigned long start = (duration > 0) ? millis() : 0;
+        unsigned long durMs = duration * 1000UL;
+
+        portENTER_CRITICAL(&g_stateMux);
+        if (!g_warmupSelected) {  // Re-check inside lock
+          g_compressorWarmupStart = start;
+          g_compressorWarmupDuration = durMs;
+          g_warmupSelected = true;  // Set LAST, atomically with the others
+        }
+        portEXIT_CRITICAL(&g_stateMux);
+
+        if (duration > 0) {
+          Serial.print(F("[BOOT] Compressor warmup: "));
+          Serial.print(duration);
+          Serial.println(F(" seconds"));
+        } else {
+          Serial.println(F("[BOOT] Compressor warmup skipped"));
+        }
+      }
       else if (msgType == WS_COMMAND && strcmp(cmd, "relay_mapping") == 0) {
-              const RelayMapping* current = relayManager_getMapping();
+        const RelayMapping* current = relayManager_getMapping();
         RelayMapping newMapping;
         newMapping.magic = RELAY_MAPPING_MAGIC;
-        newMapping.pinPos1 = doc["data"]["pinPos1"] | current->pinPos1;
-        newMapping.pinPos2 = doc["data"]["pinPos2"] | current->pinPos2;
-        newMapping.pinPos3 = doc["data"]["pinPos3"] | current->pinPos3;
-        newMapping.pinPos4 = doc["data"]["pinPos4"] | current->pinPos4;
+        newMapping.pinPos1 = current->pinPos1;
+        newMapping.pinPos2 = current->pinPos2;
+        newMapping.pinPos3 = current->pinPos3;
+        newMapping.pinPos4 = current->pinPos4;
         newMapping.functionForPos[0] = doc["data"]["funcPos1"] | current->functionForPos[0];
         newMapping.functionForPos[1] = doc["data"]["funcPos2"] | current->functionForPos[1];
         newMapping.functionForPos[2] = doc["data"]["funcPos3"] | current->functionForPos[2];
@@ -1224,7 +1448,7 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
                } else {
           StaticJsonDocument<128> responseDoc;
           responseDoc["type"] = 2;
-          responseDoc["message"] = "Invalid relay mapping — check pins";
+          responseDoc["message"] = "Invalid relay mapping — check functions";
           responseDoc["level"] = "warn";
           char response[128];
           size_t responseLen = serializeJson(responseDoc, response, sizeof(response));
@@ -1285,6 +1509,14 @@ static void sendSensorUpdate() {
   calibrationActive = g_systemState.calibrationActive;
   portEXIT_CRITICAL(&g_stateMux);
 
+  // Warmup variables - read atomically
+  bool warmupSelected;
+  unsigned long warmupDuration;
+  portENTER_CRITICAL(&g_stateMux);
+  warmupSelected = g_warmupSelected;
+  warmupDuration = g_compressorWarmupDuration;
+  portEXIT_CRITICAL(&g_stateMux);
+
   fridgeTemp = network_getFridgeTemp();
   bool fridgeLost = network_isFridgeHeartbeatLost();
   bool wifiConnected = network_isWiFiConnected();
@@ -1331,6 +1563,11 @@ static void sendSensorUpdate() {
   doc["weatherStale"] = (g_systemState.weatherValid && 
                          (millis() - g_systemState.weatherLastFetch > WEATHER_STALE_MS));
 
+  doc["warmupSelected"] = warmupSelected;
+  if (warmupSelected && warmupDuration > 0) {
+    doc["warmupDuration"] = warmupDuration / 1000;
+  }
+
   char output[768];
   size_t len = serializeJson(doc, output, sizeof(output));
   if (len >= sizeof(output)) {
@@ -1350,6 +1587,16 @@ static void sendSystemStatus() {
   compressor = g_systemState.compressorActive;
   portEXIT_CRITICAL(&g_stateMux);
 
+  // Warmup variables - read atomically
+  bool warmupSelected;
+  unsigned long warmupStart, warmupDuration;
+  unsigned long now = millis();  // Capture before critical section
+  portENTER_CRITICAL(&g_stateMux);
+  warmupSelected = g_warmupSelected;
+  warmupStart = g_compressorWarmupStart;
+  warmupDuration = g_compressorWarmupDuration;
+  portEXIT_CRITICAL(&g_stateMux);
+
   StaticJsonDocument<256> doc;
   doc["type"] = WS_RELAY_STATE;
   doc["hoh"] = hoh;
@@ -1360,7 +1607,13 @@ static void sendSystemStatus() {
   doc["humOverrideRemaining"] = automation_getHumidityOverrideRemaining() / 1000;
   doc["co2Override"] = automation_isCO2OverrideActive();
   doc["co2OverrideRemaining"] = automation_getCO2OverrideRemaining() / 1000;
-  doc["alerts"] = safety_getActiveAlerts() | network_getActiveAlerts();
+  doc["warmupSelected"] = warmupSelected;
+  if (warmupSelected && warmupDuration > 0) {
+    unsigned long elapsed = now - warmupStart;
+    doc["warmupRemaining"] = (elapsed < warmupDuration) ?
+        (warmupDuration - elapsed) / 1000 : 0;
+  }
+  doc["compressorLocked"] = relayManager_isCompressorLocked();
 
   char output[256];
   size_t len = serializeJson(doc, output, sizeof(output));
