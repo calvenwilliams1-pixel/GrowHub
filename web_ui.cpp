@@ -1,15 +1,12 @@
 /*
    web_ui.cpp
    GrowHub32 - Local Web Application Interface Implementation
-   Version: 1.4.0
-   Revision: Added "Mascots" tab with interactive mushroom designer.
-             Added background mushroom "stars" — floating, spinning, pulsing
-             custom mushroom designs that drift in the background.
-             Uses nested DOM layers for transform isolation, box-shadow
-             sprite rendering for performance, and localStorage for settings.
+   Version: 1.4.1
+   Revision: Removed Mascots tab and character creator.
+             Kept header mascot and mushroom family footer.
 
    This serves a single-page application from program memory.
-   Chart.js is served from SPIFFS for cache efficiency (v1.4).
+   Chart.js is served from SPIFFS for cache efficiency.
 
    The UI connects via WebSocket on port 81 for real-time updates.
    HTTP server runs on port 80.
@@ -32,7 +29,7 @@
 // ============================================================
 // UPDATE VERSION HERE WHEN BUMPING FIRMWARE
 // ============================================================
-#define WEB_UI_VERSION "1.4.0"
+#define WEB_UI_VERSION "1.4.1"
 
 static WebServer g_server(WEB_SERVER_PORT);
 static WebSocketsServer g_webSocket(WEBSOCKET_PORT);
@@ -45,16 +42,6 @@ extern unsigned long g_compressorWarmupDuration;
 extern bool g_warmupSelected;
 
 // ============================================================
-// Mascots Tab — Profile Storage Constants
-// ============================================================
-#define MAX_PROFILES 8
-#define PROFILES_FILE "/profiles.json"
-#define PROFILES_TEMP "/profiles.tmp"
-#define PROFILES_BACKUP "/profiles.json.bak"
-
-static SemaphoreHandle_t g_profileMutex = NULL;
-
-// ============================================================
 // Forward Declarations
 // ============================================================
 static void handleRoot();
@@ -64,18 +51,6 @@ static void sendSystemStatus();
 static void sendConfigUpdate(uint8_t clientNum);
 static void sendCalibrationUpdate();
 
-enum class LoadResult { OK, Empty, Recovered, Failed };
-static LoadResult loadProfilesJson(JsonDocument& doc, bool& wasRecovered);
-static bool saveProfilesJson(const JsonDocument& doc);
-static void getProfileNames(JsonArray& names);
-static bool validateProfileData(const JsonObject& data);
-static void sendProfileResponse(uint8_t num, const char* cmd, const char* status, const char* message);
-static void handleProfileList(uint8_t num);
-static void handleProfileSave(uint8_t num, const JsonDocument& req);
-static void handleProfileLoad(uint8_t num, const JsonDocument& req);
-static void handleProfileDelete(uint8_t num, const JsonDocument& req);
-static void recoverProfiles();
-
 // ============================================================
 // EMBEDDED HTML/CSS/JS (Single Page Application)
 // ============================================================
@@ -84,7 +59,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-<title>GrowHub32 v1.4.0</title>
+<title>GrowHub32 v1.4.1</title>
 <style>
   /* ─── Reset & Base ─── */
   *{margin:0;padding:0;box-sizing:border-box;}
@@ -135,10 +110,6 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   .btn-off:hover{background:#30363d;}
   .btn-neutral{background:#30363d;color:#c9d1d9;}
   .btn-neutral:hover{background:#484f58;}
-  .btn-random{background:#b84aff;color:#fff;border:none;border-radius:6px;padding:6px 14px;cursor:pointer;font-size:0.85em;font-weight:600;}
-  .btn-random:hover{background:#9a3ad9;}
-  .btn-reset{background:#30363d;color:#c9d1d9;border:none;border-radius:6px;padding:6px 14px;cursor:pointer;font-size:0.85em;}
-  .btn-reset:hover{background:#484f58;}
 
   /* ─── Config Groups ─── */
   .config-group{margin-bottom:18px;background:#161b22;border:1px solid #2a2a4a;border-radius:12px;padding:16px;box-shadow:0 0 16px rgba(184,74,255,0.06);position:relative;z-index:10;}
@@ -203,135 +174,6 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   .mushroom-wrapper:nth-child(5) .mushroom-sprite{animation:mushroom-bounce 2.2s ease-in-out infinite;animation-delay:0.5s;}
   .mushroom-wrapper:nth-child(5) .mushroom-shadow{animation:mushroom-shadow-scale 2.2s ease-in-out infinite;animation-delay:0.5s;}
   @media(max-width:600px){.mushroom-footer{gap:8px;padding:16px 6px 20px;}.mushroom-sprite{transform:scale(0.7);transform-origin:bottom center;}.mushroom-shadow{transform:scale(0.7);}}
-
-  /* ─── Mascots Tab Designer ─── */
-  .mascots-tab .designer-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;}
-  @media(max-width:700px){.mascots-tab .designer-grid{grid-template-columns:1fr;}}
-  .mascots-tab .designer-preview{background:#161b22;border:1px solid #2a2a4a;border-radius:12px;padding:20px;display:flex;flex-direction:column;align-items:center;}
-  .mascots-tab .designer-preview h4{color:#8b949e;font-size:0.8em;text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;}
-  .mascots-tab .preview-stage{width:200px;height:200px;display:flex;align-items:flex-end;justify-content:center;background:radial-gradient(ellipse at center bottom,rgba(0,0,0,0.4),transparent);border-radius:16px;}
-  .mascots-tab .preview-stage .mushroom-sprite{position:relative;width:60px;height:72px;image-rendering:pixelated;transform-origin:bottom center;}
-  .mascots-tab .preview-stage .mushroom-sprite .pixel{position:absolute;border-radius:1px;shape-rendering:crispEdges;}
-  @keyframes designerBounce{0%,100%{transform:translateY(0) scaleY(1) scaleX(1);}10%{transform:translateY(2px) scaleY(0.9) scaleX(1.1);}30%{transform:translateY(-12px) scaleY(1.1) scaleX(0.95);}50%{transform:translateY(-16px) scaleY(1.05) scaleX(0.98);}70%{transform:translateY(-8px) scaleY(1.08) scaleX(0.96);}85%{transform:translateY(2px) scaleY(0.95) scaleX(1.05);}95%{transform:translateY(0) scaleY(1) scaleX(1);}}
-  @media(prefers-reduced-motion:reduce){.mascots-tab .preview-stage .mushroom-sprite{animation:none !important;}}
-  .mascots-tab .preview-name{color:#58a6ff;font-size:1.1em;margin-top:12px;font-weight:bold;}
-  .mascots-tab .designer-controls{background:#161b22;border:1px solid #2a2a4a;border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:12px;}
-  .mascots-tab .control-group{border-bottom:1px solid #21262d;padding-bottom:12px;}
-  .mascots-tab .control-group:last-child{border-bottom:none;padding-bottom:0;}
-  .mascots-tab .control-group label{font-size:0.75em;color:#8b949e;text-transform:uppercase;letter-spacing:0.5px;display:block;margin-bottom:6px;}
-  .mascots-tab .btn-group{display:flex;gap:4px;flex-wrap:wrap;}
-  .mascots-tab .btn-group button{padding:4px 12px;border:1px solid #30363d;border-radius:6px;background:#0d1117;color:#c9d1d9;cursor:pointer;font-size:0.8em;transition:all 0.2s;}
-  .mascots-tab .btn-group button:hover{background:#1c2333;}
-  .mascots-tab .btn-group button.active{background:#b84aff;color:#fff;border-color:#b84aff;}
-  .mascots-tab .slider-row{display:flex;align-items:center;gap:8px;margin-bottom:4px;}
-  .mascots-tab .slider-row span:first-child{font-size:0.8em;color:#8b949e;width:50px;}
-  .mascots-tab .slider-row input[type=range]{flex:1;accent-color:#b84aff;background:#21262d;height:4px;border-radius:4px;cursor:pointer;}
-  .mascots-tab .slider-row .slider-value{font-size:0.7em;color:#8b949e;width:40px;text-align:right;}
-  .mascots-tab .color-row{display:flex;align-items:center;gap:8px;}
-  .mascots-tab .color-row>span{font-size:0.8em;color:#8b949e;width:50px;}
-  .mascots-tab .color-picker{display:flex;gap:4px;flex-wrap:wrap;align-items:center;}
-  .mascots-tab .color-swatch{width:24px;height:24px;border-radius:6px;border:2px solid transparent;cursor:pointer;transition:border 0.2s;position:relative;}
-  .mascots-tab .color-swatch:hover{border-color:#58a6ff;}
-  .mascots-tab .color-swatch.active{border-color:#b84aff;}
-  .mascots-tab .color-swatch.custom{background:transparent !important;border:2px dashed #30363d;display:flex;align-items:center;justify-content:center;}
-  .mascots-tab .color-swatch.custom input[type=color]{position:absolute;top:0;left:0;width:100%;height:100%;opacity:0;cursor:pointer;}
-  .mascots-tab .color-swatch.custom span{font-size:12px;line-height:1;}
-  .mascots-tab .profile-section{border-bottom:1px solid #21262d;padding-bottom:12px;}
-  .mascots-tab .profile-row{display:flex;gap:4px;margin-bottom:4px;flex-wrap:wrap;}
-  .mascots-tab .profile-row input[type=text]{flex:1;min-width:100px;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#e6edf3;padding:4px 8px;font-size:0.85em;}
-  .mascots-tab .profile-row select{flex:1;min-width:100px;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#e6edf3;padding:4px 8px;font-size:0.85em;}
-  .mascots-tab .btn-save-profile{background:#238636;color:#fff;border:none;border-radius:6px;padding:4px 12px;cursor:pointer;font-size:0.8em;}
-  .mascots-tab .btn-save-profile:hover{background:#2ea043;}
-  .mascots-tab .btn-save-profile:disabled{opacity:0.5;cursor:not-allowed;}
-  .mascots-tab .btn-load-profile{background:#58a6ff;color:#fff;border:none;border-radius:6px;padding:4px 12px;cursor:pointer;font-size:0.8em;}
-  .mascots-tab .btn-load-profile:hover{background:#79c0ff;}
-  .mascots-tab .btn-delete-profile{background:#da3633;color:#fff;border:none;border-radius:6px;padding:4px 12px;cursor:pointer;font-size:0.8em;}
-  .mascots-tab .btn-delete-profile:hover{background:#f85149;}
-  .mascots-tab .action-row{display:flex;gap:8px;flex-wrap:wrap;padding-top:4px;}
-  .mascots-tab .export-area{background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:8px;font-family:monospace;font-size:0.65em;max-height:120px;overflow:auto;white-space:pre-wrap;color:#8b949e;display:none;margin-top:6px;}
-  .mascots-tab .export-area.show{display:block;}
-  .mascots-tab .import-area{background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:8px;font-family:monospace;font-size:0.65em;max-height:120px;overflow:auto;color:#8b949e;display:none;margin-top:6px;width:100%;resize:vertical;min-height:60px;}
-  .mascots-tab .import-area.show{display:block;}
-  .mascots-tab .profile-count{color:#b84aff;font-size:0.85em;}
-
-  /* ─── Background Stars Container ─── */
-  #starContainer {
-    position: fixed;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100vh;
-    height: 100dvh;
-    z-index: 1;
-    pointer-events: none;
-    overflow: hidden;
-  }
-
-  /* ─── Star Layers ─── */
-  .star-drift-wrapper {
-    position: fixed;
-    pointer-events: none;
-    z-index: 1;
-    animation: var(--star-drift-name, none) var(--drift-duration, 30s) ease-in-out infinite;
-  }
-
-  .star-spin-wrapper {
-    width: 100%;
-    height: 100%;
-    animation: starSpin var(--spin-duration, 60s) linear infinite;
-    animation-direction: var(--spin-direction, normal);
-  }
-
-  .star-pulse-layer {
-    width: 100%;
-    height: 100%;
-    animation: starPulse var(--pulse-duration, 4s) ease-in-out infinite;
-  }
-
-  .star-sprite {
-    width: 100%;
-    height: 100%;
-    position: relative;
-    opacity: var(--star-opacity, 0.2);
-    image-rendering: pixelated;
-  }
-
-  .star-sprite .pixel-grid {
-    width: 1px;
-    height: 1px;
-    position: absolute;
-    top: 0;
-    left: 0;
-    transform-origin: top left;
-    border-radius: 0;
-  }
-
-  /* ─── Star Keyframes ─── */
-  @keyframes starSpin {
-    0%   { transform: rotate(0deg); }
-    100% { transform: rotate(360deg); }
-  }
-
-  @keyframes starPulse {
-    0%, 100% { transform: scale(1); }
-    50%      { transform: scale(1.15); }
-  }
-
-  /* ─── Reduced Motion ─── */
-  @media (prefers-reduced-motion: reduce) {
-    #starContainer { display: none; }
-    .star-drift-wrapper,
-    .star-spin-wrapper,
-    .star-pulse-layer {
-      animation: none !important;
-      transform: none !important;
-    }
-  }
-
-  /* ─── Mobile ─── */
-  @media (max-width: 480px) {
-    #starContainer { display: none; }
-  }
 </style>
 <script src="/chart-4.4.0.min.js"></script>
 </head>
@@ -460,7 +302,6 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   <button class="tab" onclick="switchTab(this, 'simulation')">Simulate</button>
   <button class="tab" onclick="switchTab(this, 'graphs')">Graphs</button>
   <button class="tab" onclick="switchTab(this, 'logs')">Logs</button>
-  <button class="tab" onclick="switchTab(this, 'mascots')">🎨 Mascots</button>
 </div>
 
 <!-- Warmup panel -->
@@ -661,255 +502,8 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   </div>
 </div>
 
-<!-- ─── MASCOTS TAB ─── -->
-<div id="mascots" class="tab-content mascots-tab">
-  <h2 style="color:#58a6ff;margin-bottom:16px;">🍄 Mushroom Designer</h2>
-  <p style="color:#8b949e;font-size:0.85em;margin-bottom:16px;">
-    Design your own custom mushroom mascots. Adjust the sliders, pick colours, and save your favourites.
-    <span class="profile-count" id="profileCount">(0/8 profiles used)</span>
-  </p>
-
-  <div class="designer-grid">
-    <!-- Preview -->
-    <div class="designer-preview">
-      <h4>📺 Live Preview</h4>
-      <div class="preview-stage">
-        <div class="mushroom-sprite" id="designerSprite"></div>
-      </div>
-      <div class="preview-name" id="designerName">Amanita</div>
-    </div>
-
-    <!-- Controls -->
-    <div class="designer-controls">
-      <!-- Template -->
-      <div class="control-group">
-        <label>📋 Template</label>
-        <div class="btn-group" id="templateButtons">
-          <button class="active" data-template="amanita">Amanita</button>
-          <button data-template="chanterelle">Chanterelle</button>
-          <button data-template="shiitake">Shiitake</button>
-          <button data-template="magic">Magic</button>
-          <button data-template="morel">Morel</button>
-        </div>
-      </div>
-
-      <!-- Cap -->
-      <div class="control-group">
-        <label>🔴 Cap</label>
-        <div class="slider-row">
-          <span>Width</span>
-          <input type="range" id="capWidth" min="60" max="120" value="100">
-          <span class="slider-value" id="capWidthVal">100%</span>
-        </div>
-        <div class="slider-row">
-          <span>Height</span>
-          <input type="range" id="capHeight" min="60" max="120" value="100">
-          <span class="slider-value" id="capHeightVal">100%</span>
-        </div>
-        <div class="color-row">
-          <span>Color</span>
-          <div class="color-picker" id="capColorPicker">
-            <div class="color-swatch active" style="background:#e63946;" data-color="#e63946"></div>
-            <div class="color-swatch" style="background:#f4a261;" data-color="#f4a261"></div>
-            <div class="color-swatch" style="background:#795548;" data-color="#795548"></div>
-            <div class="color-swatch" style="background:#7b2cbf;" data-color="#7b2cbf"></div>
-            <div class="color-swatch" style="background:#40916c;" data-color="#40916c"></div>
-            <div class="color-swatch" style="background:#ff6b6b;" data-color="#ff6b6b"></div>
-            <div class="color-swatch" style="background:#ffd93d;" data-color="#ffd93d"></div>
-            <div class="color-swatch" style="background:#6bcbff;" data-color="#6bcbff"></div>
-            <div class="color-swatch" style="background:#a66cff;" data-color="#a66cff"></div>
-            <div class="color-swatch custom">
-              <input type="color" id="customCapColor" value="#e63946">
-              <span>🎨</span>
-            </div>
-          </div>
-        </div>
-        <div class="btn-group" id="spotButtons">
-          <button class="active" data-spots="2">2 Spots</button>
-          <button data-spots="4">4 Spots</button>
-          <button data-spots="6">6 Spots</button>
-          <button data-spots="0">None</button>
-        </div>
-      </div>
-
-      <!-- Stem -->
-      <div class="control-group">
-        <label>🌿 Stem</label>
-        <div class="slider-row">
-          <span>Height</span>
-          <input type="range" id="stemHeight" min="60" max="140" value="100">
-          <span class="slider-value" id="stemHeightVal">100%</span>
-        </div>
-        <div class="slider-row">
-          <span>Width</span>
-          <input type="range" id="stemWidth" min="50" max="120" value="100">
-          <span class="slider-value" id="stemWidthVal">100%</span>
-        </div>
-        <div class="color-row">
-          <span>Color</span>
-          <div class="color-picker" id="stemColorPicker">
-            <div class="color-swatch active" style="background:#fefae0;" data-color="#fefae0"></div>
-            <div class="color-swatch" style="background:#f5e6d0;" data-color="#f5e6d0"></div>
-            <div class="color-swatch" style="background:#efebe9;" data-color="#efebe9"></div>
-            <div class="color-swatch" style="background:#e8d5b8;" data-color="#e8d5b8"></div>
-            <div class="color-swatch" style="background:#f0e6d3;" data-color="#f0e6d3"></div>
-            <div class="color-swatch custom">
-              <input type="color" id="customStemColor" value="#fefae0">
-              <span>🎨</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Animation -->
-         <!-- Animation -->
-      <div class="control-group">
-        <label>🌀 Animation</label>
-        <div class="slider-row">
-          <span>Bounce</span>
-          <input type="range" id="bounceHeight" min="5" max="35" value="20">
-          <span class="slider-value" id="bounceHeightVal">20px</span>
-        </div>
-        <div class="slider-row">
-          <span>Speed</span>
-          <input type="range" id="animSpeed" min="12" max="35" value="22" step="1">
-          <span class="slider-value" id="animSpeedVal">2.2s</span>
-        </div>
-      </div>
-
-      <!-- ─── Face Customization ─── -->
-      <div class="control-group">
-        <label>😊 Face</label>
-
-        <div style="margin-bottom:4px;">
-          <span style="font-size:0.7em;color:#8b949e;">Eyes</span>
-          <div class="btn-group">
-            <button data-eye="normal" class="active">Normal</button>
-            <button data-eye="happy">😄</button>
-            <button data-eye="sleepy">😴</button>
-            <button data-eye="closed">😌</button>
-            <button data-eye="big">👀</button>
-            <button data-eye="none">✖</button>
-          </div>
-        </div>
-
-        <div style="margin-bottom:4px;">
-          <span style="font-size:0.7em;color:#8b949e;">Mouth</span>
-          <div class="btn-group">
-            <button data-mouth="smile" class="active">Smile</button>
-            <button data-mouth="happy">😁</button>
-            <button data-mouth="neutral">😐</button>
-            <button data-mouth="surprised">😮</button>
-            <button data-mouth="none">✖</button>
-          </div>
-        </div>
-
-        <div class="slider-row">
-          <span style="font-size:0.7em;color:#8b949e;width:50px;">Blush</span>
-          <input type="checkbox" id="blushEnable" checked>
-          <label style="font-size:0.7em;color:#8b949e;margin-left:4px;">On</label>
-          <input type="color" id="blushColor" value="#ff99c8" style="width:30px;height:24px;border:none;background:transparent;cursor:pointer;margin-left:8px;">
-          <span style="font-size:0.7em;color:#8b949e;margin-left:8px;">Size</span>
-          <input type="range" id="blushSize" min="5" max="20" value="10" step="1" style="flex:0.5;">
-          <span class="slider-value" id="blushSizeVal">1.0</span>
-        </div>
-
-        <div style="margin-top:4px;">
-          <span style="font-size:0.7em;color:#8b949e;">Cap Texture</span>
-          <div class="btn-group">
-            <button data-texture="smooth" class="active">Smooth</button>
-            <button data-texture="textured">Textured</button>
-            <button data-texture="striped">Striped</button>
-            <button data-texture="gradient">Gradient</button>
-          </div>
-        </div>
-      </div>
-
-      <!-- Profile -->
-      <div class="control-group profile-section">
-        <label>💾 Profile</label>
-        <div class="profile-row">
-          <input type="text" id="profileNameInput" placeholder="Profile name..." maxlength="32">
-          <button class="btn-save-profile" id="saveProfileBtn">💾 Save</button>
-        </div>
-        <div class="profile-row">
-          <select id="profileLoadSelect">
-            <option value="">-- No saved profiles --</option>
-          </select>
-          <button class="btn-load-profile" id="loadProfileBtn">📂 Load</button>
-          <button class="btn-delete-profile" id="deleteProfileBtn">🗑 Delete</button>
-        </div>
-        <div style="font-size:0.7em;color:#8b949e;margin-top:4px;">
-          Max 8 profiles. Saved designs persist on the device.
-        </div>
-      </div>
-
-      <!-- Background Stars -->
-      <div class="control-group">
-        <label>🌌 Background Mushrooms</label>
-        <div class="profile-row">
-          <label style="font-size:0.8em;color:#8b949e;width:60px;">Enable</label>
-          <input type="checkbox" id="starEnable" checked>
-        </div>
-        <div class="slider-row">
-          <span>Size</span>
-          <input type="range" id="starSize" min="32" max="150" value="56">
-          <span class="slider-value" id="starSizeVal">56px</span>
-        </div>
-        <div style="display:flex;gap:4px;margin-left:58px;flex-wrap:wrap;">
-          <button class="btn-star-size" data-size="32" style="font-size:0.65em;padding:2px 8px;background:#30363d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;cursor:pointer;">Small</button>
-          <button class="btn-star-size" data-size="56" style="font-size:0.65em;padding:2px 8px;background:#30363d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;cursor:pointer;">Medium</button>
-          <button class="btn-star-size" data-size="80" style="font-size:0.65em;padding:2px 8px;background:#30363d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;cursor:pointer;">Large</button>
-          <button class="btn-star-size" data-size="120" style="font-size:0.65em;padding:2px 8px;background:#30363d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;cursor:pointer;">XL</button>
-        </div>
-        <div class="slider-row">
-          <span>Opacity</span>
-          <input type="range" id="starOpacity" min="8" max="45" value="22">
-          <span class="slider-value" id="starOpacityVal">22%</span>
-        </div>
-        <div class="slider-row">
-          <span>Drift Speed</span>
-          <input type="range" id="starDriftSpeed" min="10" max="45" value="22">
-          <span class="slider-value" id="starDriftSpeedVal">22s</span>
-        </div>
-        <div class="slider-row">
-          <span>Spin Speed</span>
-          <input type="range" id="starSpinRPM" min="1" max="20" value="6" step="1">
-          <span class="slider-value" id="starSpinRPMVal">0.6 RPM</span>
-        </div>
-        <div class="slider-row">
-          <span>Pulse Speed</span>
-          <input type="range" id="starPulseSpeed" min="20" max="80" value="40" step="1">
-          <span class="slider-value" id="starPulseSpeedVal">4.0s</span>
-        </div>
-        <div class="slider-row">
-          <span>Drift Range</span>
-          <input type="range" id="starDriftRange" min="50" max="400" value="200" step="10">
-          <span class="slider-value" id="starDriftRangeVal">200px</span>
-        </div>
-        <div style="display:flex;gap:8px;margin-top:4px;flex-wrap:wrap;">
-          <button class="btn-random" id="randomiseStarsBtn">🔄 Randomise Positions</button>
-          <button class="btn-reset" id="resetStarsBtn">↺ Recenter Stars</button>
-        </div>
-      </div>
-
-      <!-- Actions -->
-      <div class="action-row">
-        <button class="btn-random" id="randomizeBtn">🎲 Randomise</button>
-        <button class="btn-reset" id="resetBtn">↺ Reset</button>
-        <button class="btn-export" id="exportBtn">📋 Export JSON</button>
-        <button class="btn-import" id="importToggleBtn">📥 Import JSON</button>
-      </div>
-      <textarea class="import-area" id="importArea" placeholder="Paste JSON here to import..."></textarea>
-      <div class="export-area" id="exportArea"></div>
-    </div>
-  </div>
-</div>
-<!-- ─── END MASCOTS TAB ─── -->
-
-<!-- ─── MUSHROOM FAMILY FOOTER ─── -->
+<!-- Mushroom Family Footer -->
 <div class="mushroom-footer" id="mushroomFooter"></div>
-<!-- ─── END MUSHROOM FOOTER ─── -->
 
 <script>
 // ============================================================
@@ -944,7 +538,6 @@ function connectWS(){
     reconnectDelay = 3000;
     initGraph();
     requestHistorical();
-    setTimeout(function() { initDesigner(); }, 200);
   };
   ws.onmessage = function(e){
     try{
@@ -982,7 +575,6 @@ function handleMessage(msg){
     case 3: updateConfig(msg); break;
     case 4: updateCalibration(msg); break;
     case 5: addLog(msg.message, msg.level || 'info'); break;
-    case 7: handleProfileResponse(msg); break;
     case 99:
       if(msg.simResult){
         document.getElementById('simResult').textContent = msg.simResult;
@@ -1034,6 +626,22 @@ function updateSensors(msg){
   document.getElementById('simConfidence').textContent = (typeof msg.confidence === 'number') ? (msg.confidence * 100).toFixed(1) + '%' : '--';
   document.getElementById('controlMode').textContent = msg.controlMode || '--';
 
+  // Weather panel
+  if (msg.weatherValid) {
+    document.getElementById('weatherPanel').style.display = 'block';
+    document.getElementById('weatherTemp').textContent = msg.weatherTemp.toFixed(1) + '°C';
+    document.getElementById('weatherHum').textContent = 'Humidity: ' + msg.weatherHum + '%';
+    document.getElementById('weatherWind').textContent = 'Wind: ' + msg.weatherWind + ' km/h';
+    document.getElementById('weatherStale').style.display = msg.weatherStale ? 'block' : 'none';
+    var icon = '🌤️';
+    if (msg.weatherCode >= 200 && msg.weatherCode < 300) icon = '⛈️';
+    else if (msg.weatherCode >= 300 && msg.weatherCode < 600) icon = '🌧️';
+    else if (msg.weatherCode >= 600 && msg.weatherCode < 700) icon = '🌨️';
+    else if (msg.weatherCode === 800) icon = '☀️';
+    else if (msg.weatherCode > 800) icon = '☁️';
+    document.getElementById('weatherIcon').textContent = icon;
+  }
+
   if (typeof msg.temp === 'number') feedLiveGraph(0, msg.temp);
   if (typeof msg.hum === 'number') feedLiveGraph(1, msg.hum);
   if (typeof msg.co2 === 'number') feedLiveGraph(2, msg.co2);
@@ -1046,6 +654,7 @@ function updateSensors(msg){
       warmupDuration = msg.warmupDuration;
       isWarmupComplete = false;
       if (panel) panel.style.display = 'none';
+      startWarmupClientCountdown(msg.warmupDuration);
     } else {
       if (panel) panel.style.display = 'none';
       document.getElementById('warmupBadge').style.display = 'none';
@@ -1158,6 +767,23 @@ function updateOverrideStatus(msg){
 
   if (msg.compressorLocked !== undefined) {
     document.getElementById('compLock').textContent = msg.compressorLocked ? '(COOLDOWN)' : '';
+  }
+}
+
+function updateAlerts(msg) {
+  var alertsPanel = document.getElementById('alertsPanel');
+  var alertsList = document.getElementById('alertsList');
+  if (msg.alerts && msg.alerts > 0) {
+    alertsPanel.style.display = 'block';
+    alertsList.innerHTML = '';
+    if (msg.alerts & 0x01) alertsList.innerHTML += '<div>⚠️ Temperature out of range</div>';
+    if (msg.alerts & 0x02) alertsList.innerHTML += '<div>⚠️ Humidity out of range</div>';
+    if (msg.alerts & 0x04) alertsList.innerHTML += '<div>⚠️ CO2 out of range</div>';
+    if (msg.alerts & 0x08) alertsList.innerHTML += '<div>⚠️ Compressor lockout</div>';
+    if (msg.alerts & 0x10) alertsList.innerHTML += '<div>⚠️ Fridge offline</div>';
+    if (msg.alerts & 0x20) alertsList.innerHTML += '<div>⚠️ Network issue</div>';
+  } else {
+    alertsPanel.style.display = 'none';
   }
 }
 
@@ -1345,7 +971,7 @@ function saveThresholds(){
     return;
   }
 
-    var wLat = parseFloat(document.getElementById('weatherLat').value);
+  var wLat = parseFloat(document.getElementById('weatherLat').value);
   var wLon = parseFloat(document.getElementById('weatherLon').value);
   if (isNaN(wLat) || wLat < -90 || wLat > 90 || isNaN(wLon) || wLon < -180 || wLon > 180) {
     addLog('Invalid weather coordinates', 'warn');
@@ -1356,7 +982,7 @@ function saveThresholds(){
   if (isNaN(overrideTimeout) || overrideTimeout < 1) overrideTimeout = 10;
   if (overrideTimeout > 1440) overrideTimeout = 1440;
 
-   var thresholds = {
+  var thresholds = {
     humHoHFloor: hohFloor,
     humAssistFloor: assistFloor,
     humCeiling: ceiling,
@@ -1366,7 +992,10 @@ function saveThresholds(){
     co2HighLimit: co2High,
     co2LowTarget: co2Low,
     co2Emergency: co2Emer,
-    emaWeight: emaWeight
+    emaWeight: emaWeight,
+    weatherLat: wLat,
+    weatherLon: wLon,
+    overrideTimeout: overrideTimeout
   };
   sendWS({type: 6, cmd: 'thresholds_and_ema', data: thresholds});
   addLog('Settings saved!', 'info');
@@ -1569,1237 +1198,6 @@ function handleGraphResponse(msg) {
 }
 
 // ============================================================
-// MASCOTS TAB — DESIGNER ENGINE
-// ============================================================
-
-// -------- Templates --------
-const DESIGNER_TEMPLATES = {
-  amanita: {
-    name: 'Amanita',
-    grid: [
-      [0,0,0,1,1,1,1,1,1,0,0,0],
-      [0,0,1,1,1,1,1,1,1,1,0,0],
-      [0,1,1,2,1,3,3,1,2,1,1,0],
-      [1,1,1,1,1,1,1,1,1,1,1,1],
-      [1,1,1,1,1,1,1,1,1,1,1,0],
-      [0,1,1,1,1,1,1,1,1,1,0,0],
-      [0,0,1,1,1,1,1,1,1,0,0,0],
-      [0,0,0,4,4,4,4,4,4,0,0,0],
-      [0,0,0,4,4,6,6,4,4,0,0,0],
-      [0,0,0,4,7,4,4,7,4,0,0,0],
-      [0,0,0,5,5,5,5,5,5,0,0,0],
-      [0,0,4,4,4,4,4,4,4,4,0,0],
-    ]
-  },
-  chanterelle: {
-    name: 'Chanterelle',
-    grid: [
-      [0,0,0,1,1,1,1,1,1,0,0,0],
-      [0,0,1,1,2,1,1,2,1,1,0,0],
-      [0,1,1,1,1,3,3,1,1,1,1,0],
-      [1,1,1,1,1,1,1,1,1,1,1,0],
-      [1,1,1,1,1,1,1,1,1,1,0,0],
-      [0,1,1,1,1,1,1,1,1,0,0,0],
-      [0,0,1,1,1,1,1,1,0,0,0,0],
-      [0,0,0,4,4,4,4,4,4,0,0,0],
-      [0,0,0,4,4,6,6,4,4,0,0,0],
-      [0,0,0,4,7,4,4,7,4,0,0,0],
-      [0,0,0,5,5,5,5,5,5,0,0,0],
-      [0,0,4,4,4,4,4,4,4,4,0,0],
-    ]
-  },
-  shiitake: {
-    name: 'Shiitake',
-    grid: [
-      [0,0,0,1,1,1,1,1,1,0,0,0],
-      [0,0,1,1,1,1,1,1,1,1,0,0],
-      [0,1,1,2,1,1,1,1,2,1,1,0],
-      [1,1,1,1,1,3,3,1,1,1,1,1],
-      [1,1,1,1,1,1,1,1,1,1,1,0],
-      [0,1,1,1,1,1,1,1,1,1,0,0],
-      [0,0,1,1,1,1,1,1,1,0,0,0],
-      [0,0,0,4,4,4,4,4,4,0,0,0],
-      [0,0,0,4,4,6,6,4,4,0,0,0],
-      [0,0,0,4,7,4,4,7,4,0,0,0],
-      [0,0,0,5,5,5,5,5,5,0,0,0],
-      [0,0,4,4,4,4,4,4,4,4,0,0],
-    ]
-  },
-  magic: {
-    name: 'Magic',
-    grid: [
-      [0,0,0,0,1,1,1,1,0,0,0,0],
-      [0,0,0,1,1,2,2,1,1,0,0,0],
-      [0,0,1,1,1,3,3,1,1,1,0,0],
-      [0,1,1,1,1,1,1,1,1,1,1,0],
-      [1,1,1,1,1,1,1,1,1,1,1,0],
-      [0,1,1,1,1,1,1,1,1,1,0,0],
-      [0,0,1,1,1,1,1,1,1,0,0,0],
-      [0,0,0,4,4,4,4,4,4,0,0,0],
-      [0,0,0,4,4,6,6,4,4,0,0,0],
-      [0,0,0,4,7,4,4,7,4,0,0,0],
-      [0,0,0,5,5,5,5,5,5,0,0,0],
-      [0,0,4,4,4,4,4,4,4,4,0,0],
-    ]
-  },
-  morel: {
-    name: 'Morel',
-    grid: [
-      [0,0,0,1,1,1,1,1,1,0,0,0],
-      [0,0,1,1,2,1,1,2,1,1,0,0],
-      [0,1,1,1,1,1,1,1,1,1,1,0],
-      [1,1,1,1,3,1,1,3,1,1,1,1],
-      [1,1,1,1,1,1,1,1,1,1,1,0],
-      [0,1,1,1,1,1,1,1,1,1,0,0],
-      [0,0,1,1,1,1,1,1,1,0,0,0],
-      [0,0,0,4,4,4,4,4,4,0,0,0],
-      [0,0,0,4,4,6,6,4,4,0,0,0],
-      [0,0,0,4,7,4,4,7,4,0,0,0],
-      [0,0,0,5,5,5,5,5,5,0,0,0],
-      [0,0,4,4,4,4,4,4,4,4,0,0],
-    ]
-  }
-};
-
-const SPOT_COORDS = {
-  amanita: [{r:2,c:4}, {r:2,c:7}, {r:4,c:3}, {r:4,c:8}, {r:1,c:5}, {r:1,c:6}],
-  chanterelle: [{r:2,c:5}, {r:2,c:8}, {r:4,c:3}, {r:4,c:9}, {r:1,c:4}, {r:5,c:6}],
-  shiitake: [{r:2,c:5}, {r:2,c:8}, {r:4,c:3}, {r:4,c:9}, {r:1,c:4}, {r:5,c:6}],
-  magic: [{r:2,c:4}, {r:2,c:7}, {r:4,c:3}, {r:4,c:8}, {r:1,c:5}, {r:1,c:6}],
-  morel: [{r:2,c:5}, {r:2,c:8}, {r:4,c:3}, {r:4,c:9}, {r:1,c:4}, {r:5,c:6}]
-};
-
-const designerState = {
-  template: 'amanita',
-  capWidth: 100,
-  capHeight: 100,
-  capColor: '#e63946',
-  stemHeight: 100,
-  stemWidth: 100,
-  stemColor: '#fefae0',
-  spots: 2,
-  bounceHeight: 20,
-  animSpeed: 22,
-  // Face customization
-  eyeStyle: 'normal',
-  mouthStyle: 'smile',
-  blushEnabled: true,
-  blushColor: '#ff99c8',
-  blushSize: 1.0,
-  capTexture: 'smooth'
-};
-
-function lightenColor(hex, percent) {
-  const num = parseInt(hex.replace('#', ''), 16);
-  const r = Math.min(255, (num >> 16) + percent);
-  const g = Math.min(255, ((num >> 8) & 0x00FF) + percent);
-  const b = Math.min(255, (num & 0x0000FF) + percent);
-  return '#' + (1 << 24 | r << 16 | g << 8 | b).toString(16).slice(1);
-}
-
-// ─── EYE STYLES ───
-function getEyePixels(style) {
-  switch(style) {
-    case 'normal': return [{dr:0, dc:0, w:1, h:1, r:1}];
-    case 'happy':  return [{dr:0, dc:0, w:1, h:1, r:1}, {dr:0, dc:0, w:1, h:1, r:1}];
-    case 'sleepy': return [{dr:0, dc:0, w:2, h:0.5, r:0}];
-    case 'closed': return [{dr:0, dc:0, w:2, h:0.3, r:0}];
-    case 'big':    return [{dr:0, dc:0, w:1.5, h:1.5, r:2}];
-    default:       return [];
-  }
-}
-
-// ─── MOUTH STYLES ───
-function getMouthPixels(style) {
-  switch(style) {
-    case 'smile':    return [{dr:0, dc:0, w:2, h:1, r:0}];
-    case 'happy':    return [{dr:0, dc:0, w:3, h:1.5, r:2}];
-    case 'neutral':  return [{dr:0, dc:0, w:1.5, h:0.3, r:0}];
-    case 'surprised':return [{dr:0, dc:0, w:1.5, h:1.5, r:2}];
-    default:         return [];
-  }
-}
-
-function darkenColor(hex, percent) {
-  const num = parseInt(hex.replace('#', ''), 16);
-  const r = Math.max(0, (num >> 16) - percent);
-  const g = Math.max(0, ((num >> 8) & 0x00FF) - percent);
-  const b = Math.max(0, (num & 0x0000FF) - percent);
-  return '#' + (1 << 24 | r << 16 | g << 8 | b).toString(16).slice(1);
-}
-
-function isHexColor(str) {
-  return /^#[0-9a-fA-F]{6}$/.test(str);
-}
-
-// ─── FACE RENDERER ───
-function renderFace(sprite, grid, cols, pixelSize, state) {
-  const faceRow = 8;
-  const leftEyeCol = 5;
-  const rightEyeCol = 7;
-  const mouthRow = 9;
-  const blushRow = 9;
-  const leftBlushCol = 4;
-  const rightBlushCol = 8;
-
-  const eyeColor = '#1a1a1a';
-  const mouthColor = '#1a1a1a';
-  const blushColor = state.blushColor || '#ff99c8';
-  const blushSize = state.blushSize || 1.0;
-
-  // Eyes
-  if (state.eyeStyle !== 'none') {
-    const eyePixels = getEyePixels(state.eyeStyle);
-    eyePixels.forEach(function(p) {
-      const r = faceRow + p.dr;
-      const c = leftEyeCol + p.dc;
-      const px = document.createElement('div');
-      px.className = 'pixel';
-      px.style.cssText = 'position:absolute;width:' + (pixelSize * (p.w||1)) + 'px;height:' + (pixelSize * (p.h||1)) + 'px;left:' + (c * pixelSize) + 'px;top:' + (r * pixelSize) + 'px;background-color:' + eyeColor + ';border-radius:' + (p.r||1) + 'px;';
-      sprite.appendChild(px);
-    });
-    eyePixels.forEach(function(p) {
-      const r = faceRow + p.dr;
-      const c = rightEyeCol + (-p.dc);
-      const px = document.createElement('div');
-      px.className = 'pixel';
-      px.style.cssText = 'position:absolute;width:' + (pixelSize * (p.w||1)) + 'px;height:' + (pixelSize * (p.h||1)) + 'px;left:' + (c * pixelSize) + 'px;top:' + (r * pixelSize) + 'px;background-color:' + eyeColor + ';border-radius:' + (p.r||1) + 'px;';
-      sprite.appendChild(px);
-    });
-  }
-
-  // Mouth
-  if (state.mouthStyle !== 'none') {
-    const mouthPixels = getMouthPixels(state.mouthStyle);
-    mouthPixels.forEach(function(p) {
-      const r = mouthRow + p.dr;
-      const c = leftEyeCol + p.dc + 1;
-      const px = document.createElement('div');
-      px.className = 'pixel';
-      px.style.cssText = 'position:absolute;width:' + (pixelSize * (p.w||1)) + 'px;height:' + (pixelSize * (p.h||1)) + 'px;left:' + (c * pixelSize) + 'px;top:' + (r * pixelSize) + 'px;background-color:' + mouthColor + ';border-radius:' + (p.r||1) + 'px;';
-      sprite.appendChild(px);
-    });
-  }
-
-  // Blush
-  if (state.blushEnabled) {
-    const blushSizePx = Math.max(1, Math.round(blushSize * pixelSize));
-    const blushPixels = [
-      { r: blushRow, c: leftBlushCol },
-      { r: blushRow + 1, c: leftBlushCol },
-      { r: blushRow, c: rightBlushCol },
-      { r: blushRow + 1, c: rightBlushCol }
-    ];
-    blushPixels.forEach(function(p) {
-      const px = document.createElement('div');
-      px.className = 'pixel';
-      px.style.cssText = 'position:absolute;width:' + blushSizePx + 'px;height:' + blushSizePx + 'px;left:' + (p.c * pixelSize) + 'px;top:' + (p.r * pixelSize) + 'px;background-color:' + blushColor + ';border-radius:50%;opacity:0.7;';
-      sprite.appendChild(px);
-    });
-  }
-}
-
-function renderDesignerSprite() {
-  const template = DESIGNER_TEMPLATES[designerState.template];
-  if (!template) return;
-  const sprite = document.getElementById('designerSprite');
-  if (!sprite) return;
-  const grid = template.grid;
-  const rows = grid.length;
-  const cols = grid[0].length;
-  sprite.innerHTML = '';
-
-  const capScaleX = designerState.capWidth / 100;
-  const capScaleY = designerState.capHeight / 100;
-  const stemScaleY = designerState.stemHeight / 100;
-  const stemScaleX = designerState.stemWidth / 100;
-  const capRows = 7;
-  const stemRows = rows - capRows;
-
-  const capColor = designerState.capColor;
-  const stemColor = designerState.stemColor;
-  const spotColor = '#ffffff';
-
-  const colorMap = {
-    1: capColor,
-    2: lightenColor(capColor, 30),
-    3: spotColor,
-    4: stemColor,
-    5: darkenColor(stemColor, 20),
-    6: '#1a1a1a',
-    7: '#ff99c8'
-  };
-
-  const pixelSize = 5;
-  const spots = SPOT_COORDS[designerState.template] || [];
-  const spotsToShow = designerState.spots;
-
-  // Draw base mushroom, skip face pixels (6,7)
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      let val = grid[r][c];
-      // Skip face pixels — we draw them separately
-      if (val === 6 || val === 7) continue;
-
-      let isSpot = false;
-      for (let i = 0; i < spotsToShow && i < spots.length; i++) {
-        if (spots[i].r === r && spots[i].c === c) { isSpot = true; break; }
-      }
-      if (isSpot) val = 3;
-      if (val === 0) continue;
-
-      let scaleX = 1, scaleY = 1;
-      let offsetX = 0, offsetY = 0;
-      if (r < capRows) {
-        scaleX = capScaleX; scaleY = capScaleY;
-        offsetX = (cols * pixelSize * (1 - capScaleX)) / 2;
-        offsetY = (capRows * pixelSize * (1 - capScaleY)) / 2;
-      } else {
-        scaleX = stemScaleX; scaleY = stemScaleY;
-        offsetX = (cols * pixelSize * (1 - stemScaleX)) / 2;
-        offsetY = (stemRows * pixelSize * (1 - stemScaleY)) / 2;
-      }
-
-      const px = (c * pixelSize * scaleX) + offsetX;
-      const py = (r * pixelSize * scaleY) + offsetY;
-
-      const pixel = document.createElement('div');
-      pixel.className = 'pixel';
-      pixel.style.left = px + 'px';
-      pixel.style.top = py + 'px';
-      pixel.style.width = (pixelSize * scaleX) + 'px';
-      pixel.style.height = (pixelSize * scaleY) + 'px';
-      pixel.style.borderRadius = '1px';
-      pixel.style.backgroundColor = colorMap[val] || '#ff00ff';
-      sprite.appendChild(pixel);
-    }
-  }
-
-  // ─── Draw face overlay ───
-  renderFace(sprite, grid, cols, pixelSize, designerState);
-
-  const speedSec = designerState.animSpeed / 10;
-  sprite.style.animation = 'designerBounce ' + speedSec + 's ease-in-out infinite';
-  document.getElementById('designerName').textContent = template.name;
-}
-
-// ============================================================
-// MASCOTS TAB — PROFILE MANAGEMENT
-// ============================================================
-
-var profileList = [];
-
-function loadProfileList() {
-  sendWS({type: 6, cmd: 'profile_list'});
-}
-
-function updateProfileDropdown() {
-  const select = document.getElementById('profileLoadSelect');
-  if (!select) return;
-  const currentVal = select.value;
-  select.innerHTML = '';
-  if (profileList.length === 0) {
-    select.innerHTML = '<option value="">-- No saved profiles --</option>';
-  } else {
-    profileList.forEach(function(name) {
-      const opt = document.createElement('option');
-      opt.value = name;
-      opt.textContent = name;
-      select.appendChild(opt);
-    });
-  }
-  if (currentVal && profileList.indexOf(currentVal) !== -1) {
-    select.value = currentVal;
-  }
-  const countEl = document.getElementById('profileCount');
-  if (countEl) {
-    countEl.textContent = '(' + profileList.length + '/8 profiles used)';
-  }
-  const saveBtn = document.getElementById('saveProfileBtn');
-  if (saveBtn) {
-    const nameInput = document.getElementById('profileNameInput');
-    const name = nameInput ? nameInput.value.trim() : '';
-    saveBtn.disabled = (profileList.length >= 8 && profileList.indexOf(name) === -1);
-  }
-}
-
-function saveCurrentProfile() {
-  const nameInput = document.getElementById('profileNameInput');
-  const name = nameInput.value.trim();
-  if (!name) { addLog('Please enter a profile name', 'warn'); return; }
-  if (profileList.length >= 8 && profileList.indexOf(name) === -1) {
-    addLog('Maximum 8 profiles reached', 'warn'); return;
-  }
-
-  const template = DESIGNER_TEMPLATES[designerState.template];
-  const data = {
-    version: 1,
-    template: designerState.template,
-    capWidth: designerState.capWidth,
-    capHeight: designerState.capHeight,
-    capColor: designerState.capColor,
-    stemHeight: designerState.stemHeight,
-    stemWidth: designerState.stemWidth,
-    stemColor: designerState.stemColor,
-    spots: designerState.spots,
-    bounceHeight: designerState.bounceHeight,
-    animSpeed: designerState.animSpeed,
-    // Face settings
-    eyeStyle: designerState.eyeStyle,
-    mouthStyle: designerState.mouthStyle,
-    blushEnabled: designerState.blushEnabled,
-    blushColor: designerState.blushColor,
-    blushSize: designerState.blushSize,
-    capTexture: designerState.capTexture
-  };
-
-  const saveBtn = document.getElementById('saveProfileBtn');
-  saveBtn.disabled = true;
-  saveBtn.textContent = '💾 Saving...';
-  sendWS({type: 6, cmd: 'profile_save', name: name, data: data});
-}
-
-function loadSelectedProfile() {
-  const select = document.getElementById('profileLoadSelect');
-  const name = select.value;
-  if (!name) { addLog('No profile selected', 'warn'); return; }
-  sendWS({type: 6, cmd: 'profile_load', name: name});
-  addLog('Loading profile: ' + name, 'info');
-}
-
-function deleteSelectedProfile() {
-  const select = document.getElementById('profileLoadSelect');
-  const name = select.value;
-  if (!name) { addLog('No profile selected', 'warn'); return; }
-  if (!confirm('Delete profile "' + name + '"?')) return;
-  const deleteBtn = document.getElementById('deleteProfileBtn');
-  deleteBtn.disabled = true;
-  deleteBtn.textContent = '🗑 Deleting...';
-  sendWS({type: 6, cmd: 'profile_delete', name: name});
-}
-
-function exportDesignerJSON() {
-  const template = DESIGNER_TEMPLATES[designerState.template];
-  const exportData = {
-    name: template.name,
-    template: designerState.template,
-    capColor: designerState.capColor,
-    stemColor: designerState.stemColor,
-    capWidth: designerState.capWidth,
-    capHeight: designerState.capHeight,
-    stemHeight: designerState.stemHeight,
-    stemWidth: designerState.stemWidth,
-    spots: designerState.spots,
-    bounceHeight: designerState.bounceHeight,
-    animSpeed: designerState.animSpeed / 10,
-    grid: template.grid,
-    // Face settings
-    eyeStyle: designerState.eyeStyle,
-    mouthStyle: designerState.mouthStyle,
-    blushEnabled: designerState.blushEnabled,
-    blushColor: designerState.blushColor,
-    blushSize: designerState.blushSize,
-    capTexture: designerState.capTexture
-  };
-  const json = JSON.stringify(exportData, null, 2);
-  const area = document.getElementById('exportArea');
-  area.textContent = json;
-  area.classList.add('show');
-  const range = document.createRange();
-  range.selectNodeContents(area);
-  const sel = window.getSelection();
-  sel.removeAllRanges();
-  sel.addRange(range);
-  if (navigator.clipboard) {
-    navigator.clipboard.writeText(json).then(function() {
-      addLog('JSON copied to clipboard!', 'info');
-    }).catch(function() {});
-  }
-}
-
-var importVisible = false;
-
-function toggleImport() {
-  const area = document.getElementById('importArea');
-  importVisible = !importVisible;
-  area.classList.toggle('show', importVisible);
-  if (importVisible) area.focus();
-}
-
-function importDesignerJSON() {
-  const area = document.getElementById('importArea');
-  const text = area.value.trim();
-  if (!text) { addLog('Paste JSON to import', 'warn'); return; }
-  try {
-    const data = JSON.parse(text);
-    if (!data.template || !DESIGNER_TEMPLATES[data.template]) {
-      addLog('Invalid template in JSON', 'warn'); return;
-    }
-    if (!data.capColor || !isHexColor(data.capColor)) {
-      addLog('Invalid capColor in JSON', 'warn'); return;
-    }
-    if (!data.stemColor || !isHexColor(data.stemColor)) {
-      addLog('Invalid stemColor in JSON', 'warn'); return;
-    }
-
-    designerState.template = data.template || 'amanita';
-    designerState.capWidth = data.capWidth || 100;
-    designerState.capHeight = data.capHeight || 100;
-    designerState.capColor = data.capColor || '#e63946';
-    designerState.stemHeight = data.stemHeight || 100;
-    designerState.stemWidth = data.stemWidth || 100;
-    designerState.stemColor = data.stemColor || '#fefae0';
-    designerState.spots = (data.spots !== undefined && data.spots !== null) ? data.spots : 2;
-    designerState.bounceHeight = data.bounceHeight || 20;
-    designerState.animSpeed = data.animSpeed ? data.animSpeed * 10 : 22;
-    // Face settings
-    designerState.eyeStyle = data.eyeStyle || 'normal';
-    designerState.mouthStyle = data.mouthStyle || 'smile';
-    designerState.blushEnabled = data.blushEnabled !== undefined ? data.blushEnabled : true;
-    designerState.blushColor = data.blushColor || '#ff99c8';
-    designerState.blushSize = data.blushSize || 1.0;
-    designerState.capTexture = data.capTexture || 'smooth';
-
-    if (data.grid && Array.isArray(data.grid) && data.grid.length === 12) {
-      DESIGNER_TEMPLATES[designerState.template].grid = data.grid;
-    }
-
-    updateDesignerUI();
-    addLog('JSON imported successfully!', 'info');
-    area.value = '';
-    area.classList.remove('show');
-    importVisible = false;
-  } catch (e) {
-    addLog('Invalid JSON: ' + e.message, 'warn');
-  }
-}
-
-function randomiseDesigner() {
-  const templates = ['amanita', 'chanterelle', 'shiitake', 'magic', 'morel'];
-  const capColors = ['#e63946', '#f4a261', '#795548', '#7b2cbf', '#40916c', '#ff6b6b', '#ffd93d', '#6bcbff', '#a66cff'];
-  const stemColors = ['#fefae0', '#f5e6d0', '#efebe9', '#e8d5b8', '#f0e6d3', '#e0d5c0'];
-
-  designerState.template = templates[Math.floor(Math.random() * templates.length)];
-  designerState.capColor = capColors[Math.floor(Math.random() * capColors.length)];
-  designerState.stemColor = stemColors[Math.floor(Math.random() * stemColors.length)];
-  designerState.capWidth = 70 + Math.floor(Math.random() * 50);
-  designerState.capHeight = 70 + Math.floor(Math.random() * 50);
-  designerState.stemHeight = 70 + Math.floor(Math.random() * 60);
-  designerState.stemWidth = 60 + Math.floor(Math.random() * 50);
-  designerState.bounceHeight = 10 + Math.floor(Math.random() * 25);
-  designerState.animSpeed = 15 + Math.floor(Math.random() * 18);
-  designerState.spots = [0, 2, 4, 6][Math.floor(Math.random() * 4)];
-
-  updateDesignerUI();
-  addLog('Randomised!', 'info');
-}
-
-function resetDesigner() {
-  designerState.template = 'amanita';
-  designerState.capWidth = 100;
-  designerState.capHeight = 100;
-  designerState.capColor = '#e63946';
-  designerState.stemHeight = 100;
-  designerState.stemWidth = 100;
-  designerState.stemColor = '#fefae0';
-  designerState.spots = 2;
-  designerState.bounceHeight = 20;
-  designerState.animSpeed = 22;
-  updateDesignerUI();
-  addLog('Reset to default', 'info');
-}
-
-function updateDesignerUI() {
-  document.getElementById('capWidth').value = designerState.capWidth;
-  document.getElementById('capHeight').value = designerState.capHeight;
-  document.getElementById('stemHeight').value = designerState.stemHeight;
-  document.getElementById('stemWidth').value = designerState.stemWidth;
-  document.getElementById('bounceHeight').value = designerState.bounceHeight;
-  document.getElementById('animSpeed').value = designerState.animSpeed;
-
-  document.getElementById('capWidthVal').textContent = designerState.capWidth + '%';
-  document.getElementById('capHeightVal').textContent = designerState.capHeight + '%';
-  document.getElementById('stemHeightVal').textContent = designerState.stemHeight + '%';
-  document.getElementById('stemWidthVal').textContent = designerState.stemWidth + '%';
-  document.getElementById('bounceHeightVal').textContent = designerState.bounceHeight + 'px';
-  document.getElementById('animSpeedVal').textContent = (designerState.animSpeed / 10) + 's';
-
-  document.querySelectorAll('#templateButtons button').forEach(function(b) {
-    b.classList.toggle('active', b.dataset.template === designerState.template);
-  });
-  document.querySelectorAll('[data-spots]').forEach(function(b) {
-    b.classList.toggle('active', parseInt(b.dataset.spots) === designerState.spots);
-  });
-  document.querySelectorAll('#capColorPicker .color-swatch[data-color]').forEach(function(s) {
-    s.classList.toggle('active', s.dataset.color === designerState.capColor);
-  });
-  document.querySelectorAll('#stemColorPicker .color-swatch[data-color]').forEach(function(s) {
-    s.classList.toggle('active', s.dataset.color === designerState.stemColor);
-  });
-  document.getElementById('customCapColor').value = designerState.capColor;
-  document.getElementById('customStemColor').value = designerState.stemColor;
-
-  // ─── Face Controls ───
-  document.querySelectorAll('[data-eye]').forEach(function(b) {
-    b.classList.toggle('active', b.dataset.eye === designerState.eyeStyle);
-  });
-  document.querySelectorAll('[data-mouth]').forEach(function(b) {
-    b.classList.toggle('active', b.dataset.mouth === designerState.mouthStyle);
-  });
-  document.getElementById('blushEnable').checked = designerState.blushEnabled;
-  document.getElementById('blushColor').value = designerState.blushColor;
-  document.getElementById('blushSize').value = designerState.blushSize * 10;
-  document.getElementById('blushSizeVal').textContent = designerState.blushSize.toFixed(1);
-
-  document.querySelectorAll('[data-texture]').forEach(function(b) {
-    b.classList.toggle('active', b.dataset.texture === designerState.capTexture);
-  });
-
-  renderDesignerSprite();
-}
-
-// ============================================================
-// MASCOTS TAB — PROFILE RESPONSE HANDLER
-// ============================================================
-
-function handleProfileResponse(msg) {
-  if (msg.cmd === 'profile_list') {
-    profileList = msg.names || [];
-    updateProfileDropdown();
-    // Render background stars after profiles load
-   } else if (msg.cmd === 'profile_load') {
-    if (msg.data) {
-      const data = msg.data;
-      designerState.template = data.template || 'amanita';
-      designerState.capWidth = data.capWidth || 100;
-      designerState.capHeight = data.capHeight || 100;
-      designerState.capColor = data.capColor || '#e63946';
-      designerState.stemHeight = data.stemHeight || 100;
-      designerState.stemWidth = data.stemWidth || 100;
-      designerState.stemColor = data.stemColor || '#fefae0';
-      designerState.spots = (data.spots !== undefined && data.spots !== null) ? data.spots : 2;
-      designerState.bounceHeight = data.bounceHeight || 20;
-      designerState.animSpeed = data.animSpeed || 22;
-      // Face settings
-      designerState.eyeStyle = data.eyeStyle || 'normal';
-      designerState.mouthStyle = data.mouthStyle || 'smile';
-      designerState.blushEnabled = data.blushEnabled !== undefined ? data.blushEnabled : true;
-      designerState.blushColor = data.blushColor || '#ff99c8';
-      designerState.blushSize = data.blushSize || 1.0;
-      designerState.capTexture = data.capTexture || 'smooth';
-      updateDesignerUI();
-      addLog('Profile loaded: ' + msg.name, 'info');
-      document.getElementById('profileNameInput').value = msg.name;
-    }
-  } else if (msg.cmd === 'profile_save') {
-    const saveBtn = document.getElementById('saveProfileBtn');
-    saveBtn.disabled = false;
-    saveBtn.textContent = '💾 Save';
-    if (msg.status === 'ok') {
-      addLog('Profile saved successfully', 'info');
-      loadProfileList();
-      document.getElementById('profileNameInput').value = '';
-    } else {
-      addLog('Save failed: ' + (msg.message || 'unknown error'), 'warn');
-    }
-  } else if (msg.cmd === 'profile_delete') {
-    const deleteBtn = document.getElementById('deleteProfileBtn');
-    deleteBtn.disabled = false;
-    deleteBtn.textContent = '🗑 Delete';
-    if (msg.status === 'ok') {
-      addLog('Profile deleted', 'info');
-      loadProfileList();
-    } else {
-      addLog('Delete failed: ' + (msg.message || 'unknown error'), 'warn');
-    }
-  } else if (msg.status === 'error') {
-    addLog('Profile error: ' + (msg.message || 'unknown error'), 'warn');
-    const saveBtn = document.getElementById('saveProfileBtn');
-    if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = '💾 Save'; }
-    const deleteBtn = document.getElementById('deleteProfileBtn');
-    if (deleteBtn) { deleteBtn.disabled = false; deleteBtn.textContent = '🗑 Delete'; }
-  }
-}
-
-// ============================================================
-// DESIGNER INIT
-// ============================================================
-
-function initDesigner() {
-  if (!document.getElementById('mascots')) return;
-
-  document.querySelectorAll('#templateButtons button').forEach(function(btn) {
-    btn.addEventListener('click', function() {
-      designerState.template = this.dataset.template;
-      updateDesignerUI();
-    });
-  });
-
-  ['capWidth', 'capHeight', 'stemHeight', 'stemWidth', 'bounceHeight', 'animSpeed'].forEach(function(id) {
-    const el = document.getElementById(id);
-    if (!el) return;
-    el.addEventListener('input', function() {
-      const val = parseInt(this.value);
-      designerState[id] = val;
-      const label = document.getElementById(id + 'Val');
-      if (label) {
-        if (id === 'bounceHeight') label.textContent = val + 'px';
-        else if (id === 'animSpeed') label.textContent = (val / 10) + 's';
-        else label.textContent = val + '%';
-      }
-      renderDesignerSprite();
-    });
-  });
-
-  document.querySelectorAll('#capColorPicker .color-swatch[data-color]').forEach(function(sw) {
-    sw.addEventListener('click', function() {
-      designerState.capColor = this.dataset.color;
-      updateDesignerUI();
-    });
-  });
-  document.getElementById('customCapColor').addEventListener('input', function() {
-    designerState.capColor = this.value;
-    updateDesignerUI();
-  });
-
-  document.querySelectorAll('#stemColorPicker .color-swatch[data-color]').forEach(function(sw) {
-    sw.addEventListener('click', function() {
-      designerState.stemColor = this.dataset.color;
-      updateDesignerUI();
-    });
-  });
-  document.getElementById('customStemColor').addEventListener('input', function() {
-    designerState.stemColor = this.value;
-    updateDesignerUI();
-  });
-
-  document.querySelectorAll('[data-spots]').forEach(function(btn) {
-    btn.addEventListener('click', function() {
-      designerState.spots = parseInt(this.dataset.spots);
-      updateDesignerUI();
-    });
-  });
-
-  document.getElementById('saveProfileBtn').addEventListener('click', saveCurrentProfile);
-  document.getElementById('loadProfileBtn').addEventListener('click', loadSelectedProfile);
-  document.getElementById('deleteProfileBtn').addEventListener('click', deleteSelectedProfile);
-
-  document.getElementById('profileNameInput').addEventListener('keydown', function(e) {
-    if (e.key === 'Enter') saveCurrentProfile();
-  });
-  document.getElementById('profileNameInput').addEventListener('input', function() {
-    updateProfileDropdown();
-  });
-
-  document.getElementById('randomizeBtn').addEventListener('click', randomiseDesigner);
-  document.getElementById('resetBtn').addEventListener('click', resetDesigner);
-  document.getElementById('exportBtn').addEventListener('click', exportDesignerJSON);
-
-  document.getElementById('importToggleBtn').addEventListener('click', toggleImport);
-  document.getElementById('importArea').addEventListener('keydown', function(e) {
-    if (e.key === 'Enter' && e.ctrlKey) { importDesignerJSON(); }
-  });
-  const importBtn = document.createElement('button');
-  importBtn.textContent = '📥 Import';
-  importBtn.className = 'btn-import';
-  importBtn.style.cssText = 'background:#30363d;color:#c9d1d9;border:none;border-radius:6px;padding:6px 14px;cursor:pointer;font-size:0.85em;margin-top:6px;';
-  importBtn.addEventListener('click', importDesignerJSON);
-  document.getElementById('importArea').parentNode.appendChild(importBtn);
-
-  // ─── Face Controls ───
-  // Eyes
-  document.querySelectorAll('[data-eye]').forEach(function(btn) {
-    btn.addEventListener('click', function() {
-      designerState.eyeStyle = this.dataset.eye;
-      updateDesignerUI();
-    });
-  });
-
-  // Mouth
-  document.querySelectorAll('[data-mouth]').forEach(function(btn) {
-    btn.addEventListener('click', function() {
-      designerState.mouthStyle = this.dataset.mouth;
-      updateDesignerUI();
-    });
-  });
-
-  // Blush
-  document.getElementById('blushEnable').addEventListener('change', function() {
-    designerState.blushEnabled = this.checked;
-    updateDesignerUI();
-  });
-  document.getElementById('blushColor').addEventListener('input', function() {
-    designerState.blushColor = this.value;
-    updateDesignerUI();
-  });
-  document.getElementById('blushSize').addEventListener('input', function() {
-    designerState.blushSize = parseInt(this.value) / 10;
-    document.getElementById('blushSizeVal').textContent = designerState.blushSize.toFixed(1);
-    updateDesignerUI();
-  });
-
-  // Cap Texture
-  document.querySelectorAll('[data-texture]').forEach(function(btn) {
-    btn.addEventListener('click', function() {
-      designerState.capTexture = this.dataset.texture;
-      updateDesignerUI();
-    });
-  });
-
-  updateDesignerUI();
-  loadProfileList();
-
-  // Initialize stars
-  initBackgroundStars();
-}
-// ============================================================
-// BACKGROUND STARS ENGINE
-// ============================================================
-
-// -------- Settings --------
-const STAR_SETTINGS_VERSION = 1;
-
-let starSettings = {
-  version: STAR_SETTINGS_VERSION,
-  enabled: true,
-  size: 56,
-  opacity: 22,
-  driftSpeed: 22,
-  spinRPM: 6,
-  pulseSpeed: 4.0,
-  driftRange: 200
-};
-
-function loadStarSettings() {
-  try {
-    const saved = localStorage.getItem('growhub32-starSettings');
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      if (parsed.version === STAR_SETTINGS_VERSION) {
-        Object.assign(starSettings, parsed);
-      } else {
-        // Migrate old settings
-        starSettings.enabled = parsed.enabled !== undefined ? parsed.enabled : true;
-        starSettings.size = parsed.size || 56;
-        starSettings.opacity = parsed.opacity || 22;
-        starSettings.driftSpeed = parsed.driftSpeed || 22;
-        starSettings.spinRPM = parsed.spinRPM || 6;
-        starSettings.pulseSpeed = parsed.pulseSpeed || 4.0;
-        starSettings.driftRange = parsed.driftRange || 200;
-        starSettings.version = STAR_SETTINGS_VERSION;
-      }
-    }
-  } catch(e) { /* ignore */ }
-}
-
-function saveStarSettings() {
-  try {
-    localStorage.setItem('growhub32-starSettings', JSON.stringify(starSettings));
-  } catch(e) { /* ignore */ }
-}
-
-// -------- Helpers --------
-function getMaxStars() {
-  if (window.innerWidth < 480) return 2;
-  if (window.innerWidth < 768) return 4;
-  return 6;
-}
-
-function generateDriftPath(range, speed) {
-  const r = range || 200;
-  const duration = (speed || 22) + (Math.random() - 0.5) * 8;
-  return {
-    duration: Math.max(12, duration),
-    waypoints: [
-      { x: (Math.random() - 0.5) * r * 1.2, y: (Math.random() - 0.5) * r * 0.8 },
-      { x: (Math.random() - 0.5) * r * 0.7, y: (Math.random() - 0.5) * r * 1.3 },
-      { x: (Math.random() - 0.5) * r * 0.9, y: (Math.random() - 0.5) * r * 1.1 },
-      { x: (Math.random() - 0.5) * r * 0.6, y: (Math.random() - 0.5) * r * 0.9 },
-      { x: (Math.random() - 0.5) * r * 1.1, y: (Math.random() - 0.5) * r * 0.7 }
-    ]
-  };
-}
-
-// -------- Per-star Keyframe Injection --------
-function injectDriftKeyframes(index, waypoints, duration) {
-  const styleId = 'star-drift-kf-' + index;
-  const old = document.getElementById(styleId);
-  if (old) old.remove();
-
-  const style = document.createElement('style');
-  style.id = styleId;
-  style.textContent =
-    '@keyframes starDrift-' + index + ' {\n' +
-    '  0%   { transform: translate(0px, 0px); }\n' +
-    '  20%  { transform: translate(' + waypoints[0].x + 'px, ' + waypoints[0].y + 'px); }\n' +
-    '  40%  { transform: translate(' + waypoints[1].x + 'px, ' + waypoints[1].y + 'px); }\n' +
-    '  60%  { transform: translate(' + waypoints[2].x + 'px, ' + waypoints[2].y + 'px); }\n' +
-    '  80%  { transform: translate(' + waypoints[3].x + 'px, ' + waypoints[3].y + 'px); }\n' +
-    '  100% { transform: translate(' + waypoints[4].x + 'px, ' + waypoints[4].y + 'px); }\n' +
-    '}';
-  document.head.appendChild(style);
-  return 'starDrift-' + index;
-}
-
-// -------- Create a Single Star --------
-function createStar(profile, settings, index) {
-  const template = DESIGNER_TEMPLATES[profile.template || 'amanita'];
-  if (!template) return null;
-
-  const xPos = 5 + Math.random() * 90;
-  const yPos = 10 + Math.random() * 80;
-
-  const size = settings.size + (Math.random() - 0.5) * 12;
-  const opacity = (settings.opacity / 100) + (Math.random() - 0.5) * 0.04;
-
-  const drift = generateDriftPath(settings.driftRange, settings.driftSpeed);
-  const spinDuration = 60 / (settings.spinRPM / 10);
-  const spinDirection = Math.random() > 0.5 ? 'normal' : 'reverse';
-
-  // Inject per-star keyframe
-  const kfName = injectDriftKeyframes(index, drift.waypoints, drift.duration);
-
-  // Build wrapper
-  const wrapper = document.createElement('div');
-  wrapper.className = 'star-drift-wrapper';
-  wrapper.style.cssText =
-    'left:' + xPos + '%;top:' + yPos + '%;' +
-    'width:' + size + 'px;height:' + (size * 1.2) + 'px;' +
-    '--star-drift-name:' + kfName + ';' +
-    '--drift-duration:' + drift.duration + 's;';
-
-  // Spin wrapper
-  const spinWrapper = document.createElement('div');
-  spinWrapper.className = 'star-spin-wrapper';
-  spinWrapper.style.cssText =
-    'width:100%;height:100%;' +
-    '--spin-duration:' + spinDuration + 's;' +
-    '--spin-direction:' + spinDirection + ';';
-
-  // Pulse layer
-  const pulseLayer = document.createElement('div');
-  pulseLayer.className = 'star-pulse-layer';
-  pulseLayer.style.cssText =
-    'width:100%;height:100%;' +
-    '--pulse-duration:' + settings.pulseSpeed + 's;';
-
-  // Sprite with box-shadow
-  const sprite = document.createElement('div');
-  sprite.className = 'star-sprite';
-  sprite.style.cssText =
-    'width:100%;height:100%;position:relative;' +
-    '--star-opacity:' + Math.max(0.08, Math.min(0.45, opacity)) + ';' +
-    'image-rendering:pixelated;';
-
-  const grid = template.grid;
-  const cols = grid[0].length;
-  const rows = grid.length;
-  const pixelSize = Math.max(1, size / cols);
-
-  // Color mapping
-  const colorMap = {
-    1: profile.capColor || '#e63946',
-    2: lightenColor(profile.capColor || '#e63946', 30),
-    3: '#ffffff',
-    4: profile.stemColor || '#fefae0',
-    5: darkenColor(profile.stemColor || '#fefae0', 20),
-    6: '#1a1a1a',
-    7: '#ff99c8'
-  };
-
-  let shadows = [];
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      const val = grid[r][c];
-      if (val === 0) continue;
-      if (val === 3 && pixelSize < 1.5) continue;
-      const color = colorMap[val] || '#ff00ff';
-      shadows.push(c + 'px ' + r + 'px 0 0 ' + color);
-    }
-  }
-
-  const pixelDiv = document.createElement('div');
-  pixelDiv.className = 'pixel-grid';
-  pixelDiv.style.boxShadow = shadows.join(', ');
-  pixelDiv.style.transform = 'scale(' + pixelSize + ')';
-  pixelDiv.style.transformOrigin = 'top left';
-  sprite.appendChild(pixelDiv);
-
-  // Assemble
-  pulseLayer.appendChild(sprite);
-  spinWrapper.appendChild(pulseLayer);
-  wrapper.appendChild(spinWrapper);
-
-  wrapper.dataset.spawnX = xPos;
-  wrapper.dataset.spawnY = yPos;
-  wrapper.dataset.currentX = xPos;
-  wrapper.dataset.currentY = yPos;
-  wrapper.dataset.driftPath = JSON.stringify(drift);
-
-  return wrapper;
-}
-
-// -------- Render / Update --------
-let starCache = null;
-let starContainer = null;
-
-function initStarContainer() {
-  if (starContainer) return;
-  const container = document.createElement('div');
-  container.id = 'starContainer';
-  container.setAttribute('aria-hidden', 'true');
-  document.body.insertBefore(container, document.body.firstChild);
-  starContainer = container;
-}
-
-function renderBackgroundStars(profiles, settings, forceRebuild) {
-  if (!starContainer) initStarContainer();
-
-  const maxStars = Math.min(profiles.length, getMaxStars());
-
-  if (!settings.enabled || maxStars === 0) {
-    starContainer.innerHTML = '';
-    starCache = null;
-    return;
-  }
-
-  // If cache matches and not force, update CSS only
-  if (!forceRebuild && starCache && starCache.length === maxStars) {
-    updateStarCSS(settings);
-    return;
-  }
-
-  // Full rebuild
-  starContainer.innerHTML = '';
-  const fragment = document.createDocumentFragment();
-  const stars = [];
-
-  for (let i = 0; i < maxStars; i++) {
-    const star = createStar(profiles[i], settings, i);
-    if (star) {
-      fragment.appendChild(star);
-      stars.push(star);
-    }
-  }
-
-  starContainer.appendChild(fragment);
-  starCache = stars;
-}
-
-function updateStarCSS(settings) {
-  const stars = document.querySelectorAll('.star-drift-wrapper');
-  const spinWrappers = document.querySelectorAll('.star-spin-wrapper');
-  const pulseLayers = document.querySelectorAll('.star-pulse-layer');
-  const sprites = document.querySelectorAll('.star-sprite');
-
-  const size = settings.size;
-  const opacity = settings.opacity / 100;
-  const spinDuration = 60 / (settings.spinRPM / 10);
-
-  // Update sprites (size & opacity)
-  sprites.forEach(function(sprite) {
-    const pixelDiv = sprite.querySelector('.pixel-grid');
-    if (pixelDiv) {
-      const cols = 12;
-      const pixelSize = size / cols;
-      pixelDiv.style.transform = 'scale(' + pixelSize + ')';
-    }
-    sprite.style.setProperty('--star-opacity', opacity);
-  });
-
-  // Update pulse
-  pulseLayers.forEach(function(layer) {
-    layer.style.setProperty('--pulse-duration', settings.pulseSpeed + 's');
-  });
-
-  // Update spin
-  spinWrappers.forEach(function(wrapper) {
-    wrapper.style.setProperty('--spin-duration', spinDuration + 's');
-  });
-
-  // Update drift (only if range/speed changed)
-  const driftSpeed = settings.driftSpeed;
-  const driftRange = settings.driftRange;
-  stars.forEach(function(star, i) {
-    const currentDuration = parseFloat(star.style.getPropertyValue('--drift-duration'));
-    if (isNaN(currentDuration) || Math.abs(currentDuration - driftSpeed) > 2) {
-      const drift = generateDriftPath(driftRange, driftSpeed);
-      const kfName = injectDriftKeyframes(i, drift.waypoints, drift.duration);
-      star.style.setProperty('--star-drift-name', kfName);
-      star.style.setProperty('--drift-duration', drift.duration + 's');
-    }
-  });
-}
-
-// -------- Randomise / Recenter --------
-function randomiseStars() {
-  const container = document.getElementById('starContainer');
-  if (!container) return;
-
-  const stars = container.querySelectorAll('.star-drift-wrapper');
-  if (stars.length === 0) return;
-
-  requestAnimationFrame(function() {
-    stars.forEach(function(star, i) {
-      const x = 5 + Math.random() * 90;
-      const y = 10 + Math.random() * 80;
-      star.style.left = x + '%';
-      star.style.top = y + '%';
-      star.dataset.currentX = x;
-      star.dataset.currentY = y;
-
-      const drift = generateDriftPath(starSettings.driftRange, starSettings.driftSpeed);
-      const kfName = injectDriftKeyframes(i, drift.waypoints, drift.duration);
-      star.style.setProperty('--star-drift-name', kfName);
-      star.style.setProperty('--drift-duration', drift.duration + 's');
-
-      const spinWrapper = star.querySelector('.star-spin-wrapper');
-      if (spinWrapper) {
-        const direction = Math.random() > 0.5 ? 'normal' : 'reverse';
-        spinWrapper.style.setProperty('--spin-direction', direction);
-      }
-
-      const sprite = star.querySelector('.star-sprite');
-      if (sprite) {
-        const opacity = (starSettings.opacity / 100) + (Math.random() - 0.5) * 0.04;
-        sprite.style.setProperty('--star-opacity', Math.max(0.08, Math.min(0.45, opacity)));
-      }
-    });
-  });
-
-  addLog('Stars randomised!', 'info');
-}
-
-function recenterStars() {
-  const container = document.getElementById('starContainer');
-  if (!container) return;
-
-  const stars = container.querySelectorAll('.star-drift-wrapper');
-  if (stars.length === 0) return;
-
-  requestAnimationFrame(function() {
-    stars.forEach(function(star) {
-      const homeX = star.dataset.spawnX || 50;
-      const homeY = star.dataset.spawnY || 50;
-      star.style.left = homeX + '%';
-      star.style.top = homeY + '%';
-      star.dataset.currentX = homeX;
-      star.dataset.currentY = homeY;
-
-      const sprite = star.querySelector('.star-sprite');
-      if (sprite) {
-        sprite.style.setProperty('--star-opacity', starSettings.opacity / 100);
-      }
-    });
-  });
-
-  addLog('Stars recentered', 'info');
-}
-
-// -------- Resize Handler --------
-var resizeTimeout;
-
-function handleResize() {
-  clearTimeout(resizeTimeout);
-  resizeTimeout = setTimeout(function() {
-    if (!starSettings.enabled) return;
-    const newMax = Math.min(profileList.length, getMaxStars());
-    if (newMax !== (starCache ? starCache.length : 0)) {
-      renderBackgroundStars(profileList, starSettings, true);
-    }
-  }, 300);
-}
-
-// -------- Bind Controls --------
-function bindStarControls() {
-  document.getElementById('starEnable').addEventListener('change', function() {
-    starSettings.enabled = this.checked;
-    saveStarSettings();
-    renderBackgroundStars(profileList, starSettings);
-  });
-
-  const sizeSlider = document.getElementById('starSize');
-  sizeSlider.addEventListener('input', function() {
-    starSettings.size = parseInt(this.value);
-    document.getElementById('starSizeVal').textContent = starSettings.size + 'px';
-    saveStarSettings();
-    updateStarCSS(starSettings);
-  });
-
-  document.querySelectorAll('.btn-star-size').forEach(function(btn) {
-    btn.addEventListener('click', function() {
-      const size = parseInt(this.dataset.size);
-      sizeSlider.value = size;
-      starSettings.size = size;
-      document.getElementById('starSizeVal').textContent = size + 'px';
-      saveStarSettings();
-      updateStarCSS(starSettings);
-    });
-  });
-
-  document.getElementById('starOpacity').addEventListener('input', function() {
-    starSettings.opacity = parseInt(this.value);
-    document.getElementById('starOpacityVal').textContent = starSettings.opacity + '%';
-    saveStarSettings();
-    updateStarCSS(starSettings);
-  });
-
-  var driftDebounce;
-  document.getElementById('starDriftSpeed').addEventListener('input', function() {
-    starSettings.driftSpeed = parseInt(this.value);
-    document.getElementById('starDriftSpeedVal').textContent = starSettings.driftSpeed + 's';
-    saveStarSettings();
-    clearTimeout(driftDebounce);
-    driftDebounce = setTimeout(function() {
-      renderBackgroundStars(profileList, starSettings, true);
-    }, 300);
-  });
-
-  document.getElementById('starSpinRPM').addEventListener('input', function() {
-    starSettings.spinRPM = parseInt(this.value);
-    var rpm = starSettings.spinRPM / 10;
-    document.getElementById('starSpinRPMVal').textContent = rpm + ' RPM';
-    saveStarSettings();
-    updateStarCSS(starSettings);
-  });
-
-  document.getElementById('starPulseSpeed').addEventListener('input', function() {
-    starSettings.pulseSpeed = parseInt(this.value) / 10;
-    document.getElementById('starPulseSpeedVal').textContent = starSettings.pulseSpeed + 's';
-    saveStarSettings();
-    updateStarCSS(starSettings);
-  });
-
-  var rangeDebounce;
-  document.getElementById('starDriftRange').addEventListener('input', function() {
-    starSettings.driftRange = parseInt(this.value);
-    document.getElementById('starDriftRangeVal').textContent = starSettings.driftRange + 'px';
-    saveStarSettings();
-    clearTimeout(rangeDebounce);
-    rangeDebounce = setTimeout(function() {
-      renderBackgroundStars(profileList, starSettings, true);
-    }, 300);
-  });
-
-  document.getElementById('randomiseStarsBtn').addEventListener('click', randomiseStars);
-  document.getElementById('resetStarsBtn').addEventListener('click', recenterStars);
-
-  window.addEventListener('resize', handleResize);
-}
-
-// -------- Init Stars --------
-function initBackgroundStars() {
-  loadStarSettings();
-  initStarContainer();
-  bindStarControls();
-
-  // Initial render after profiles load
-  if (profileList && profileList.length > 0) {
-    renderBackgroundStars(profileList, starSettings);
-  }
-}
-
-// ============================================================
 // MUSHROOM FAMILY FOOTER
 // ============================================================
 
@@ -2988,7 +1386,7 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
       break;
 
     case WStype_TEXT: {
-      StaticJsonDocument<512> doc;
+      DynamicJsonDocument doc(2048);
       DeserializationError error = deserializeJson(doc, payload, length);
 
       if (error) {
@@ -3136,6 +1534,21 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
         if (weight < EMA_WEIGHT_MIN) weight = EMA_WEIGHT_MIN;
         if (weight > EMA_WEIGHT_MAX) weight = EMA_WEIGHT_MAX;
         adaptive_setEMAWeight(weight);
+
+        float weatherLat = doc["data"]["weatherLat"] | g_runtimeCache.weatherLat;
+        float weatherLon = doc["data"]["weatherLon"] | g_runtimeCache.weatherLon;
+        uint16_t overrideTimeout = doc["data"]["overrideTimeout"] | g_runtimeCache.overrideTimeoutMinutes;
+
+        if (weatherLat >= -90 && weatherLat <= 90) {
+          g_runtimeCache.weatherLat = weatherLat;
+        }
+        if (weatherLon >= -180 && weatherLon <= 180) {
+          g_runtimeCache.weatherLon = weatherLon;
+        }
+        if (overrideTimeout >= 1 && overrideTimeout <= 1440) {
+          g_runtimeCache.overrideTimeoutMinutes = overrideTimeout;
+        }
+        sdLogger_saveCache();
       }
       else if (msgType == WS_COMMAND && strcmp(cmd, "rtc") == 0) {
         const char* datetime = doc["datetime"] | "";
@@ -3254,7 +1667,7 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
           char response[128];
           size_t responseLen = serializeJson(responseDoc, response, sizeof(response));
           g_webSocket.sendTXT(num, (const uint8_t*)response, responseLen);
-               } else {
+        } else {
           StaticJsonDocument<128> responseDoc;
           responseDoc["type"] = 2;
           responseDoc["message"] = "Invalid relay mapping — check functions";
@@ -3287,23 +1700,6 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
           Serial.println(F("[WS] WARNING: Simulation response JSON truncated"));
         }
         g_webSocket.sendTXT(num, (const uint8_t*)response, responseLen);
-      }
-
-      // ============================================================
-      // Mascots Profile Commands
-      // ============================================================
-
-      else if (msgType == WS_COMMAND && strcmp(cmd, "profile_list") == 0) {
-        handleProfileList(num);
-      }
-      else if (msgType == WS_COMMAND && strcmp(cmd, "profile_save") == 0) {
-        handleProfileSave(num, doc);
-      }
-      else if (msgType == WS_COMMAND && strcmp(cmd, "profile_load") == 0) {
-        handleProfileLoad(num, doc);
-      }
-      else if (msgType == WS_COMMAND && strcmp(cmd, "profile_delete") == 0) {
-        handleProfileDelete(num, doc);
       }
 
       break;
@@ -3514,379 +1910,6 @@ static void sendCalibrationUpdate() {
 }
 
 // ============================================================
-// Mascots Tab — Profile Helper Functions
-// ============================================================
-
-static LoadResult loadProfilesJson(JsonDocument& doc, bool& wasRecovered) {
-  wasRecovered = false;
-
-  if (!SPIFFS.exists(PROFILES_FILE)) {
-    doc.to<JsonObject>();
-    return LoadResult::Empty;
-  }
-
-  File file = SPIFFS.open(PROFILES_FILE, "r");
-  if (!file) {
-    Serial.println(F("[PROFILES] Failed to open file for reading"));
-    return LoadResult::Failed;
-  }
-
-  DeserializationError error = deserializeJson(doc, file);
-  file.close();
-
-  if (error) {
-    Serial.println(F("[PROFILES] JSON parse error — recovering..."));
-    Serial.print(F("[PROFILES] Error: "));
-    Serial.println(error.c_str());
-
-    wasRecovered = true;
-
-    if (SPIFFS.exists(PROFILES_BACKUP)) SPIFFS.remove(PROFILES_BACKUP);
-    SPIFFS.rename(PROFILES_FILE, PROFILES_BACKUP);
-
-    File fresh = SPIFFS.open(PROFILES_FILE, "w");
-    if (fresh) { fresh.print("{}"); fresh.close(); Serial.println(F("[PROFILES] Created fresh empty file")); }
-
-    doc.to<JsonObject>();
-    return LoadResult::Recovered;
-  }
-
-  return LoadResult::OK;
-}
-
-static bool saveProfilesJson(const JsonDocument& doc) {
-  File file = SPIFFS.open(PROFILES_TEMP, "w");
-  if (!file) {
-    Serial.println(F("[PROFILES] Failed to open temp file for writing"));
-    return false;
-  }
-
-  size_t jsonSize = measureJson(doc);
-  size_t bytesWritten = serializeJson(doc, file);
-  file.close();
-
-  if (bytesWritten == 0 || bytesWritten != jsonSize) {
-    Serial.print(F("[PROFILES] Write mismatch: expected "));
-    Serial.print(jsonSize);
-    Serial.print(F(", got "));
-    Serial.println(bytesWritten);
-    SPIFFS.remove(PROFILES_TEMP);
-    return false;
-  }
-
-  DynamicJsonDocument verifyDoc(8192);
-  File verifyFile = SPIFFS.open(PROFILES_TEMP, "r");
-  if (!verifyFile) {
-    Serial.println(F("[PROFILES] Failed to open temp file for verification"));
-    SPIFFS.remove(PROFILES_TEMP);
-    return false;
-  }
-
-  DeserializationError error = deserializeJson(verifyDoc, verifyFile);
-  verifyFile.close();
-
-  if (error) {
-    Serial.println(F("[PROFILES] Temp file verification failed — corrupt write"));
-    SPIFFS.remove(PROFILES_TEMP);
-    return false;
-  }
-
-  if (!SPIFFS.rename(PROFILES_TEMP, PROFILES_FILE)) {
-    Serial.println(F("[PROFILES] Atomic rename failed"));
-    SPIFFS.remove(PROFILES_TEMP);
-    return false;
-  }
-
-  return true;
-}
-
-static void getProfileNames(JsonArray& names) {
-  bool wasRecovered;
-  DynamicJsonDocument doc(8192);
-  LoadResult result = loadProfilesJson(doc, wasRecovered);
-  if (result == LoadResult::Failed) return;
-
-  JsonObject obj = doc.as<JsonObject>();
-  for (JsonPair kv : obj) {
-    names.add(kv.key().c_str());
-  }
-}
-
-static bool isValidTemplate(const char* name) {
-  static const char* validTemplates[] = {"amanita", "chanterelle", "shiitake", "magic", "morel"};
-  for (size_t i = 0; i < 5; i++) {
-    if (strcmp(name, validTemplates[i]) == 0) return true;
-  }
-  return false;
-}
-
-static bool validateProfileData(const JsonObject& data) {
-  if (!data.containsKey("template")) return false;
-  if (!data.containsKey("capWidth")) return false;
-  if (!data.containsKey("capHeight")) return false;
-  if (!data.containsKey("capColor")) return false;
-  if (!data.containsKey("stemHeight")) return false;
-  if (!data.containsKey("stemWidth")) return false;
-  if (!data.containsKey("stemColor")) return false;
-  if (!data.containsKey("spots")) return false;
-  if (!data.containsKey("bounceHeight")) return false;
-  if (!data.containsKey("animSpeed")) return false;
-
-  const char* templateName = data["template"] | "";
-  if (!isValidTemplate(templateName)) return false;
-
-  int capWidth = data["capWidth"] | 0;
-  if (capWidth < 60 || capWidth > 120) return false;
-  int capHeight = data["capHeight"] | 0;
-  if (capHeight < 60 || capHeight > 120) return false;
-  int stemHeight = data["stemHeight"] | 0;
-  if (stemHeight < 60 || stemHeight > 140) return false;
-  int stemWidth = data["stemWidth"] | 0;
-  if (stemWidth < 50 || stemWidth > 120) return false;
-  int spots = data["spots"] | -1;
-  if (spots != 0 && spots != 2 && spots != 4 && spots != 6) return false;
-  int bounceHeight = data["bounceHeight"] | 0;
-  if (bounceHeight < 5 || bounceHeight > 35) return false;
-  int animSpeed = data["animSpeed"] | 0;
-  if (animSpeed < 12 || animSpeed > 35) return false;
-
-  const char* capColor = data["capColor"] | "";
-  if (strlen(capColor) != 7 || capColor[0] != '#') return false;
-  for (int i = 1; i < 7; i++) {
-    if (!isxdigit((unsigned char)capColor[i])) return false;
-  }
-
-  const char* stemColor = data["stemColor"] | "";
-  if (strlen(stemColor) != 7 || stemColor[0] != '#') return false;
-  for (int i = 1; i < 7; i++) {
-    if (!isxdigit((unsigned char)stemColor[i])) return false;
-  }
-
-  return true;
-}
-
-static void sendProfileResponse(uint8_t num, const char* cmd, const char* status, const char* message) {
-  DynamicJsonDocument resp(256);
-  resp["type"] = WS_PROFILE_RESPONSE;
-  resp["cmd"] = cmd;
-  resp["status"] = status;
-  resp["message"] = message;
-  String output;
-  serializeJson(resp, output);
-  g_webSocket.sendTXT(num, (const uint8_t*)output.c_str(), output.length());
-}
-
-// ============================================================
-// Mascots Tab — WebSocket Command Handlers
-// ============================================================
-
-static void handleProfileList(uint8_t num) {
-  DynamicJsonDocument response(1024);
-  response["type"] = WS_PROFILE_RESPONSE;
-  response["cmd"] = "profile_list";
-
-  JsonArray names = response.createNestedArray("names");
-  getProfileNames(names);
-
-  String output;
-  serializeJson(response, output);
-  g_webSocket.sendTXT(num, (const uint8_t*)output.c_str(), output.length());
-}
-
-static void handleProfileSave(uint8_t num, const JsonDocument& req) {
-  const char* name = req["name"] | "";
-  size_t nameLen = strlen(name);
-
-  if (nameLen == 0 || nameLen > 32) {
-    sendProfileResponse(num, "profile_save", "error", "Name must be 1-32 chars");
-    return;
-  }
-
-  for (size_t i = 0; i < nameLen; i++) {
-    char c = name[i];
-    if (!isalnum((unsigned char)c) && c != ' ' && c != '-' && c != '_' && c != '.') {
-      sendProfileResponse(num, "profile_save", "error", "Invalid name (use letters, numbers, spaces, - _ .)");
-      return;
-    }
-  }
-
-  JsonObject data = req["data"].as<JsonObject>();
-  if (data.isNull()) {
-    sendProfileResponse(num, "profile_save", "error", "Missing profile data");
-    return;
-  }
-
-  if (!validateProfileData(data)) {
-    sendProfileResponse(num, "profile_save", "error", "Invalid profile data");
-    return;
-  }
-
-  size_t totalBytes = SPIFFS.totalBytes();
-  size_t usedBytes = SPIFFS.usedBytes();
-  size_t freeBytes = totalBytes - usedBytes;
-  if (freeBytes < 2048) {
-    sendProfileResponse(num, "profile_save", "error", "Storage full (need 2KB free)");
-    return;
-  }
-
-  if (g_profileMutex == NULL) {
-    sendProfileResponse(num, "profile_save", "error", "Storage not initialized");
-    return;
-  }
-
-  if (xSemaphoreTake(g_profileMutex, pdMS_TO_TICKS(5000)) != pdTRUE) {
-    sendProfileResponse(num, "profile_save", "error", "Storage busy, try again");
-    return;
-  }
-
-  bool wasRecovered;
-  DynamicJsonDocument doc(8192);
-  LoadResult result = loadProfilesJson(doc, wasRecovered);
-
-  if (result == LoadResult::Failed) {
-    xSemaphoreGive(g_profileMutex);
-    sendProfileResponse(num, "profile_save", "error", "Storage read error");
-    return;
-  }
-
-  JsonObject obj = doc.as<JsonObject>();
-
-  if (!obj.containsKey(name) && obj.size() >= MAX_PROFILES) {
-    xSemaphoreGive(g_profileMutex);
-    sendProfileResponse(num, "profile_save", "error", "Profile limit reached (8 max)");
-    return;
-  }
-
-  obj[name] = data;
-  bool success = saveProfilesJson(doc);
-
-  xSemaphoreGive(g_profileMutex);
-
-  if (success) {
-    sendProfileResponse(num, "profile_save", "ok", wasRecovered ? "Profile saved (recovered from corruption)" : "Profile saved");
-  } else {
-    sendProfileResponse(num, "profile_save", "error", "Disk write failed");
-  }
-}
-
-static void handleProfileLoad(uint8_t num, const JsonDocument& req) {
-  const char* name = req["name"] | "";
-  if (strlen(name) == 0) {
-    sendProfileResponse(num, "profile_load", "error", "Name is required");
-    return;
-  }
-
-  if (g_profileMutex == NULL) {
-    sendProfileResponse(num, "profile_load", "error", "Storage not initialized");
-    return;
-  }
-
-  if (xSemaphoreTake(g_profileMutex, pdMS_TO_TICKS(5000)) != pdTRUE) {
-    sendProfileResponse(num, "profile_load", "error", "Storage busy, try again");
-    return;
-  }
-
-  bool wasRecovered;
-  DynamicJsonDocument doc(8192);
-  LoadResult result = loadProfilesJson(doc, wasRecovered);
-
-  if (result == LoadResult::Failed) {
-    xSemaphoreGive(g_profileMutex);
-    sendProfileResponse(num, "profile_load", "error", "Storage read error");
-    return;
-  }
-
-  JsonObject obj = doc.as<JsonObject>();
-  if (!obj.containsKey(name)) {
-    xSemaphoreGive(g_profileMutex);
-    sendProfileResponse(num, "profile_load", "error", "Profile not found");
-    return;
-  }
-
-  DynamicJsonDocument response(4096);
-  response["type"] = WS_PROFILE_RESPONSE;
-  response["cmd"] = "profile_load";
-  response["name"] = name;
-  response["data"].set(obj[name]);
-
-  xSemaphoreGive(g_profileMutex);
-
-  String output;
-  serializeJson(response, output);
-  g_webSocket.sendTXT(num, (const uint8_t*)output.c_str(), output.length());
-
-  if (wasRecovered) {
-    sendProfileResponse(num, "profile_load", "ok", "Profile loaded (recovered from corruption)");
-  }
-}
-
-static void handleProfileDelete(uint8_t num, const JsonDocument& req) {
-  const char* name = req["name"] | "";
-  if (strlen(name) == 0) {
-    sendProfileResponse(num, "profile_delete", "error", "Name is required");
-    return;
-  }
-
-  if (g_profileMutex == NULL) {
-    sendProfileResponse(num, "profile_delete", "error", "Storage not initialized");
-    return;
-  }
-
-  if (xSemaphoreTake(g_profileMutex, pdMS_TO_TICKS(5000)) != pdTRUE) {
-    sendProfileResponse(num, "profile_delete", "error", "Storage busy, try again");
-    return;
-  }
-
-  bool wasRecovered;
-  DynamicJsonDocument doc(8192);
-  LoadResult result = loadProfilesJson(doc, wasRecovered);
-
-  if (result == LoadResult::Failed) {
-    xSemaphoreGive(g_profileMutex);
-    sendProfileResponse(num, "profile_delete", "error", "Storage read error");
-    return;
-  }
-
-  JsonObject obj = doc.as<JsonObject>();
-  if (!obj.containsKey(name)) {
-    xSemaphoreGive(g_profileMutex);
-    sendProfileResponse(num, "profile_delete", "error", "Profile not found");
-    return;
-  }
-
-  obj.remove(name);
-  bool success = saveProfilesJson(doc);
-
-  xSemaphoreGive(g_profileMutex);
-
-  if (success) {
-    sendProfileResponse(num, "profile_delete", "ok", "Profile deleted");
-  } else {
-    sendProfileResponse(num, "profile_delete", "error", "Disk write failed");
-  }
-}
-
-// ============================================================
-// Startup Recovery
-// ============================================================
-
-static void recoverProfiles() {
-  if (SPIFFS.exists(PROFILES_TEMP) && !SPIFFS.exists(PROFILES_FILE)) {
-    SPIFFS.rename(PROFILES_TEMP, PROFILES_FILE);
-    Serial.println(F("[PROFILES] Recovered from temp file"));
-  }
-
-  if (SPIFFS.exists(PROFILES_BACKUP) && !SPIFFS.exists(PROFILES_FILE)) {
-    SPIFFS.rename(PROFILES_BACKUP, PROFILES_FILE);
-    Serial.println(F("[PROFILES] Recovered from backup file"));
-  }
-
-  if (SPIFFS.exists(PROFILES_TEMP)) {
-    SPIFFS.remove(PROFILES_TEMP);
-  }
-}
-
-// ============================================================
 // Public API
 // ============================================================
 
@@ -3896,19 +1919,6 @@ bool webUI_init() {
   if (!SPIFFS.begin(true)) {
     Serial.println(F("[WEB] SPIFFS mount failed"));
     return false;
-  }
-
-  g_profileMutex = xSemaphoreCreateMutex();
-  if (g_profileMutex == NULL) {
-    Serial.println(F("[PROFILES] Failed to create mutex"));
-  }
-
-  recoverProfiles();
-
-  if (!SPIFFS.exists(PROFILES_FILE)) {
-    File file = SPIFFS.open(PROFILES_FILE, "w");
-    if (file) { file.print("{}"); file.close(); Serial.println(F("[PROFILES] Created empty profiles file")); }
-    else { Serial.println(F("[PROFILES] Failed to create profiles file")); }
   }
 
   g_server.on("/chart-4.4.0.min.js", []() {
@@ -3954,44 +1964,10 @@ void webUI_pushUpdates() {
     bool isActive = adaptive_isCalibrating();
 
     if (isActive) {
-      unsigned long elapsed = now - adaptive_getCalibrationStartTime();
-      unsigned long remaining;
-      if (elapsed >= (CALIBRATION_TOTAL_SEC * 1000UL)) {
-        remaining = 0;
-      } else {
-        remaining = (CALIBRATION_TOTAL_SEC * 1000UL) - elapsed;
-      }
-
-      StaticJsonDocument<128> calibDoc;
-      calibDoc["type"] = WS_CALIBRATION_STATUS;
-      calibDoc["active"] = true;
-      calibDoc["remaining"] = remaining / 1000;
-      calibDoc["band"] = adaptive_getCurrentBand();
-
-      char outputActive[128];
-      size_t len = serializeJson(calibDoc, outputActive, sizeof(outputActive));
-      if (len >= sizeof(outputActive)) {
-        Serial.println(F("[WS] WARNING: Calibration active JSON truncated"));
-        return;
-      }
-      g_webSocket.broadcastTXT((const uint8_t*)outputActive, len);
+      sendCalibrationUpdate();
+    } else if (wasActive) {
+      sendCalibrationUpdate();
     }
-
-    if (!isActive && wasActive) {
-      StaticJsonDocument<128> calibDoc;
-      calibDoc["type"] = WS_CALIBRATION_STATUS;
-      calibDoc["active"] = false;
-      calibDoc["remaining"] = 0;
-
-      char outputInactive[128];
-      size_t len = serializeJson(calibDoc, outputInactive, sizeof(outputInactive));
-      if (len >= sizeof(outputInactive)) {
-        Serial.println(F("[WS] WARNING: Calibration inactive JSON truncated"));
-        return;
-      }
-      g_webSocket.broadcastTXT((const uint8_t*)outputInactive, len);
-    }
-
     wasActive = isActive;
   }
 }
