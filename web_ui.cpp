@@ -1,9 +1,8 @@
 /*
    web_ui.cpp
    GrowHub32 - Local Web Application Interface Implementation
-   Version: 1.4.1
-   Revision: Removed Mascots tab and character creator.
-             Kept header mascot and mushroom family footer.
+   Version: 1.4.2
+   Revision: Added animated pixel art monster chase scene with panicked runner
 
    This serves a single-page application from program memory.
    Chart.js is served from SPIFFS for cache efficiency.
@@ -29,7 +28,7 @@
 // ============================================================
 // UPDATE VERSION HERE WHEN BUMPING FIRMWARE
 // ============================================================
-#define WEB_UI_VERSION "1.4.1"
+#define WEB_UI_VERSION "1.4.2"
 
 static WebServer g_server(WEB_SERVER_PORT);
 static WebSocketsServer g_webSocket(WEBSOCKET_PORT);
@@ -59,7 +58,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-<title>GrowHub32 v1.4.1</title>
+<title>GrowHub32 v1.4.2</title>
 <style>
   /* ─── Reset & Base ─── */
   *{margin:0;padding:0;box-sizing:border-box;}
@@ -155,25 +154,9 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   #warmupPanel{display:block;background:linear-gradient(180deg,#161b22 0%,#0d1117 100%);border:1px solid #2a2a4a;border-radius:12px;padding:20px;margin:16px;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,0.35),0 0 20px rgba(184,74,255,0.08);position:relative;z-index:10;}
   #warmupProgressBar{width:0%;height:100%;background:linear-gradient(90deg,#58a6ff,#3fb950,#b84aff);transition:width 0.5s linear;}
 
-  /* ─── Mushroom Footer ─── */
-  .mushroom-footer{width:100%;max-width:820px;margin:20px auto 0;display:flex;justify-content:center;align-items:flex-end;gap:20px;padding:20px 10px 30px;background:linear-gradient(to top,rgba(0,0,0,0.4) 0%,transparent 100%);flex-wrap:wrap;border-top:1px solid #1a1a2e;position:relative;z-index:20;}
-  .mushroom-wrapper{display:flex;flex-direction:column;align-items:center;position:relative;}
-  .mushroom-sprite{width:64px;height:64px;position:relative;transform-origin:bottom center;image-rendering:pixelated;}
-  .mushroom-sprite .pixel{position:absolute;width:4px;height:4px;shape-rendering:crispEdges;}
-  .mushroom-shadow{width:40px;height:10px;background:radial-gradient(ellipse at center,rgba(0,0,0,0.7) 0%,rgba(0,0,0,0) 70%);margin-top:-2px;border-radius:50%;transform-origin:center;}
-  @keyframes mushroom-bounce{0%,100%{transform:translateY(0) scaleY(1) scaleX(1);}10%{transform:translateY(2px) scaleY(0.9) scaleX(1.1);}30%{transform:translateY(-12px) scaleY(1.1) scaleX(0.95);}50%{transform:translateY(-16px) scaleY(1.05) scaleX(0.98);}70%{transform:translateY(-8px) scaleY(1.08) scaleX(0.96);}85%{transform:translateY(2px) scaleY(0.95) scaleX(1.05);}95%{transform:translateY(0) scaleY(1) scaleX(1);}}
-  @keyframes mushroom-shadow-scale{0%,100%{transform:scale(1);opacity:0.7;}10%{transform:scale(1.15);opacity:0.9;}30%{transform:scale(0.5);opacity:0.25;}50%{transform:scale(0.45);opacity:0.2;}70%{transform:scale(0.55);opacity:0.35;}85%{transform:scale(1.15);opacity:0.9;}95%{transform:scale(1);opacity:0.7;}}
-  .mushroom-wrapper:nth-child(1) .mushroom-sprite{animation:mushroom-bounce 2.1s ease-in-out infinite;animation-delay:0s;}
-  .mushroom-wrapper:nth-child(1) .mushroom-shadow{animation:mushroom-shadow-scale 2.1s ease-in-out infinite;animation-delay:0s;}
-  .mushroom-wrapper:nth-child(2) .mushroom-sprite{animation:mushroom-bounce 2.4s ease-in-out infinite;animation-delay:0.3s;}
-  .mushroom-wrapper:nth-child(2) .mushroom-shadow{animation:mushroom-shadow-scale 2.4s ease-in-out infinite;animation-delay:0.3s;}
-  .mushroom-wrapper:nth-child(3) .mushroom-sprite{animation:mushroom-bounce 1.9s ease-in-out infinite;animation-delay:0.7s;}
-  .mushroom-wrapper:nth-child(3) .mushroom-shadow{animation:mushroom-shadow-scale 1.9s ease-in-out infinite;animation-delay:0.7s;}
-  .mushroom-wrapper:nth-child(4) .mushroom-sprite{animation:mushroom-bounce 2.6s ease-in-out infinite;animation-delay:0.1s;}
-  .mushroom-wrapper:nth-child(4) .mushroom-shadow{animation:mushroom-shadow-scale 2.6s ease-in-out infinite;animation-delay:0.1s;}
-  .mushroom-wrapper:nth-child(5) .mushroom-sprite{animation:mushroom-bounce 2.2s ease-in-out infinite;animation-delay:0.5s;}
-  .mushroom-wrapper:nth-child(5) .mushroom-shadow{animation:mushroom-shadow-scale 2.2s ease-in-out infinite;animation-delay:0.5s;}
-  @media(max-width:600px){.mushroom-footer{gap:8px;padding:16px 6px 20px;}.mushroom-sprite{transform:scale(0.7);transform-origin:bottom center;}.mushroom-shadow{transform:scale(0.7);}}
+  /* ─── Monster Chase Footer ─── */
+  .monster-footer{width:100%;height:200px;background:#020302;border-top:2px solid #242b1e;position:relative;z-index:20;overflow:hidden;}
+  .monster-footer canvas{display:block;width:100%;height:100%;image-rendering:pixelated;}
 </style>
 <script src="/chart-4.4.0.min.js"></script>
 </head>
@@ -502,8 +485,10 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   </div>
 </div>
 
-<!-- Mushroom Family Footer -->
-<div class="mushroom-footer" id="mushroomFooter"></div>
+<!-- Monster Chase Footer -->
+<div class="monster-footer" id="monsterFooter">
+    <canvas id="monsterCanvas"></canvas>
+</div>
 
 <script>
 // ============================================================
@@ -1198,152 +1183,431 @@ function handleGraphResponse(msg) {
 }
 
 // ============================================================
-// MUSHROOM FAMILY FOOTER
+// MONSTER CHASE ANIMATION
 // ============================================================
 
-const mushroomContainer = document.getElementById('mushroomFooter');
-const PIXEL_SIZE = 4;
+const monsterCanvas = document.getElementById('monsterCanvas');
+const monsterCtx = monsterCanvas.getContext('2d');
 
-const mushroomData = [
+function resizeMonsterCanvas() {
+  monsterCanvas.width = monsterCanvas.parentElement.clientWidth;
+  monsterCanvas.height = monsterCanvas.parentElement.clientHeight;
+}
+window.addEventListener('resize', resizeMonsterCanvas);
+resizeMonsterCanvas();
+
+// --- ROTCAP MONSTER PALETTE ---
+const ROTCAP_PALETTE = {
+  0: null, 1: '#040605', 2: '#242b1e', 3: '#445438', 4: '#667a54',
+  5: '#a3c259', 6: '#111c14', 7: '#3b4a3f', 8: '#6e6357', 9: '#998f82',
+  10: '#c4b8a7', 11: '#ffffff', 12: '#ff5500', 13: '#d4ff00'
+};
+
+// --- VOIDSTALKER MONSTER PALETTE ---
+const VOIDSTALKER_PALETTE = {
+  0: null, 1: '#050505', 2: '#1b112c', 3: '#312040', 4: '#4f3466',
+  5: '#4a0712', 6: '#8a1124', 7: '#1a2421', 8: '#30403a', 9: '#4e6158',
+  10: '#b8b5a1', 11: '#ccff00', 12: '#668000'
+};
+
+// --- RUNNER PALETTE ---
+const RUNNER_PALETTE = {
+  0: null,
+  1: '#050505', // Black Outline / Shoes
+  2: '#f4d0b5', // Skin Tone
+  3: '#3e2723', // Hair
+  4: '#ecf0f1', // Shirt
+  5: '#bdc3c7', // Shirt Shading
+  6: '#2c3e50', // Pants
+  7: '#ffffff', // Eye White
+  8: '#87ceeb', // Sweat/Tear drop
+  9: '#4a0000'  // Mouth Screaming
+};
+
+const parseMonsterGrid = (str) => str.trim().split('\n').map(r => r.trim().split(',').map(Number));
+
+const rotcapFrame1 = parseMonsterGrid(`
+0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,1,1,2,3,4,4,3,2,1,1,1,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,1,1,2,3,4,5,3,3,5,4,3,2,1,1,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,1,1,2,3,4,3,5,3,3,3,3,5,3,4,3,2,1,1,0,0,0,0,0,0,0,0
+0,0,0,0,1,1,2,3,4,3,3,3,3,3,3,3,3,3,3,3,4,3,2,1,1,0,0,0,0,0,0,0
+0,0,0,1,2,3,4,4,3,3,5,3,3,3,3,3,3,5,3,3,4,4,3,2,1,1,0,0,0,0,0,0
+0,0,1,2,3,4,4,3,3,3,3,3,3,3,3,3,3,3,3,3,3,4,4,3,2,1,1,0,0,0,0
+0,1,2,3,4,5,4,3,3,5,3,3,3,3,3,3,3,3,5,3,3,4,5,4,3,2,1,0,0,0,0
+1,2,3,4,4,4,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,4,4,4,3,2,1,0,0,0,0
+1,2,3,4,5,4,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,4,5,4,3,2,1,0,0,0,0
+1,2,3,4,4,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,4,4,3,2,1,0,0,0,0
+1,1,2,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,2,1,1,0,0,0
+0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0
+0,0,0,1,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,1,0,0,0
+0,0,0,1,6,13,6,6,13,6,6,13,6,6,13,6,6,13,6,6,13,6,6,13,6,6,6,1,0,0,0
+0,0,0,1,1,1,1,1,1,1,8,9,10,9,8,8,9,10,9,8,1,1,1,1,1,1,1,1,0,0,0
+0,0,0,0,0,0,0,1,8,9,10,11,12,10,9,9,10,12,11,10,9,8,1,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,1,8,9,10,10,10,10,9,9,10,10,10,10,9,8,1,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,1,8,9,9,9,9,9,9,9,9,9,9,9,9,8,1,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,1,8,9,12,11,9,9,11,11,9,9,12,11,9,8,1,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,1,8,9,11,11,9,9,11,11,9,9,11,11,9,8,1,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,1,8,9,9,9,9,9,9,9,9,9,9,9,9,8,1,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,1,8,8,9,9,9,9,9,9,9,9,9,9,8,8,1,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,1,8,8,8,9,9,9,9,9,9,9,9,9,8,8,8,1,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,1,8,8,8,8,8,9,9,9,9,9,9,9,8,8,8,8,8,1,0,0,0,0,0,0,0,0
+0,0,0,0,1,8,8,8,8,8,8,8,9,9,9,9,9,8,8,8,8,8,8,8,1,0,0,0,0,0,0,0
+0,0,0,1,8,1,1,8,8,8,8,8,8,9,9,9,8,8,8,8,8,8,1,1,8,1,0,0,0,0,0,0
+0,0,1,8,1,0,0,1,8,8,8,8,8,8,9,8,8,8,8,8,8,1,0,0,1,8,1,0,0,0,0,0
+0,1,8,1,0,0,0,0,1,8,8,8,8,8,8,8,8,8,8,8,1,0,0,0,0,1,8,1,0,0,0,0
+1,8,1,0,0,0,0,0,0,1,8,8,8,8,8,8,8,8,8,1,0,0,0,0,0,0,1,8,1,0,0,0
+1,1,0,0,0,0,0,0,0,0,1,8,8,8,8,8,8,8,8,1,0,0,0,0,0,0,0,0,1,1,0,0
+0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0`);
+
+const rotcapFrame2 = parseMonsterGrid(`
+0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,1,1,2,3,4,4,3,2,1,1,1,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,1,1,2,3,4,5,3,3,5,4,3,2,1,1,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,1,1,2,3,4,3,5,3,3,3,3,5,3,4,3,2,1,1,0,0,0,0,0,0,0,0
+0,0,0,0,1,1,2,3,4,3,3,3,3,3,3,3,3,3,3,3,4,3,2,1,1,0,0,0,0,0,0,0
+0,0,0,1,2,3,4,4,3,3,5,3,3,3,3,3,3,5,3,3,4,4,3,2,1,1,0,0,0,0,0,0
+0,0,1,2,3,4,4,3,3,3,3,3,3,3,3,3,3,3,3,3,3,4,4,3,2,1,1,0,0,0,0
+0,1,2,3,4,5,4,3,3,5,3,3,3,3,3,3,3,3,5,3,3,4,5,4,3,2,1,0,0,0,0
+1,2,3,4,4,4,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,4,4,4,3,2,1,0,0,0,0
+1,2,3,4,5,4,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,4,5,4,3,2,1,0,0,0,0
+1,2,3,4,4,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,4,4,3,2,1,0,0,0,0
+1,1,2,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,2,1,1,0,0,0
+0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0
+0,0,0,1,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,1,0,0,0
+0,0,0,1,6,13,6,6,13,6,6,13,6,6,13,6,6,13,6,6,13,6,6,13,6,6,6,1,0,0,0
+0,0,0,1,1,1,1,1,1,1,8,9,10,9,8,8,9,10,9,8,1,1,1,1,1,1,1,1,0,0,0
+0,0,0,0,0,0,0,1,8,9,10,11,12,10,9,9,10,12,11,10,9,8,1,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,1,8,9,10,10,10,10,9,9,10,10,10,10,9,8,1,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,1,8,9,9,9,9,9,9,9,9,9,9,9,9,8,1,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,1,8,9,11,11,9,9,12,12,9,9,11,11,9,8,1,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,1,8,9,12,12,9,9,11,11,9,9,12,12,9,8,1,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,1,8,9,9,9,9,9,9,9,9,9,9,9,9,8,1,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,1,8,8,9,9,9,9,9,9,9,9,9,9,8,8,1,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,1,8,8,8,9,9,9,9,9,9,9,9,9,8,8,8,1,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,1,8,8,8,8,8,9,9,9,9,9,9,9,8,8,8,8,8,1,0,0,0,0,0,0,0,0
+0,0,0,0,1,8,8,8,8,8,8,8,9,9,9,9,9,8,8,8,8,8,8,8,1,0,0,0,0,0,0,0
+0,0,0,1,8,1,1,8,8,8,8,8,8,9,9,9,8,8,8,8,8,8,1,1,8,1,0,0,0,0,0,0
+0,0,1,8,1,0,0,1,8,8,8,8,8,8,9,8,8,8,8,8,8,1,0,0,1,8,1,0,0,0,0,0
+0,1,8,1,0,0,0,0,1,8,8,8,8,8,8,8,8,8,8,8,1,0,0,0,0,1,8,1,0,0,0,0
+1,8,1,0,0,0,0,0,0,1,8,8,8,8,8,8,8,8,8,1,0,0,0,0,0,0,1,8,1,0,0,0
+1,1,0,0,0,0,0,0,0,0,1,8,8,8,8,8,8,8,8,1,0,0,0,0,0,0,0,0,1,1,0,0
+0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0`);
+
+const voidstalkerFrame1 = parseMonsterGrid(`
+0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,1,1,1,2,3,3,3,2,1,1,1,1,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,1,1,1,2,3,4,4,3,2,2,3,4,4,3,2,1,1,0,0,0,0,0,0,0,0
+0,0,0,0,0,1,1,2,3,4,4,12,11,12,3,3,2,12,11,12,4,3,2,1,1,0,0,0,0,0,0
+0,0,0,0,1,2,3,4,3,2,12,11,11,12,2,2,12,11,11,12,2,3,4,3,2,1,0,0,0,0,0
+0,0,0,1,2,3,4,3,2,1,12,12,12,1,2,2,1,12,12,12,1,2,3,4,3,2,1,0,0,0,0
+0,0,1,2,3,4,4,3,2,1,1,1,1,1,2,3,1,1,1,1,1,2,3,4,4,3,2,1,0,0,0
+0,1,2,3,4,4,4,4,3,3,2,2,2,2,3,4,3,2,2,2,2,3,4,4,4,4,3,2,1,0,0
+0,1,2,3,4,4,12,11,12,4,4,3,3,4,4,4,4,3,3,4,4,12,11,12,4,4,3,2,1,0,0
+1,2,3,4,3,2,12,11,11,12,3,3,4,4,4,4,4,4,3,3,12,11,11,12,2,3,4,3,2,1,0
+1,2,3,3,2,1,12,12,12,1,2,2,3,4,4,4,4,3,2,2,1,12,12,12,1,2,3,3,2,1,0
+1,2,2,2,1,1,1,1,1,1,1,1,1,2,3,3,2,1,1,1,1,1,1,1,1,1,2,2,2,1,0
+0,1,1,1,1,5,6,1,5,6,1,5,6,1,2,2,1,5,6,1,5,6,1,5,6,1,1,1,1,0,0
+0,0,0,1,5,6,5,1,6,5,1,6,5,1,1,1,1,5,6,1,5,6,1,5,6,5,1,0,0,0,0
+0,0,0,1,6,5,1,1,5,1,1,1,1,7,8,9,8,7,1,1,1,1,5,1,1,6,1,0,0,0,0
+0,0,0,1,1,1,1,0,1,1,0,0,1,7,8,9,8,7,1,0,0,1,1,0,1,1,1,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,0,1,7,8,1,1,8,7,1,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,1,7,8,9,1,1,9,8,7,1,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,1,7,8,9,10,5,5,10,9,8,7,1,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,1,7,8,9,10,5,6,5,10,9,8,7,1,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,1,7,8,9,1,6,6,6,1,9,8,7,1,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,1,7,8,9,10,5,6,5,10,9,8,7,1,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,1,7,8,9,10,5,5,5,10,9,8,7,1,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,1,7,8,1,1,5,1,1,8,7,1,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,1,7,8,9,8,8,9,8,7,1,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,1,7,7,8,8,8,8,7,7,1,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,1,7,1,1,7,7,7,7,1,1,7,1,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,1,7,1,0,0,1,1,1,1,0,0,1,7,1,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,1,7,1,0,0,0,0,0,0,0,0,0,0,1,7,1,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,1,7,1,0,0,0,0,0,0,0,0,0,0,0,0,1,7,1,0,0,0,0,0,0,0,0
+0,0,0,0,1,7,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,7,1,0,0,0,0,0,0,0
+0,0,0,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,0,0,0,0,0,0`);
+
+const voidstalkerFrame2 = parseMonsterGrid(`
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,1,1,1,2,3,3,3,2,1,1,1,1,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,1,1,1,2,3,4,4,3,2,2,3,4,4,3,2,1,1,0,0,0,0,0,0,0,0
+0,0,0,0,0,1,1,2,3,4,4,12,11,12,3,3,2,12,11,12,4,3,2,1,1,0,0,0,0,0,0
+0,0,0,0,1,2,3,4,3,2,12,11,11,12,2,2,12,11,11,12,2,3,4,3,2,1,0,0,0,0,0
+0,0,0,1,2,3,4,3,2,1,12,12,12,1,2,2,1,12,12,12,1,2,3,4,3,2,1,0,0,0,0
+0,0,1,2,3,4,4,3,2,1,1,1,1,1,2,3,1,1,1,1,1,2,3,4,4,3,2,1,0,0,0
+0,1,2,3,4,4,4,4,3,3,2,2,2,2,3,4,3,2,2,2,2,3,4,4,4,4,3,2,1,0,0
+0,1,2,3,4,4,12,11,12,4,4,3,3,4,4,4,4,3,3,4,4,12,11,12,4,4,3,2,1,0,0
+1,2,3,4,3,2,12,11,11,12,3,3,4,4,4,4,4,4,3,3,12,11,11,12,2,3,4,3,2,1,0
+1,2,3,3,2,1,12,12,12,1,2,2,3,4,4,4,4,3,2,2,1,12,12,12,1,2,3,3,2,1,0
+1,2,2,2,1,1,1,1,1,1,1,1,1,2,3,3,2,1,1,1,1,1,1,1,1,1,2,2,2,1,0
+0,1,1,1,1,5,6,1,5,6,1,5,6,1,2,2,1,5,6,1,5,6,1,5,6,1,1,1,1,0,0
+0,0,0,1,5,6,5,1,6,5,1,6,5,1,1,1,1,5,6,1,5,6,1,5,6,5,1,0,0,0,0
+0,0,0,1,6,5,1,1,5,1,1,1,1,7,8,9,8,7,1,1,1,1,5,1,1,6,1,0,0,0,0
+0,0,0,1,1,1,1,0,1,1,0,0,1,7,8,9,8,7,1,0,0,1,1,0,1,1,1,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,0,1,7,8,1,1,8,7,1,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,1,7,8,9,1,1,9,8,7,1,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,1,7,8,10,5,6,5,10,8,7,1,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,1,7,8,10,5,6,6,6,5,10,8,7,1,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,1,7,8,10,6,6,11,6,6,10,8,7,1,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,1,7,8,10,5,6,6,6,5,10,8,7,1,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,1,7,8,10,5,6,5,10,8,7,1,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,1,7,8,1,1,5,1,1,8,7,1,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,1,7,8,9,8,8,9,8,7,1,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,1,7,7,8,8,8,8,7,7,1,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,1,1,7,7,7,7,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,1,7,1,1,1,1,7,1,0,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,1,7,1,0,0,0,0,1,7,1,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,1,7,1,0,0,0,0,0,0,1,7,1,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,1,1,0,0,0,0,0,0,0,0,1,1,0,0,0,0,0,0,0,0,0,0,0`);
+
+// --- RUNNER PIXEL GRIDS ---
+const runnerFrame1 = parseMonsterGrid(`
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,0,0,0,1,3,3,3,3,1,0,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,8,0,0,0,1,3,2,2,2,2,1,0,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,8,0,0,0,0,1,3,2,7,1,2,2,1,0,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,0,1,2,2,9,9,2,2,1,0,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,0,0,1,2,2,2,2,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,0,0,1,5,4,4,5,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,0,1,5,4,4,4,4,5,1,0,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,1,2,1,4,4,4,4,1,2,1,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,1,1,1,2,2,1,4,4,4,4,1,1,2,1,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,1,1,4,4,4,4,1,0,1,2,1,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,0,1,4,4,4,4,1,0,0,1,1,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,0,1,6,6,6,6,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,0,1,6,6,6,6,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,1,6,6,1,1,6,6,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,1,6,6,1,0,0,1,6,6,1,0,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,1,6,1,0,0,0,0,1,6,6,1,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,1,6,1,0,0,0,0,0,0,1,6,6,1,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,1,6,1,0,0,0,0,0,0,0,1,6,6,1,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,1,6,1,0,0,0,0,0,0,0,0,0,1,6,6,1,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,1,1,0,0,0,0,0,0,0,0,0,0,0,1,6,1,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,1,1,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,0,0,0,0,0,0,0,0
+0,0,0,0,0,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,0,0,0,0,0,0,0`);
+
+const runnerFrame2 = parseMonsterGrid(`
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,0,0,0,1,3,3,3,3,1,0,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,0,0,1,3,2,2,2,2,1,0,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,0,1,3,2,7,1,2,2,1,0,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,0,1,2,2,9,9,2,2,1,0,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,0,0,1,2,2,2,2,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,0,0,1,5,4,4,5,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,0,1,5,4,4,4,4,5,1,0,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,0,1,4,4,4,4,4,4,1,2,1,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,0,1,4,4,4,4,4,4,1,2,1,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,0,0,1,4,4,4,4,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,0,0,1,6,6,6,6,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,0,0,1,6,6,6,6,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,0,1,6,6,1,1,6,6,1,0,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,1,6,6,1,0,0,1,6,6,1,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,1,6,6,1,0,0,0,0,1,6,6,1,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,1,6,6,1,0,0,0,0,0,0,1,6,1,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,1,6,6,1,0,0,0,0,0,0,0,1,1,1,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,1,6,6,1,0,0,0,0,0,0,0,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0`);
+
+// Monster objects
+const allMonsters = [
   {
-    name: 'Toadstool',
-    colors: {1:'#5c1a1a',2:'#e63946',3:'#ff7b89',4:'#ffffff',5:'#a98467',6:'#fefae0',7:'#ffffff',8:'#1d1d1d',9:'#ff99c8'},
-    grid: [
-      [0,0,0,0,0,1,1,1,1,1,1,0,0,0,0,0],
-      [0,0,0,1,1,2,2,2,2,2,2,1,1,0,0,0],
-      [0,0,1,2,2,4,4,2,2,4,4,2,2,1,0,0],
-      [0,1,2,2,2,2,2,2,2,2,2,2,2,2,1,0],
-      [1,2,2,4,4,2,2,2,2,2,2,4,4,2,2,1],
-      [1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1],
-      [1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1],
-      [1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1],
-      [0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0],
-      [0,0,0,0,0,5,5,5,5,5,5,0,0,0,0,0],
-      [0,0,0,0,5,6,6,6,6,6,6,5,0,0,0,0],
-      [0,0,0,0,5,6,8,6,6,8,6,5,0,0,0,0],
-      [0,0,0,0,5,6,6,6,6,6,6,5,0,0,0,0],
-      [0,0,0,0,5,6,9,6,6,9,6,5,0,0,0,0],
-      [0,0,0,0,5,6,6,6,6,6,6,5,0,0,0,0],
-      [0,0,0,0,0,5,5,5,5,5,5,0,0,0,0,0]
-    ]
+    name: 'Rotcap',
+    frames: [rotcapFrame1, rotcapFrame2],
+    palette: ROTCAP_PALETTE,
+    scale: 3,
+    speed: 1.9,
+    laserTimer: 0,
+    laserActive: false,
+    laserFramesLeft: 0,
+    maxLaserLength: 120
   },
   {
-    name: 'Chanterelle',
-    colors: {1:'#8a5a19',2:'#f4a261',3:'#e9c46a',4:'#ffffff',5:'#8a5a19',6:'#fefae0',7:'#ffffff',8:'#1d1d1d',9:'#ff99c8'},
-    grid: [
-      [0,0,0,0,1,1,1,1,1,1,1,1,0,0,0,0],
-      [0,0,0,1,2,2,3,3,3,3,2,2,1,0,0,0],
-      [0,0,1,2,2,2,2,2,2,2,2,2,2,1,0,0],
-      [0,1,2,4,2,2,2,4,2,2,2,4,2,2,1,0],
-      [1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1],
-      [1,2,2,2,4,2,2,2,2,2,4,2,2,2,2,1],
-      [1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1],
-      [0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0],
-      [0,0,0,0,5,5,5,5,5,5,5,5,0,0,0,0],
-      [0,0,0,5,6,6,6,6,6,6,6,6,5,0,0,0],
-      [0,0,0,5,6,8,6,6,6,6,8,6,5,0,0,0],
-      [0,0,0,5,6,6,6,6,6,6,6,6,5,0,0,0],
-      [0,0,0,5,6,6,9,6,6,9,6,6,5,0,0,0],
-      [0,0,0,5,6,6,6,6,6,6,6,6,5,0,0,0],
-      [0,0,0,0,5,5,5,5,5,5,5,5,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]
-    ]
-  },
-  {
-    name: 'Shiitake',
-    colors: {1:'#3e2723',2:'#795548',3:'#a1887f',4:'#d7ccc8',5:'#3e2723',6:'#efebe9',7:'#ffffff',8:'#1d1d1d',9:'#ff99c8'},
-    grid: [
-      [0,0,0,1,1,1,1,1,1,1,1,1,1,0,0,0],
-      [0,0,1,2,2,2,2,2,2,2,2,2,2,1,0,0],
-      [0,1,2,2,3,2,2,2,2,2,2,3,2,2,1,0],
-      [1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1],
-      [1,2,4,2,2,2,2,2,2,2,2,2,2,4,2,1],
-      [1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1],
-      [1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1],
-      [0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0],
-      [0,0,0,0,0,5,5,5,5,5,5,0,0,0,0,0],
-      [0,0,0,0,5,6,6,6,6,6,6,5,0,0,0,0],
-      [0,0,0,0,5,6,8,6,6,8,6,5,0,0,0,0],
-      [0,0,0,0,5,6,6,6,6,6,6,5,0,0,0,0],
-      [0,0,0,0,5,6,9,6,6,9,6,5,0,0,0,0],
-      [0,0,0,0,5,6,6,6,6,6,6,5,0,0,0,0],
-      [0,0,0,0,0,5,5,5,5,5,5,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]
-    ]
-  },
-  {
-    name: 'Magic',
-    colors: {1:'#2a1b38',2:'#7b2cbf',3:'#c77dff',4:'#e0aaff',5:'#2a1b38',6:'#f8edeb',7:'#ffffff',8:'#1d1d1d',9:'#ff99c8'},
-    grid: [
-      [0,0,0,0,0,0,1,1,1,1,0,0,0,0,0,0],
-      [0,0,0,0,0,1,2,3,3,2,1,0,0,0,0,0],
-      [0,0,0,0,1,2,2,2,2,2,2,1,0,0,0,0],
-      [0,0,0,1,2,2,4,2,2,4,2,2,1,0,0,0],
-      [0,0,1,2,2,2,2,2,2,2,2,2,2,1,0,0],
-      [0,1,2,2,4,2,2,2,2,2,2,4,2,2,1,0],
-      [1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1],
-      [0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0],
-      [0,0,0,0,0,5,5,5,5,5,5,0,0,0,0,0],
-      [0,0,0,0,5,6,6,6,6,6,6,5,0,0,0,0],
-      [0,0,0,0,5,6,8,6,6,8,6,5,0,0,0,0],
-      [0,0,0,0,5,6,6,6,6,6,6,5,0,0,0,0],
-      [0,0,0,0,5,6,9,6,6,9,6,5,0,0,0,0],
-      [0,0,0,0,5,6,6,6,6,6,6,5,0,0,0,0],
-      [0,0,0,0,0,5,5,5,5,5,5,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]
-    ]
-  },
-  {
-    name: 'Morel',
-    colors: {1:'#1b4332',2:'#40916c',3:'#74c69d',4:'#b7e4c7',5:'#1b4332',6:'#f8edeb',7:'#ffffff',8:'#1d1d1d',9:'#ff99c8'},
-    grid: [
-      [0,0,0,0,1,1,1,1,1,1,1,1,0,0,0,0],
-      [0,0,0,1,2,3,2,3,2,3,2,2,1,0,0,0],
-      [0,0,1,2,2,2,3,2,2,2,3,2,2,1,0,0],
-      [0,1,2,3,2,2,2,3,2,2,2,3,2,2,1,0],
-      [1,2,2,2,3,2,2,2,3,2,2,2,3,2,2,1],
-      [1,2,3,2,2,3,2,2,2,3,2,2,2,3,2,1],
-      [1,2,2,3,2,2,3,2,2,2,3,2,2,2,2,1],
-      [0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0],
-      [0,0,0,0,0,5,5,5,5,5,5,0,0,0,0,0],
-      [0,0,0,0,5,6,6,6,6,6,6,5,0,0,0,0],
-      [0,0,0,0,5,6,8,6,6,8,6,5,0,0,0,0],
-      [0,0,0,0,5,6,6,6,6,6,6,5,0,0,0,0],
-      [0,0,0,0,5,6,9,6,6,9,6,5,0,0,0,0],
-      [0,0,0,0,5,6,6,6,6,6,6,5,0,0,0,0],
-      [0,0,0,0,0,5,5,5,5,5,5,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]
-    ]
+    name: 'Voidstalker',
+    frames: [voidstalkerFrame1, voidstalkerFrame2],
+    palette: VOIDSTALKER_PALETTE,
+    scale: 3,
+    speed: 1.7
   }
 ];
 
-function renderMushroom(data) {
-  const wrapper = document.createElement('div');
-  wrapper.className = 'mushroom-wrapper';
-  const sprite = document.createElement('div');
-  sprite.className = 'mushroom-sprite';
-  for (let r = 0; r < 16; r++) {
-    for (let c = 0; c < 16; c++) {
-      const val = data.grid[r][c];
-      if (val === 0) continue;
-      const pixel = document.createElement('div');
-      pixel.className = 'pixel';
-      pixel.style.backgroundColor = data.colors[val];
-      pixel.style.top = (r * PIXEL_SIZE) + 'px';
-      pixel.style.left = (c * PIXEL_SIZE) + 'px';
-      sprite.appendChild(pixel);
+// Current active monster
+let currentMonsterIndex = 0;
+let activeMonster = {
+  ...allMonsters[0],
+  x: -150,
+  frameIndex: 0,
+  animCounter: 0
+};
+
+// Runner state
+const runner = {
+  x: 200,
+  speed: 2.2,
+  frameIndex: 0,
+  animCounter: 0,
+  scale: 3,
+  frames: [runnerFrame1, runnerFrame2],
+  palette: RUNNER_PALETTE
+};
+
+// Chase state
+let manExitedScreen = false;
+let waitingForMonsterToExit = false;
+
+function drawSprite(sprite, palette, x, y, scale) {
+  for (let r = 0; r < sprite.length; r++) {
+    for (let c = 0; c < sprite[r].length; c++) {
+      const colorCode = sprite[r][c];
+      if (colorCode !== 0 && palette[colorCode]) {
+        monsterCtx.fillStyle = palette[colorCode];
+        monsterCtx.fillRect(
+          Math.floor(x + c * scale),
+          Math.floor(y + r * scale),
+          Math.ceil(scale),
+          Math.ceil(scale)
+        );
+      }
     }
   }
-  wrapper.appendChild(sprite);
-  const shadow = document.createElement('div');
-  shadow.className = 'mushroom-shadow';
-  wrapper.appendChild(shadow);
-  return wrapper;
 }
 
-mushroomData.forEach(function(data) {
-  mushroomContainer.appendChild(renderMushroom(data));
-});
+function animateMonsters() {
+  monsterCtx.clearRect(0, 0, monsterCanvas.width, monsterCanvas.height);
+  
+  const groundY = monsterCanvas.height - 10;
+  
+  // Draw runner
+  if (!manExitedScreen) {
+    const runnerY = groundY - (32 * runner.scale);
+    drawSprite(
+      runner.frames[runner.frameIndex],
+      runner.palette,
+      runner.x,
+      runnerY,
+      runner.scale
+    );
+  }
+  
+  // Draw monster
+  const monsterY = groundY - (32 * activeMonster.scale);
+  drawSprite(
+    activeMonster.frames[activeMonster.frameIndex],
+    activeMonster.palette,
+    activeMonster.x,
+    monsterY,
+    activeMonster.scale
+  );
+  
+  // Laser
+  if (activeMonster.name === 'Rotcap' && !manExitedScreen) {
+    activeMonster.laserTimer++;
+    if (activeMonster.laserTimer > 90) {
+      activeMonster.laserActive = true;
+      activeMonster.laserFramesLeft = 15;
+      activeMonster.laserTimer = 0;
+    }
+    
+    if (activeMonster.laserActive) {
+      activeMonster.laserFramesLeft--;
+      const laserStartX = activeMonster.x + (32 * activeMonster.scale);
+      const laserStartY = monsterY + (15 * activeMonster.scale);
+      const runnerEdgeX = runner.x + 10;
+      const laserMaxReach = runnerEdgeX;
+      const laserEndX = Math.min(laserStartX + activeMonster.maxLaserLength, laserMaxReach, monsterCanvas.width);
+      
+      monsterCtx.strokeStyle = 'rgba(212, 255, 0, 0.4)';
+      monsterCtx.lineWidth = activeMonster.scale * 2.5;
+      monsterCtx.beginPath();
+      monsterCtx.moveTo(laserStartX, laserStartY);
+      monsterCtx.lineTo(laserEndX, laserStartY);
+      monsterCtx.stroke();
+      
+      monsterCtx.strokeStyle = '#ffffff';
+      monsterCtx.lineWidth = activeMonster.scale * 0.9;
+      monsterCtx.beginPath();
+      monsterCtx.moveTo(laserStartX, laserStartY);
+      monsterCtx.lineTo(laserEndX, laserStartY);
+      monsterCtx.stroke();
+      
+      monsterCtx.fillStyle = '#d4ff00';
+      monsterCtx.fillRect(laserEndX - 4, laserStartY - 4, 8, 8);
+      
+      if (activeMonster.laserFramesLeft <= 0) {
+        activeMonster.laserActive = false;
+      }
+    }
+  }
+  
+  // Update runner
+  if (!manExitedScreen) {
+    runner.x += runner.speed;
+    runner.animCounter++;
+    if (runner.animCounter % 6 === 0) {
+      runner.frameIndex = (runner.frameIndex + 1) % runner.frames.length;
+    }
+    
+    if (runner.x > monsterCanvas.width + 50) {
+      manExitedScreen = true;
+      waitingForMonsterToExit = true;
+    }
+  }
+  
+  // Update monster
+  activeMonster.x += activeMonster.speed;
+  activeMonster.animCounter++;
+  if (activeMonster.animCounter % 8 === 0) {
+    activeMonster.frameIndex = (activeMonster.frameIndex + 1) % activeMonster.frames.length;
+  }
+  
+  // Keep distance
+  const minDistance = 100;
+  if (!manExitedScreen && runner.x - activeMonster.x < minDistance) {
+    runner.x = activeMonster.x + minDistance;
+  }
+  
+  // Check monster exit
+  if (waitingForMonsterToExit && activeMonster.x > monsterCanvas.width + 150) {
+    currentMonsterIndex = (currentMonsterIndex + 1) % allMonsters.length;
+    activeMonster = {
+      ...allMonsters[currentMonsterIndex],
+      x: -150,
+      frameIndex: 0,
+      animCounter: 0
+    };
+    
+    runner.x = 200;
+    manExitedScreen = false;
+    waitingForMonsterToExit = false;
+  }
+  
+  requestAnimationFrame(animateMonsters);
+}
+
+// Start animation
+animateMonsters();
 
 connectWS();
 </script>
