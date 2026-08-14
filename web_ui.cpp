@@ -1462,10 +1462,10 @@ let activeMonster = {
   animCounter: 0
 };
 
-// Runner state
+/// Runner state
 const runner = {
-  x: 200,
-  speed: 2.2,
+  x: 60,  // Start off-screen, will scroll in
+  speed: 1.94,
   frameIndex: 0,
   animCounter: 0,
   scale: 3,
@@ -1476,6 +1476,8 @@ const runner = {
 // Chase state
 let manExitedScreen = false;
 let waitingForMonsterToExit = false;
+let manEnteringScreen = true;  // Track when man is scrolling in
+let manHidden = false;  // Track when man should be hidden during transition
 
 function drawSprite(sprite, palette, x, y, scale) {
   for (let r = 0; r < sprite.length; r++) {
@@ -1499,8 +1501,8 @@ function animateMonsters() {
   
   const groundY = monsterCanvas.height - 10;
   
-  // Draw runner
-  if (!manExitedScreen) {
+    // Draw runner (only if not hidden during transition)
+  if (!manExitedScreen && !manHidden) {
     const runnerY = groundY - (32 * runner.scale);
     drawSprite(
       runner.frames[runner.frameIndex],
@@ -1569,9 +1571,10 @@ function animateMonsters() {
       runner.frameIndex = (runner.frameIndex + 1) % runner.frames.length;
     }
     
-    if (runner.x > monsterCanvas.width + 50) {
+       if (runner.x > monsterCanvas.width + 50) {
       manExitedScreen = true;
       waitingForMonsterToExit = true;
+      manHidden = true;  // Hide runner during transition
     }
   }
   
@@ -1582,10 +1585,15 @@ function animateMonsters() {
     activeMonster.frameIndex = (activeMonster.frameIndex + 1) % activeMonster.frames.length;
   }
   
-  // Keep distance
-  const minDistance = 100;
-  if (!manExitedScreen && runner.x - activeMonster.x < minDistance) {
+    // Keep distance (only when man is fully on screen)
+  const minDistance = 45;  // Your preferred distance
+  if (!manExitedScreen && !manEnteringScreen && runner.x - activeMonster.x < minDistance) {
     runner.x = activeMonster.x + minDistance;
+  }
+  
+  // Detect when man has fully entered screen
+  if (manEnteringScreen && runner.x > 0) {
+    manEnteringScreen = false;
   }
   
   // Check monster exit
@@ -1598,9 +1606,12 @@ function animateMonsters() {
       animCounter: 0
     };
     
-    runner.x = 200;
+       // Reset runner for new chase - scroll in from left
+    runner.x = -50;  // Start off-screen
     manExitedScreen = false;
     waitingForMonsterToExit = false;
+    manEnteringScreen = true;
+    manHidden = false;  // Show runner so he can scroll in
   }
   
   requestAnimationFrame(animateMonsters);
@@ -1608,7 +1619,6 @@ function animateMonsters() {
 
 // Start animation
 animateMonsters();
-
 connectWS();
 </script>
 </body>
