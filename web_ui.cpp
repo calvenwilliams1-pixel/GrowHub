@@ -1585,10 +1585,12 @@ function animateMonsters() {
     activeMonster.frameIndex = (activeMonster.frameIndex + 1) % activeMonster.frames.length;
   }
   
-    // Keep distance (only when man is fully on screen)
+   // Keep distance (only when man is fully on screen)
   const minDistance = 45;  // Your preferred distance
-  if (!manExitedScreen && !manEnteringScreen && runner.x - activeMonster.x < minDistance) {
-    runner.x = activeMonster.x + minDistance;
+  if (!manExitedScreen && !manEnteringScreen && !manHidden) {
+    if (runner.x - activeMonster.x < minDistance) {
+      runner.x = activeMonster.x + minDistance;
+    }
   }
   
   // Detect when man has fully entered screen
@@ -1596,8 +1598,8 @@ function animateMonsters() {
     manEnteringScreen = false;
   }
   
-  // Check monster exit
-  if (waitingForMonsterToExit && activeMonster.x > monsterCanvas.width + 150) {
+    // Check monster exit (reduced distance for faster transition)
+  if (waitingForMonsterToExit && activeMonster.x > monsterCanvas.width + 20) {
     currentMonsterIndex = (currentMonsterIndex + 1) % allMonsters.length;
     activeMonster = {
       ...allMonsters[currentMonsterIndex],
@@ -1606,14 +1608,21 @@ function animateMonsters() {
       animCounter: 0
     };
     
-       // Reset runner for new chase - scroll in from left
-    runner.x = -50;  // Start off-screen
+     // Reset runner for new chase - scroll in from left
+    // For Rotcap (laser monster), start runner further right
+    if (activeMonster.name === 'Rotcap') {
+      runner.x = -10;  // Just off-screen, scrolls in quickly
+    } else {
+      runner.x = -50;  // Further off-screen for Voidstalker
+    }
     manExitedScreen = false;
     waitingForMonsterToExit = false;
     manEnteringScreen = true;
     manHidden = false;  // Show runner so he can scroll in
+    runner.frameIndex = 0;
+    runner.animCounter = 0;
   }
-  
+
   requestAnimationFrame(animateMonsters);
 }
 
