@@ -30,6 +30,10 @@ extern portMUX_TYPE g_stateMux;
 static SCD40Data g_scd40Data;
 static bool g_scd40Initialized = false;
 static uint8_t g_consecutiveFailures = 0;
+static unsigned long g_lastSuccessfulRead = 0;      // millis() of last good read
+static unsigned long g_maxConsecutiveSuccesses = 0; // Max successes before failure
+static unsigned long g_currentSuccessStreak = 0;    // Current consecutive success count
+static float g_lastVCCReading = 0.0f;
 
 // CRC-8 lookup table for SCD40 (polynomial 0x31, init 0xFF)
 static const uint8_t crc8_table[256] = {
