@@ -135,6 +135,8 @@
 // Therefore: VCC = ADC_voltage / (R2 / (R1 + R2))
 // For R1 = R2 = 10kΩ:  R2/(R1+R2) = 0.5, so VCC = ADC * 2.0
 #define VCC_DIVIDER_RATIO               0.5f   // R2/(R1+R2) — for 10k/10k = 0.5
+// I2C clock speed — single source of truth for all Wire.setClock() calls
+#define I2C_CLOCK_SPEED                 5000   // 5 kHz — testing long cable
 #define SCD40_TEMP_OFFSET               0.0f
 #define SCD40_HUM_OFFSET                0.0f    // Calibration offset for humidity (%)
 #define SCD40_CO2_OFFSET                0       // Calibration offset for CO2 (ppm)
