@@ -126,7 +126,7 @@ void setup() {
   // Step 3: I2C Bus Initialization
   Serial.println(F("[BOOT] Step 3: I2C bus init..."));
   Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
-  Wire.setClock(100000);
+  Wire.setClock(I2C_CLOCK_SPEED);
   safety_feedWatchdog();
 
   // Step 4: Real-Time Clock
