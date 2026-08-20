@@ -121,10 +121,20 @@
 // sensors_poll() gates on SCD40 data-ready status before reading.
 // 2-second checks yield worst-case 2s latency from data-ready to detection.
 // Must be <= SCD40_MEASURE_INTERVAL_MS to avoid missing data.
-#define SENSOR_POLL_INTERVAL_MS         2000
+#define SENSOR_POLL_INTERVAL_MS         30000
 #define SENSOR_RETRY_INTERVAL_MS        5000
 #define SENSOR_FAULT_TIMEOUT_MS         10000UL // 10 seconds without valid data = fault
 #define SENSOR_LKG_MAX_AGE_MS           30000UL // Max age of last-known-good value before safe mode
+
+// ============================================================
+// SENSORS: VCC Monitoring (for long-cable diagnosis)
+// ============================================================
+#define VCC_MONITOR_PIN                 34     // ADC pin for VCC divider (input-only GPIO)
+// Voltage divider: VCC → R1 → ADC pin → R2 → GND
+// ADC voltage = VCC * (R2 / (R1 + R2))
+// Therefore: VCC = ADC_voltage / (R2 / (R1 + R2))
+// For R1 = R2 = 10kΩ:  R2/(R1+R2) = 0.5, so VCC = ADC * 2.0
+#define VCC_DIVIDER_RATIO               0.5f   // R2/(R1+R2) — for 10k/10k = 0.5
 #define SCD40_TEMP_OFFSET               0.0f
 #define SCD40_HUM_OFFSET                0.0f    // Calibration offset for humidity (%)
 #define SCD40_CO2_OFFSET                0       // Calibration offset for CO2 (ppm)
