@@ -286,8 +286,11 @@ void loop() {
   // Handle OTA updates (non-blocking when idle)
   ArduinoOTA.handle();
 
-  // Handle RTC serial commands
+   // Handle RTC serial commands
   rtc_checkSerialCommand();
+
+  // Handle non-blocking relay identification
+  relayManager_updateIdentify();
 
   // Sensor polling every 2 seconds
   if (now - g_lastSensorPoll >= SENSOR_POLL_INTERVAL_MS) {
